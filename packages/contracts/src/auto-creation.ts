@@ -1112,15 +1112,19 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
         }), episodeCount, episodeCount),
         resolution: str(300),
       });
-      const bibleSync = {
+      // OpenAI strict Structured Outputs: every property must be required; optional values use nullable anyOf.
+      const bibleSyncObject = {
         type: "object", additionalProperties: false,
+        required: ["logline", "synopsis", "obstacles", "keyChoices"],
         properties: {
-          logline: str(120), synopsis: str(600),
-          obstacles: strs(6, 120, 1),
-          keyChoices: arr(obj({ choice: str(120), consequence: str(120) }), 1, 6),
+          logline: { anyOf: [str(120), { type: "null" }] },
+          synopsis: { anyOf: [str(600), { type: "null" }] },
+          obstacles: { anyOf: [strs(6, 120, 1), { type: "null" }] },
+          keyChoices: { anyOf: [arr(obj({ choice: str(120), consequence: str(120) }), 1, 6), { type: "null" }] },
         },
       } as const;
-      return { name: "auto_user_revision", schema: { ...episode, required: [...episode.required, "changes", "outline"], properties: {
+      const bibleSync = { anyOf: [bibleSyncObject, { type: "null" }] } as const;
+      return { name: "auto_user_revision", schema: { ...episode, required: [...episode.required, "changes", "outline", "bibleSync"], properties: {
         ...episode.properties, changes, outline, bibleSync } } };
     }
     case "review":
@@ -1254,6 +1258,11 @@ export interface AutoCallFinish {
   output: AutoStageOutput | null;
   outputHash: string | null;
   dependsOn: Record<string, string> | null;
+  /**
+   * User-revise: bible/outline replacements applied in the same finishCall transaction as completing the revise
+   * stage, so a crash cannot leave a completed revision with stale story artifacts.
+   */
+  companionStages?: ReadonlyArray<{ stageKey: string; output: AutoStageOutput; outputHash: string }>;
   /** Applied to the stage only, never the call ledger. */
   rejectionDiagnostic?: AutoResearchRejectionDiagnostic;
   providerRequestId: string | null;
@@ -1384,6 +1393,11 @@ export interface AutoCreationStore {
   requestCancel(workspaceId: string, projectId: string, runId: string, nowIso: string): Promise<AutoRunBundle | null>;
   /** blocked: the caller found the run cannot be continued as it stands (AutoResumeBlock); refused before any write. */
   prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation>;
+  /**
+   * Peek at an existing auto_creation_resume row for idempotent replay before eligibility checks.
+   * Returns the stored request hash, or null when no row exists for this key.
+   */
+  peekResume(workspaceId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null>;
   /**
    * User-initiated revise after completion/pass: reopens the run, appends revise+review stages with the brief in
    * depends_on_json, and records the idempotency row (same auto_creation_resume table as 「继续」).

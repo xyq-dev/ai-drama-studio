@@ -60,6 +60,7 @@ import {
   collectSources,
   formatAutoEpisode,
   formatAutoStory,
+  encodeUserReviseDepends,
   openIssues,
   readUserReviseBrief,
   revisionTargets,
@@ -483,23 +484,22 @@ export class AutoCreationEngine {
     });
     let patch: AutoCallFinish;
     const common = { providerRequestId: exchange.providerRequestId, responseModel: exchange.responseModel, usage: exchange.usage };
+    // User-revise brief must survive reject/unknown so resume stays on the multi-artifact path.
+    const preservedUserBrief = userBrief ? encodeUserReviseDepends(userBrief) : null;
     if (exchange.outcome === "answered" && exchange.content !== null) {
       const checked = validateAutoStageOutput(next.stageKey, exchange.content, run.input, context);
       if (checked.ok) {
+        const companionStages = checked.userReviseApply
+          ? [
+            { stageKey: "bible", output: checked.userReviseApply.bible, outputHash: canonicalInputHash(checked.userReviseApply.bible) },
+            { stageKey: "outline", output: checked.userReviseApply.outline, outputHash: canonicalInputHash(checked.userReviseApply.outline) },
+          ]
+          : undefined;
         patch = { state: "completed", errorCode: null, output: checked.output, outputHash: canonicalInputHash(checked.output),
-          dependsOn: autoStageDependencies(next.stageKey, stages), ...common };
-        const finished = await this.deps.store.finishCall(this.workspaceId, call.id, this.executorId, patch, this.now().toISOString());
-        if (!finished) return false;
-        if (checked.userReviseApply) {
-          const nowIso = this.now().toISOString();
-          const bibleHash = canonicalInputHash(checked.userReviseApply.bible);
-          const outlineHash = canonicalInputHash(checked.userReviseApply.outline);
-          if (!await this.deps.store.replaceCompletedStageOutput(this.workspaceId, runId, this.executorId, "bible",
-            checked.userReviseApply.bible, bibleHash, nowIso)) return false;
-          if (!await this.deps.store.replaceCompletedStageOutput(this.workspaceId, runId, this.executorId, "outline",
-            checked.userReviseApply.outline, outlineHash, nowIso)) return false;
-        }
-        return true;
+          dependsOn: autoStageDependencies(next.stageKey, stages),
+          ...(companionStages ? { companionStages } : {}),
+          ...common };
+        return this.deps.store.finishCall(this.workspaceId, call.id, this.executorId, patch, this.now().toISOString());
       }
       const errorCode = autoErrorCodeWith(checked.code, checked.field, checked.category, checked.semantic, checked.rule, checked.reason);
       const diagnostic = isAutoResearchRankingRejection(next.stageKey, "rejected", errorCode)
@@ -507,11 +507,11 @@ export class AutoCreationEngine {
       // An escaped key echo inside the answer's JSON could evade the transport's literal redaction.
       const rejectionDiagnostic = diagnostic && !exchange.content.replace(/\\u([0-9a-f]{4})/giu, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))).includes(provider.apiKey)
         ? diagnostic : null;
-      patch = { state: "rejected", errorCode, output: null, outputHash: null, dependsOn: null,
+      patch = { state: "rejected", errorCode, output: null, outputHash: null, dependsOn: preservedUserBrief,
         ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}), ...common };
     } else {
       patch = { state: exchange.outcome === "unknown" ? "unknown" : "rejected", errorCode: exchange.errorCode ?? "invalid_output",
-        output: null, outputHash: null, dependsOn: null, ...common };
+        output: null, outputHash: null, dependsOn: preservedUserBrief, ...common };
     }
     return this.deps.store.finishCall(this.workspaceId, call.id, this.executorId, patch, this.now().toISOString());
   }
@@ -770,6 +770,18 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (!call) return false;
     const run = this.run(call.runId);
     if (run.workspaceId !== workspaceId || call.state !== "submitted" || call.executorId !== executorId || run.executorId !== executorId) return false;
+    if (patch.state === "completed" && patch.companionStages) {
+      for (const companion of patch.companionStages) {
+        const target = this.stage(call.runId, companion.stageKey);
+        if (target.state !== "completed") return false;
+      }
+      // Persist synced bible/outline before marking the revise stage complete so a mid-write crash cannot leave
+      // a completed round with stale companions.
+      for (const companion of patch.companionStages) {
+        const target = this.stage(call.runId, companion.stageKey);
+        Object.assign(target, { output: structuredClone(companion.output), outputHash: companion.outputHash, updatedAt: nowIso });
+      }
+    }
     Object.assign(call, { state: patch.state, errorCode: patch.errorCode, providerRequestId: patch.providerRequestId, responseModel: patch.responseModel,
       usage: patch.usage, finishedAt: nowIso });
     const stage = this.stage(call.runId, call.stageKey);
@@ -865,6 +877,13 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     return true;
   }
 
+  async peekResume(workspaceId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null> {
+    const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId);
+    if (!run) return null;
+    const previous = this.resumes.find((item) => item.runId === runId && item.key === resumeKey);
+    return previous ? { requestHash: previous.requestHash } : null;
+  }
+
   async refreshStoryDraft(workspaceId: string, runId: string, executorId: string, storyText: string, quality: Exclude<AutoCreationQuality, "pending">, nowIso: string): Promise<"saved" | "conflict" | "lost" | "unchanged"> {
     const run = this.run(runId);
     if (!this.owns(run, workspaceId, executorId, nowIso)) return "lost";
@@ -873,7 +892,8 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     const current = project.stories.find((story) => story.id === project.currentStoryId);
     if (!current || current.id !== run.storyRevisionId || current.reviewStatus !== "DRAFT"
       || current.createdBy !== `auto-creation:${runId}`) {
-      Object.assign(run, { quality, updatedAt: nowIso });
+      // Invalidate same-version claim so placeScripts cannot treat the new package as the old reviewed story.
+      Object.assign(run, { storySave: "conflict", quality, updatedAt: nowIso });
       return "conflict";
     }
     if (current.text === storyText) {
@@ -953,12 +973,19 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (run.state === "running" || scripts.length !== run.input.episodeCount
       || !autoPackageComplete(this.stages.filter((stage) => stage.runId === runId))) return { kind: "not_ready" };
     const project = this.projects.get(projectId)!;
-    // The run's own story must have been saved; accepting a later edit never stands in for that story.
-    if (run.storySave !== "saved" || run.storyRevisionId === null || !project.stories.some((story) => story.id === run.storyRevisionId)) {
-      return { kind: "story_not_saved" };
+    // After story_update_conflict the package and the saved/reviewed story are no longer the same version.
+    if (run.errorCode === "story_update_conflict" || run.storySave === "conflict") {
+      if (!options.acceptStoryChanged) return { kind: "story_changed" };
+      // Explicit ack: still require an approved current story, then place against it.
+      if (!project.approvedStoryId || project.currentStoryId !== project.approvedStoryId) return { kind: "story_not_approved" };
+    } else {
+      // The run's own story must have been saved; accepting a later edit never stands in for that story.
+      if (run.storySave !== "saved" || run.storyRevisionId === null || !project.stories.some((story) => story.id === run.storyRevisionId)) {
+        return { kind: "story_not_saved" };
+      }
+      if (!project.approvedStoryId || project.currentStoryId !== project.approvedStoryId) return { kind: "story_not_approved" };
+      if (project.approvedStoryId !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };
     }
-    if (!project.approvedStoryId || project.currentStoryId !== project.approvedStoryId) return { kind: "story_not_approved" };
-    if (project.approvedStoryId !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };
     if (project.episodeCount !== run.input.episodeCount || project.episodes.size !== run.input.episodeCount) return { kind: "plan_mismatch" };
     for (const script of scripts) {
       const episode = project.episodes.get(script.episodeNo)!;

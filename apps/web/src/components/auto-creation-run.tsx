@@ -131,6 +131,11 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   }, [client, read]);
 
   useEffect(() => {
+    // After story_update_conflict, placing scripts needs the same explicit ack as story_changed.
+    if (run?.storyUpdateConflict) setStoryChanged(true);
+  }, [run?.storyUpdateConflict]);
+
+  useEffect(() => {
     if (run?.state !== "running") return;
     const timer = setInterval(() => { void read(); }, AUTO_CREATION_POLL_MS);
     return () => clearInterval(timer);

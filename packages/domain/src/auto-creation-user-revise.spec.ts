@@ -8,7 +8,10 @@ import {
 } from "@ai-drama/contracts";
 import {
   AUTO_USER_REVISE_PATH_VERSION,
+  applyBibleSync,
+  autoUserRevisionSchema,
   encodeUserReviseDepends,
+  normalizeUserBibleSync,
   planAutoUserRevise,
   readUserReviseBrief,
   userReviseIssueBlock,
@@ -113,6 +116,26 @@ describe("auto-creation user revise planning", () => {
     expect(planAutoUserRevise(bundle({ callsUsed: 11, callCap: 12 }), { findingIds: ["R1"], instruction: "" })).toMatchObject({ code: "budget_exhausted" });
   });
 
+  it("refuses when selected findings cover more episodes than one revise round allows", () => {
+    const many = review({
+      issues: [
+        { id: "R1", dimension: "conflictAction", severity: "low", target: "episode:1",
+          evidence: "e1", problem: "p1", suggestion: "s1", evidenceVerified: true },
+        { id: "R2", dimension: "conflictAction", severity: "low", target: "episode:2",
+          evidence: "e2", problem: "p2", suggestion: "s2", evidenceVerified: true },
+        { id: "R3", dimension: "conflictAction", severity: "low", target: "episode:3",
+          evidence: "e3", problem: "p3", suggestion: "s3", evidenceVerified: true },
+        { id: "R4", dimension: "conflictAction", severity: "low", target: "episode:4",
+          evidence: "e4", problem: "p4", suggestion: "s4", evidenceVerified: true },
+      ],
+    });
+    const big = bundle();
+    big.run.input.episodeCount = 6;
+    big.stages[1]!.output = many;
+    expect(planAutoUserRevise(big, { findingIds: ["R1", "R2", "R3", "R4"], instruction: "" }))
+      .toMatchObject({ ok: false, code: "too_many_episodes" });
+  });
+
   it("round-trips the brief through depends_on without a migration", () => {
     const planned = planAutoUserRevise(bundle(), { findingIds: ["R2"], instruction: "同步阻碍" });
     expect(planned.ok).toBe(true);
@@ -120,5 +143,21 @@ describe("auto-creation user revise planning", () => {
     const encoded = encodeUserReviseDepends(planned.brief);
     expect(readUserReviseBrief(encoded)).toEqual(planned.brief);
     expect(readUserReviseBrief({ other: "x" })).toBeNull();
+  });
+
+  it("accepts null bibleSync and ignores null nested fields for OpenAI-strict answers", () => {
+    expect(normalizeUserBibleSync(null)).toBeUndefined();
+    expect(normalizeUserBibleSync({ logline: null, synopsis: null, obstacles: null, keyChoices: null })).toBeUndefined();
+    expect(normalizeUserBibleSync({ obstacles: ["误以为争房产"], logline: null })).toEqual({ obstacles: ["误以为争房产"] });
+    const bible = {
+      schema: "ads.auto-creation.bible.v1", title: "t", logline: "旧一句话", synopsis: "旧梗概",
+      characters: [], locations: [], relationships: [], props: [],
+      story: { desire: "d", weakness: "w", wound: "w", lie: "l", need: "n", stakes: "s",
+        obstacles: ["旧阻碍"], keyChoices: [{ choice: "c", consequence: "q" }], ending: "e" },
+    } as never;
+    expect(applyBibleSync(bible, null).story.obstacles).toEqual(["旧阻碍"]);
+    expect(applyBibleSync(bible, { obstacles: ["新阻碍"], logline: null, synopsis: null, keyChoices: null }).story.obstacles)
+      .toEqual(["新阻碍"]);
+    expect(autoUserRevisionSchema(1).shape.bibleSync.safeParse(null).success).toBe(true);
   });
 });

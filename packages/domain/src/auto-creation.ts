@@ -1440,6 +1440,9 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
       if (!full.outline.storyProse || full.outline.storyProse.length === 0) {
         return { ok: false, code: "invalid_output", field: "outline.storyProse" };
       }
+      // Same semantic outline checks as a normal outline stage, against the post-sync bible.
+      const outlineChecked = checkOutline(input, full.outline, { ...context, bible: syncedBible });
+      if (!outlineChecked.ok) return outlineChecked;
       const episodeOnly = stripUserRevisionExtras(full);
       const budgeted = withinReviewBudget(stageKey, { ok: true, output: episodeOnly }, input, {
         ...context, bible: syncedBible, outline: full.outline,

@@ -470,4 +470,49 @@ describe("automatic creation API", () => {
     await settle();
     expect(seen.slice(before).map((item) => item.stage)).toEqual(["revise:1:episode:1", "review:2"]);
   });
+
+  it("confirm replays a matching resume identity before eligibility checks", async () => {
+    const { service, settle, seen, store } = setup();
+    const started = await service.start(P1, { revisionRounds: 2, callBudget: 12 }, TOKEN, CONTEXT("peek-start"));
+    const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+    await settle();
+    const before = seen.length;
+    const confirmed = await service.userRevise(P1, runId, { instruction: "改动机", confirm: true }, TOKEN, CONTEXT("peek-replay"));
+    expect(confirmed.status).toBe(200);
+    await settle();
+    expect(seen.slice(before)).toHaveLength(2);
+    // After the round is consumed, plan would refuse — but the same key/body must still return the receipt.
+    const stored = store.runs.find((item) => item.id === runId)!;
+    expect(stored.revisionRoundsUsed).toBe(1);
+    stored.state = "running";
+    const replay = await service.userRevise(P1, runId, { instruction: "改动机", confirm: true }, TOKEN, CONTEXT("peek-replay"));
+    expect(replay.status).toBe(200);
+    expect((replay.body as { run: AutoCreationRunView }).run.runId).toBe(runId);
+    expect(errorCode(replay.body)).toBeUndefined();
+    expect(seen.slice(before)).toHaveLength(2);
+  });
+
+  it("refuses findings that cover more episodes than one revise round allows", async () => {
+    const { service, settle, run, store } = setup({
+      plan: { episodeCount: 6, targetEpisodeSeconds: 60 },
+    });
+    const started = await service.start(P1, { revisionRounds: 2 }, TOKEN, CONTEXT("too-many-eps"));
+    expect(started.status).toBe(201);
+    const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+    await settle();
+    expect((await run(runId)).state).toBe("completed");
+    const review = store.stages.find((stage) => stage.runId === runId && stage.stageKey === "review:1")!.output as {
+      issues: Array<Record<string, unknown>>;
+    };
+    review.issues = [1, 2, 3, 4].map((episodeNo) => ({
+      id: `R${String(episodeNo)}`, dimension: "conflictAction", severity: "low", target: `episode:${String(episodeNo)}`,
+      evidence: `e${String(episodeNo)}`, problem: "p", suggestion: "s", evidenceVerified: true,
+    }));
+    const refused = await service.userRevise(P1, runId, {
+      findingIds: ["R1", "R2", "R3", "R4"], confirm: false,
+    }, TOKEN, CONTEXT());
+    expect(refused.status).toBe(400);
+    expect(errorCode(refused.body)).toBe("AUTO_CREATION_USER_REVISE_TOO_MANY_EPISODES");
+    expect((refused.body as { error: { message: string } }).error.message).toContain("超过本轮改稿上限");
+  });
 });

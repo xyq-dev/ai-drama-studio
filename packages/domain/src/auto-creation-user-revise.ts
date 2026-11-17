@@ -44,17 +44,17 @@ export interface AutoUserReviseQuote {
 
 export type AutoUserRevisePlanResult =
   | { ok: true; brief: AutoUserReviseBrief; quote: AutoUserReviseQuote }
-  | { ok: false; code: "empty" | "not_eligible" | "rounds_exhausted" | "budget_exhausted" | "unknown_finding" };
+  | { ok: false; code: "empty" | "not_eligible" | "rounds_exhausted" | "budget_exhausted" | "unknown_finding" | "too_many_episodes" };
 
 const text = (min: number, max: number) => z.string().max(max)
   .refine((value) => value.trim().length >= min, "必填内容不能为空白");
 
 /** Minimal bible fields a user-initiated revise may sync (never a wholesale rewrite). */
 export const autoUserBibleSyncSchema = z.object({
-  logline: text(1, 120).optional(),
-  synopsis: text(1, 600).optional(),
-  obstacles: z.array(text(1, 120)).min(1).max(6).optional(),
-  keyChoices: z.array(z.object({ choice: text(1, 120), consequence: text(1, 120) }).strict()).min(1).max(6).optional(),
+  logline: text(1, 120).nullish(),
+  synopsis: text(1, 600).nullish(),
+  obstacles: z.array(text(1, 120)).min(1).max(6).nullish(),
+  keyChoices: z.array(z.object({ choice: text(1, 120), consequence: text(1, 120) }).strict()).min(1).max(6).nullish(),
 }).strict();
 export type AutoUserBibleSync = z.infer<typeof autoUserBibleSyncSchema>;
 
@@ -65,10 +65,22 @@ export function autoUserRevisionSchema(episodeCount: number) {
       change: text(1, 150),
     }).strict()).min(1).max(10),
     outline: autoOutlineSchema(episodeCount).required({ storyProse: true }),
-    bibleSync: autoUserBibleSyncSchema.optional(),
+    // OpenAI strict: property is required; omit sync with null.
+    bibleSync: autoUserBibleSyncSchema.nullable(),
   }).strict();
 }
 export type AutoUserRevision = z.infer<ReturnType<typeof autoUserRevisionSchema>>;
+
+/** Drop null / empty optional bibleSync so apply only sees real pointed fields. */
+export function normalizeUserBibleSync(sync: AutoUserBibleSync | null | undefined): AutoUserBibleSync | undefined {
+  if (sync == null) return undefined;
+  const next: AutoUserBibleSync = {};
+  if (typeof sync.logline === "string") next.logline = sync.logline;
+  if (typeof sync.synopsis === "string") next.synopsis = sync.synopsis;
+  if (Array.isArray(sync.obstacles)) next.obstacles = sync.obstacles;
+  if (Array.isArray(sync.keyChoices)) next.keyChoices = sync.keyChoices;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
 
 /** Findings the result page may select for a user-initiated revise (including low-severity AI issues). */
 export function autoSelectableFindings(review: AutoReviewOutput): Array<{ id: string; target: string; severity: string; detail: string }> {
@@ -162,13 +174,14 @@ export function planAutoUserRevise(
     const episodeNo = /^episode:([1-6])$/.exec(found.target)?.[1];
     if (episodeNo) episodeTargets.add(Number(episodeNo));
   }
+  const cap = autoCreationRevisionsPerRound(run.input.episodeCount);
   // Motive / outline-style revises still need a named episode carrier stage (existing key space only).
   if (episodeTargets.size === 0) {
-    const cap = autoCreationRevisionsPerRound(run.input.episodeCount);
     for (let episodeNo = 1; episodeNo <= Math.min(run.input.episodeCount, cap); episodeNo += 1) episodeTargets.add(episodeNo);
   }
-  const targets = [...episodeTargets].sort((a, b) => a - b)
-    .slice(0, autoCreationRevisionsPerRound(run.input.episodeCount));
+  const targets = [...episodeTargets].sort((a, b) => a - b);
+  // Do not silently drop findings that point at more episodes than one round can revise.
+  if (targets.length > cap) return { ok: false, code: "too_many_episodes" };
   // Always the multi-artifact path: keep script, outline/story body, and pointed bible fields consistent.
   const syncStory = true;
 
@@ -221,16 +234,17 @@ export function userReviseIssueBlock(
   return lines;
 }
 
-export function applyBibleSync(bible: AutoBible, sync: AutoUserBibleSync | undefined): AutoBible {
-  if (!sync) return bible;
+export function applyBibleSync(bible: AutoBible, sync: AutoUserBibleSync | null | undefined): AutoBible {
+  const pointed = normalizeUserBibleSync(sync);
+  if (!pointed) return bible;
   return {
     ...bible,
-    ...(sync.logline !== undefined ? { logline: sync.logline } : {}),
-    ...(sync.synopsis !== undefined ? { synopsis: sync.synopsis } : {}),
+    ...(pointed.logline !== undefined && pointed.logline !== null ? { logline: pointed.logline } : {}),
+    ...(pointed.synopsis !== undefined && pointed.synopsis !== null ? { synopsis: pointed.synopsis } : {}),
     story: {
       ...bible.story,
-      ...(sync.obstacles !== undefined ? { obstacles: sync.obstacles } : {}),
-      ...(sync.keyChoices !== undefined ? { keyChoices: sync.keyChoices } : {}),
+      ...(pointed.obstacles !== undefined && pointed.obstacles !== null ? { obstacles: pointed.obstacles } : {}),
+      ...(pointed.keyChoices !== undefined && pointed.keyChoices !== null ? { keyChoices: pointed.keyChoices } : {}),
     },
   };
 }

@@ -109,6 +109,7 @@ const MESSAGES: Record<string, string> = {
   AUTO_CREATION_USER_REVISE_EMPTY: "请至少勾选一条审阅意见，或写下修改说明，才能发起改稿。没有扣次，也没有发出调用。",
   AUTO_CREATION_USER_REVISE_NOT_ELIGIBLE: "这次创作现在不能按意见再改一稿（需要已完成或机器检查已通过，且仍有剩余修改轮次和调用预算）。没有扣次，也没有发出调用。",
   AUTO_CREATION_USER_REVISE_UNKNOWN_FINDING: "所选意见不在本次机器审阅结果中，没有扣次，也没有发出调用。",
+  AUTO_CREATION_USER_REVISE_TOO_MANY_EPISODES: "所选意见覆盖的集数超过本轮改稿上限。请减少勾选后再试；没有扣次，也没有发出调用。",
   AUTO_CREATION_ROUNDS_EXHAUSTED: "修改轮次已经用完，不能再发起改稿。没有扣次，也没有发出调用。",
   IDEMPOTENCY_KEY_REUSED: "同一个请求标识被用于不同的内容，已拒绝。",
   NOT_FOUND: "没有找到这次创作。",
@@ -348,10 +349,31 @@ export class AutoCreationService {
     if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
     const existing = await this.deps.store.getRun(this.deps.workspaceId, projectId, runId);
     if (!existing) return failure(404, "NOT_FOUND");
+    const findingIds = [...new Set(parsed.data.findingIds.map((id) => id.trim()).filter(Boolean))];
+    const instruction = parsed.data.instruction.trim();
+    const confirmed = parsed.data.confirmUncertainCallIds;
+
+    // Confirm: replay a matching resume identity before eligibility / remaining-rounds checks.
+    if (parsed.data.confirm) {
+      if (!context.idempotencyKey || context.idempotencyKey.length > 200) {
+        return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
+      }
+      if (findingIds.length === 0 && instruction.length === 0) return failure(400, "AUTO_CREATION_USER_REVISE_EMPTY");
+      const requestHash = hashAutoUserRevise(runId, { findingIds, instruction, confirmUncertainCallIds: confirmed });
+      const peeked = await this.deps.store.peekResume(this.deps.workspaceId, runId, context.idempotencyKey);
+      if (peeked) {
+        if (peeked.requestHash !== requestHash) return failure(409, "IDEMPOTENCY_KEY_REUSED");
+        const latest = await this.deps.store.getRun(this.deps.workspaceId, projectId, runId);
+        if (!latest) return failure(404, "NOT_FOUND");
+        return this.found(latest);
+      }
+    }
+
     const planned = planAutoUserRevise(existing, { findingIds: parsed.data.findingIds, instruction: parsed.data.instruction });
     if (!planned.ok) {
       if (planned.code === "empty") return failure(400, "AUTO_CREATION_USER_REVISE_EMPTY");
       if (planned.code === "unknown_finding") return failure(400, "AUTO_CREATION_USER_REVISE_UNKNOWN_FINDING");
+      if (planned.code === "too_many_episodes") return failure(400, "AUTO_CREATION_USER_REVISE_TOO_MANY_EPISODES");
       if (planned.code === "rounds_exhausted") return failure(409, "AUTO_CREATION_ROUNDS_EXHAUSTED");
       if (planned.code === "budget_exhausted") {
         return failure(409, "AUTO_CREATION_BUDGET_EXHAUSTED", { callsUsed: existing.run.callsUsed, callCap: existing.run.callCap });
@@ -365,7 +387,6 @@ export class AutoCreationService {
     const input = existing.run.input;
     const legacy = isLegacyDeepseekRun(input);
     const provider = providerConfigFor(this.deps.providers, input.providerKey);
-    const confirmed = parsed.data.confirmUncertainCallIds;
     const round = existing.run.revisionRoundsUsed + 1;
     const stageKeys = [
       ...planned.brief.episodeTargets.map((episodeNo) => `revise:${String(round)}:episode:${String(episodeNo)}`),
