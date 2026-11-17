@@ -131,11 +131,6 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   }, [client, read]);
 
   useEffect(() => {
-    // After story_update_conflict, placing scripts needs the same explicit ack as story_changed.
-    if (run?.storyUpdateConflict) setStoryChanged(true);
-  }, [run?.storyUpdateConflict]);
-
-  useEffect(() => {
     if (run?.state !== "running") return;
     const timer = setInterval(() => { void read(); }, AUTO_CREATION_POLL_MS);
     return () => clearInterval(timer);
@@ -206,6 +201,12 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   const rejected = run.stages.find((stage) => stage.state === "rejected" || stage.state === "unknown");
   const writing = run.state === "running" ? run.stages.find((stage) => stage.kind === "episode" && (stage.state === "submitted" || stage.state === "reserved")) : undefined;
   const writingEpisodeNo = writing ? autoStageEpisodeNo(writing.stageKey) : null;
+  // After story_update_conflict the new package and the saved/reviewed story are different versions: show write + ack.
+  // (Initial story_conflict keeps storySave=conflict too, but that path never saved this run's story — do not offer place.)
+  const storyUpdateConflict = run.storyUpdateConflict === true || run.errorCode === "story_update_conflict"
+    || (run.storySave === "conflict" && run.errorCode === "story_update_conflict");
+  const canOfferPlaceScripts = (run.storySave === "saved" || storyUpdateConflict) && run.state !== "running";
+  const needsStoryInconsistencyAck = storyChanged || storyUpdateConflict;
 
   function resume() {
     if (acting.current) return;
@@ -254,7 +255,11 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
           <ul className={autoStyles.list}>
             <li data-testid="auto-package-status">剧本包：{run.packageStatus === "ready" ? "已完成，可下载" : run.packageStatus === "in_progress" ? "进行中" : "未完成"}</li>
             <li data-testid="auto-quality">机器质量检查（内部参考，不是人工审核）：{run.quality === "passed" ? "通过" : run.quality === "needs_work" ? "待完善" : "未完成"}</li>
-            <li>人工审核：{run.storySave === "saved" ? "故事已存为「AI 自动生成草稿」，请在作品中由人审核" : run.storySave === "conflict" ? "作品已有故事，未覆盖" : "尚未保存"}</li>
+            <li data-testid="auto-human-review">人工审核：{storyUpdateConflict
+              ? "新剧本包与作品中已保存/已审核的故事不是同一版本（未覆盖作品故事）"
+              : run.storySave === "saved" ? "故事已存为「AI 自动生成草稿」，请在作品中由人审核"
+                : run.storySave === "conflict" ? "作品已有故事，未覆盖"
+                  : "尚未保存"}</li>
             <li data-testid="auto-video-status">视频成片：未开始。之后可以去生成配音、动态和成片。</li>
           </ul>
           {runError ? <p className={run.state === "completed" ? styles.warning : styles.error} role="status">{runError}</p> : null}
@@ -276,7 +281,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
               <a className={styles.secondary} href={client.packageUrl(projectId, run.runId, "json")} download data-testid="auto-download-json">下载结构化数据（JSON）</a>
             </>
           ) : null}
-          {run.storySave === "saved" ? <a className={styles.textLink} href={`/projects/${projectId}/create?step=story`}>去作品中人工审核故事</a> : null}
+          {canOfferPlaceScripts ? <a className={styles.textLink} href={`/projects/${projectId}/create?step=story`} data-testid="auto-review-story-link">去作品中人工审核故事</a> : null}
         </div>
 
         {autoCanUserRevise(run) || pendingUserRevise ? (
@@ -444,17 +449,25 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
             </button>
           </section>
         ) : null}
-        {run.storySave === "saved" && run.state !== "running" ? (
-          <p className={styles.helper}>
-            故事经人工审核通过后，可以把各集剧本一次写入作品：
-            <button className={styles.textLink} type="button" disabled={busy || (storyChanged && !acceptStoryChanged)}
-              onClick={() => void act(() => client.placeScripts(projectId, run.runId, storyChanged && acceptStoryChanged), "写入没有确认。")}>写入分集剧本草稿</button>
+        {canOfferPlaceScripts ? (
+          <p className={styles.helper} data-testid="auto-place-scripts">
+            {storyUpdateConflict
+              ? "新剧本包可下载，但与作品中已保存/已审核的故事不是同一版本。重新人工审核故事后，或明确确认不一致后，才可写入分集草稿："
+              : "故事经人工审核通过后，可以把各集剧本一次写入作品："}
+            <button className={styles.textLink} type="button" data-testid="auto-place-scripts-button"
+              disabled={busy || (needsStoryInconsistencyAck && !acceptStoryChanged)}
+              onClick={() => void act(
+                () => client.placeScripts(projectId, run.runId, needsStoryInconsistencyAck ? acceptStoryChanged : false),
+                "写入没有确认。",
+              )}>写入分集剧本草稿</button>
           </p>
         ) : null}
-        {storyChanged && run.storySave === "saved" ? (
+        {needsStoryInconsistencyAck && canOfferPlaceScripts ? (
           <label className={styles.check} data-testid="auto-accept-story-changed">
             <input type="checkbox" checked={acceptStoryChanged} onChange={(event) => setAcceptStoryChanged(event.target.checked)} />
-            审核通过的故事和生成剧本时用的故事不同（审核时改过）。我确认仍按 AI 生成的分集剧本写入草稿，之后再自行修改。
+            {storyUpdateConflict
+              ? "我确认新剧本包与作品中已保存/已审核的故事不是同一版本，仍按新包写入分集草稿，并自行对照处理不一致。"
+              : "审核通过的故事和生成剧本时用的故事不同（审核时改过）。我确认仍按 AI 生成的分集剧本写入草稿，之后再自行修改。"}
           </label>
         ) : null}
         {actionError ? <p className={styles.error} role="alert">{actionError}</p> : null}

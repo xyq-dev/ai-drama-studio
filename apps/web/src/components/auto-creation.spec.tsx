@@ -1195,6 +1195,42 @@ describe("AI 自动创作 run page", () => {
     await waitFor(() => expect(bodies).toEqual([{ acceptStoryChanged: false }, { acceptStoryChanged: true }]));
   });
 
+  it("after story_update_conflict shows write + ack, stays disabled until checked, then sends acceptStoryChanged", async () => {
+    const bodies: unknown[] = [];
+    const conflicted = run({
+      state: "completed",
+      quality: "passed",
+      errorCode: "story_update_conflict",
+      storySave: "conflict",
+      storyUpdateConflict: true,
+      packageStatus: "ready",
+      openIssues: [],
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/auto-runs/latest") || /\/auto-runs\/[0-9a-f-]+$/i.test(input)) return json({ run: conflicted });
+      if (input.endsWith("/scripts")) {
+        const body = JSON.parse(String(init?.body)) as { acceptStoryChanged: boolean };
+        bodies.push(body);
+        expect(body.acceptStoryChanged).toBe(true);
+        return json({ run: conflicted });
+      }
+      return json(options());
+    }));
+    render(<AutoCreationRun projectId={P1} />);
+    expect(await screen.findByTestId("auto-download-md")).toBeTruthy();
+    expect(screen.getByTestId("auto-human-review").textContent).toContain("不是同一版本");
+    expect(screen.getByTestId("auto-review-story-link").getAttribute("href")).toBe(`/projects/${P1}/create?step=story`);
+    const place = await screen.findByRole("button", { name: "写入分集剧本草稿" });
+    const confirm = await screen.findByTestId("auto-accept-story-changed");
+    expect(confirm.textContent).toContain("不是同一版本");
+    expect((place as HTMLButtonElement).disabled).toBe(true);
+    expect(bodies).toHaveLength(0);
+    fireEvent.click(confirm.querySelector("input")!);
+    expect((place as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(place);
+    await waitFor(() => expect(bodies).toEqual([{ acceptStoryChanged: true }]));
+  });
+
   it("result page quotes user revise cost before confirm and starts only after confirm", async () => {
     const posts: Array<{ url: string; body: unknown; key?: string | null }> = [];
     const passed = run({
