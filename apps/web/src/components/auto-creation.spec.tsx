@@ -1208,7 +1208,7 @@ describe("AI 自动创作 run page", () => {
       if (input.endsWith("/auto-runs/latest") || /\/auto-runs\/[0-9a-f-]+$/i.test(input)) return json({ run: passed });
       if (input.endsWith("/user-revise")) {
         const body = JSON.parse(String(init?.body)) as { confirm: boolean; findingIds: string[]; instruction: string };
-        posts.push({ url: input, body, key: init?.headers && (init.headers as Record<string, string>)["Idempotency-Key"] });
+        posts.push({ url: input, body, key: new Headers(init?.headers).get("Idempotency-Key") });
         if (!body.confirm) {
           return json({
             run: passed,
@@ -1235,5 +1235,86 @@ describe("AI 自动创作 run page", () => {
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1]!.body).toMatchObject({ confirm: true, findingIds: ["R2"], instruction: "并写清可见犹豫" });
     expect(posts[1]!.key).toBeTruthy();
+  });
+
+  it("a user-revise start whose answer was lost is replayed with its own key and body; a new key only after a confirmed result", async () => {
+    const posts: Array<{ key: string | null; body: unknown }> = [];
+    let latest = run({
+      state: "completed", quality: "passed", errorCode: null, revisionRoundsUsed: 0, callsUsed: 8, callCap: 12,
+      selectableFindings: [
+        { id: "R2", target: "outline", severity: "low", detail: "阻碍者动机应改为误以为争房产" },
+      ],
+    });
+    let lose = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/auto-runs/latest") || /\/auto-runs\/[0-9a-f-]+$/i.test(input)) return json({ run: latest });
+      if (input.endsWith("/user-revise")) {
+        const body = JSON.parse(String(init?.body)) as {
+          confirm: boolean; findingIds: string[]; instruction: string; confirmUncertainCallIds: string[];
+        };
+        const key = new Headers(init?.headers).get("Idempotency-Key");
+        posts.push({ key, body });
+        if (!body.confirm) {
+          return json({
+            run: latest,
+            quote: { callsNeeded: 2, roundsUsed: 0, roundsBudget: 2, roundsRemainingAfter: 1, callsUsed: 8, callCap: 12, callsRemainingAfter: 2, episodeTargets: [1], syncStory: true },
+          });
+        }
+        if (lose) {
+          lose = false;
+          throw new TypeError("network down");
+        }
+        latest = { ...latest, state: "running", revisionRoundsUsed: 1, quality: "pending" };
+        return json({ run: latest });
+      }
+      return json(options());
+    }));
+    render(<AutoCreationRun projectId={P1} />);
+    await screen.findByTestId("auto-user-revise");
+    fireEvent.click(screen.getByText(/R2/).closest("label")!.querySelector("input")!);
+    fireEvent.change(screen.getByTestId("auto-user-revise-instruction"), { target: { value: "并写清可见犹豫" } });
+    fireEvent.click(screen.getByTestId("auto-user-revise-preview"));
+    await screen.findByTestId("auto-user-revise-quote");
+    fireEvent.click(screen.getByTestId("auto-user-revise-confirm").querySelector("input")!);
+    fireEvent.click(screen.getByTestId("auto-user-revise-start"));
+    await waitFor(() => expect(posts.filter((item) => (item.body as { confirm: boolean }).confirm)).toHaveLength(1));
+    expect(await screen.findByTestId("auto-user-revise-pending")).toBeTruthy();
+    const firstConfirm = posts.find((item) => (item.body as { confirm: boolean }).confirm)!;
+    expect(firstConfirm.body).toMatchObject({
+      confirm: true, findingIds: ["R2"], instruction: "并写清可见犹豫", confirmUncertainCallIds: [],
+    });
+    expect(firstConfirm.key).toBeTruthy();
+    const retry = await screen.findByRole("button", { name: "重试上次改稿请求" });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    await waitFor(() => expect(posts.filter((item) => (item.body as { confirm: boolean }).confirm)).toHaveLength(2));
+    const secondConfirm = posts.filter((item) => (item.body as { confirm: boolean }).confirm)[1]!;
+    expect(secondConfirm).toEqual({
+      key: firstConfirm.key,
+      body: {
+        confirm: true, findingIds: ["R2"], instruction: "并写清可见犹豫", confirmUncertainCallIds: [],
+      },
+    });
+    await waitFor(() => expect(screen.queryByTestId("auto-user-revise-pending")).toBeNull());
+    expect(Object.keys(window.sessionStorage).some((key) => (window.sessionStorage.getItem(key) ?? "").includes(firstConfirm.key!))).toBe(false);
+    // After a confirmed result, a later revise mints a new identity (reload a completed run with leftover rounds).
+    latest = {
+      ...latest, state: "completed", quality: "passed", revisionRoundsUsed: 1, callsUsed: 10, errorCode: null,
+      selectableFindings: [{ id: "R2", target: "outline", severity: "low", detail: "阻碍者动机应改为误以为争房产" }],
+    };
+    cleanup();
+    render(<AutoCreationRun projectId={P1} />);
+    await screen.findByTestId("auto-user-revise");
+    fireEvent.click(screen.getByText(/R2/).closest("label")!.querySelector("input")!);
+    fireEvent.change(screen.getByTestId("auto-user-revise-instruction"), { target: { value: "再改一次动机" } });
+    fireEvent.click(screen.getByTestId("auto-user-revise-preview"));
+    await screen.findByTestId("auto-user-revise-quote");
+    fireEvent.click(screen.getByTestId("auto-user-revise-confirm").querySelector("input")!);
+    fireEvent.click(screen.getByRole("button", { name: "确认并开始改稿" }));
+    await waitFor(() => expect(posts.filter((item) => (item.body as { confirm: boolean }).confirm)).toHaveLength(3));
+    const thirdConfirm = posts.filter((item) => (item.body as { confirm: boolean }).confirm)[2]!;
+    expect(thirdConfirm.key).toBeTruthy();
+    expect(thirdConfirm.key).not.toBe(firstConfirm.key);
+    expect(thirdConfirm.body).toMatchObject({ confirm: true, findingIds: ["R2"], instruction: "再改一次动机" });
   });
 });

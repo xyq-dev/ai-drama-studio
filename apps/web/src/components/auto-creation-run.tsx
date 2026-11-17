@@ -28,9 +28,13 @@ import {
   autoOutputRefused,
   autoResearchRejectionDiagnosticOf,
   autoResumeRefused,
+  autoUserReviseRefused,
   clearPendingResume,
+  clearPendingUserRevise,
   readPendingResume,
+  readPendingUserRevise,
   savePendingResume,
+  savePendingUserRevise,
   autoHeadline,
   autoStageLabel,
   autoStageStateText,
@@ -39,6 +43,7 @@ import {
   stageOf,
   type AutoCreationRunView,
   type PendingAutoResume,
+  type PendingAutoUserRevise,
 } from "../lib/auto-creation-client";
 import { AutoEpisodeList } from "./auto-episode-list";
 import { AutoEpisodeStoryboards } from "./auto-episode-storyboards";
@@ -78,11 +83,14 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   const openedEpisodeList = useRef(false);
   // The resume whose answer has not arrived, for this work and run only (restored after a reload).
   const [pendingResume, setPendingResume] = useState<PendingAutoResume | null>(null);
+  // Confirmed user-revise start whose receipt never arrived (same identity until answered or refused).
+  const [pendingUserRevise, setPendingUserRevise] = useState<PendingAutoUserRevise | null>(null);
   const runId = run?.runId ?? null;
   const runState = run?.state ?? null;
 
   useEffect(() => {
     setPendingResume(runId ? readPendingResume(projectId, runId) : null);
+    setPendingUserRevise(runId ? readPendingUserRevise(projectId, runId) : null);
   }, [projectId, runId]);
 
   useEffect(() => {
@@ -92,6 +100,15 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
       setPendingResume(null);
     }
   }, [runState, pendingResume]);
+
+  useEffect(() => {
+    // Once the run is running again, a remembered unconfirmed start is moot (the server already took it, or a
+    // later poll will show the new round). Clear only when running so a still-completed unconfirmed start can retry.
+    if (runState === "running" && pendingUserRevise) {
+      clearPendingUserRevise(pendingUserRevise);
+      setPendingUserRevise(null);
+    }
+  }, [runState, pendingUserRevise]);
 
   const read = useCallback(async () => {
     if (reading.current) return;
@@ -257,7 +274,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
           {run.storySave === "saved" ? <a className={styles.textLink} href={`/projects/${projectId}/create?step=story`}>去作品中人工审核故事</a> : null}
         </div>
 
-        {autoCanUserRevise(run) ? (
+        {autoCanUserRevise(run) || pendingUserRevise ? (
           <section className={autoStyles.section} aria-labelledby="auto-user-revise-title" data-testid="auto-user-revise">
             <h2 id="auto-user-revise-title" className={styles.sectionTitle}>按意见再改一稿</h2>
             <p className={styles.helper}>
@@ -270,8 +287,8 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
                     <label className={styles.check}>
                       <input
                         type="checkbox"
-                        checked={selectedFindings.includes(item.id)}
-                        disabled={busy || run.state === "running"}
+                        checked={(pendingUserRevise?.findingIds ?? selectedFindings).includes(item.id)}
+                        disabled={busy || run.state === "running" || pendingUserRevise !== null}
                         onChange={(event) => {
                           setReviseQuote(null);
                           setReviseConfirm(false);
@@ -291,22 +308,30 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
               className={styles.input}
               data-testid="auto-user-revise-instruction"
               rows={3}
-              value={reviseInstruction}
-              disabled={busy || run.state === "running"}
+              value={pendingUserRevise?.instruction ?? reviseInstruction}
+              disabled={busy || run.state === "running" || pendingUserRevise !== null}
               onChange={(event) => {
                 setReviseQuote(null);
                 setReviseConfirm(false);
                 setReviseInstruction(event.target.value);
               }}
             />
-            {reviseQuote ? (
+            {pendingUserRevise ? (
+              <p className={styles.warning} data-testid="auto-user-revise-pending">
+                上一次改稿请求没有收到确认
+                {pendingUserRevise.confirmUncertainCallIds.length > 0
+                  ? `（确认重发的调用：${pendingUserRevise.confirmUncertainCallIds.join("、")}）` : ""}。
+                重试会原样发送同一个请求（同一个请求标识与同一组意见/说明），不会换成新的计费请求；收到结果后才能发起新的改稿。
+              </p>
+            ) : null}
+            {!pendingUserRevise && reviseQuote ? (
               <p className={styles.helper} data-testid="auto-user-revise-quote" role="status">
                 确认后将消耗 {reviseQuote.callsNeeded} 次调用；剩余修改轮次将变为 {reviseQuote.roundsRemainingAfter}；
                 调用余额约余 {reviseQuote.callsRemainingAfter} 次。未确认不会扣次或发模型。
               </p>
             ) : null}
             {needsToken ? <input className={styles.input} aria-label="操作者令牌" type="password" value={token} onChange={(event) => setToken(event.target.value)} /> : null}
-            {reviseQuote ? (
+            {!pendingUserRevise && reviseQuote ? (
               <label className={styles.check} data-testid="auto-user-revise-confirm">
                 <input type="checkbox" checked={reviseConfirm} disabled={busy} onChange={(event) => setReviseConfirm(event.target.checked)} />
                 我确认消耗上述次数并开始改稿
@@ -317,7 +342,8 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
                 className={styles.secondary}
                 type="button"
                 data-testid="auto-user-revise-preview"
-                disabled={busy || (selectedFindings.length === 0 && reviseInstruction.trim().length === 0)}
+                disabled={busy || pendingUserRevise !== null
+                  || (selectedFindings.length === 0 && reviseInstruction.trim().length === 0)}
                 onClick={() => void act(async () => {
                   const quoted = await client.userRevise(projectId, run.runId, {
                     findingIds: selectedFindings, instruction: reviseInstruction, confirm: false, token,
@@ -338,20 +364,50 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
                 className={styles.primary}
                 type="button"
                 data-testid="auto-user-revise-start"
-                disabled={busy || !reviseQuote || !reviseConfirm}
-                onClick={() => void act(async () => {
-                  const next = await client.userRevise(projectId, run.runId, {
-                    findingIds: selectedFindings, instruction: reviseInstruction, confirm: true, token,
-                    idempotencyKey: crypto.randomUUID(),
-                  });
-                  setReviseQuote(null);
-                  setReviseConfirm(false);
-                  setSelectedFindings([]);
-                  setReviseInstruction("");
-                  return next.run;
-                }, "没有确认是否已开始改稿。")}
+                disabled={busy || (!pendingUserRevise && (!reviseQuote || !reviseConfirm))}
+                onClick={() => {
+                  if (acting.current) return;
+                  const identity: PendingAutoUserRevise = pendingUserRevise ?? {
+                    version: 1,
+                    projectId,
+                    runId: run.runId,
+                    key: crypto.randomUUID(),
+                    findingIds: [...selectedFindings],
+                    instruction: reviseInstruction,
+                    confirmUncertainCallIds: [...uncertain],
+                  };
+                  if (!pendingUserRevise) {
+                    savePendingUserRevise(identity);
+                    setPendingUserRevise(identity);
+                  }
+                  void act(async () => {
+                    try {
+                      const next = await client.userRevise(projectId, identity.runId, {
+                        findingIds: identity.findingIds,
+                        instruction: identity.instruction,
+                        confirm: true,
+                        confirmUncertainCallIds: identity.confirmUncertainCallIds,
+                        token: needsToken ? token.trim() : "",
+                        idempotencyKey: identity.key,
+                      });
+                      clearPendingUserRevise(identity);
+                      setPendingUserRevise(null);
+                      setReviseQuote(null);
+                      setReviseConfirm(false);
+                      setSelectedFindings([]);
+                      setReviseInstruction("");
+                      return next.run;
+                    } catch (caught) {
+                      if (autoUserReviseRefused(caught)) {
+                        clearPendingUserRevise(identity);
+                        setPendingUserRevise(null);
+                      }
+                      throw caught;
+                    }
+                  }, "没有确认是否已开始改稿。重试会原样发送同一个请求（同一个请求标识和同一组意见/说明）。");
+                }}
               >
-                确认并开始改稿
+                {pendingUserRevise ? "重试上次改稿请求" : "确认并开始改稿"}
               </button>
             </div>
           </section>

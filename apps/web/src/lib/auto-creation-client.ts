@@ -424,6 +424,71 @@ export function autoCanUserRevise(run: AutoCreationRunView): boolean {
   return run.quality === "passed" && run.packageStatus === "ready";
 }
 
+/**
+ * One confirmed user-revise start whose answer never arrived: its key and exact body are one identity.
+ * A retry sends both unchanged; a new identity is made only after the server answered or definitely refused.
+ */
+export interface PendingAutoUserRevise {
+  version: 1;
+  projectId: string;
+  runId: string;
+  key: string;
+  findingIds: string[];
+  instruction: string;
+  confirmUncertainCallIds: string[];
+}
+
+const USER_REVISE_STORAGE_PREFIX = "auto-creation:user-revise:";
+
+function userReviseStorageKey(projectId: string, runId: string): string {
+  return `${USER_REVISE_STORAGE_PREFIX}${projectId}:${runId}`;
+}
+
+export function readPendingUserRevise(projectId: string, runId: string): PendingAutoUserRevise | null {
+  try {
+    const raw = window.sessionStorage.getItem(userReviseStorageKey(projectId, runId));
+    const parsed = raw ? JSON.parse(raw) as Partial<PendingAutoUserRevise> : null;
+    if (!parsed || parsed.version !== 1 || parsed.projectId !== projectId || parsed.runId !== runId
+      || typeof parsed.key !== "string" || typeof parsed.instruction !== "string"
+      || !Array.isArray(parsed.findingIds) || !parsed.findingIds.every((id) => typeof id === "string")
+      || !Array.isArray(parsed.confirmUncertainCallIds)
+      || !parsed.confirmUncertainCallIds.every((id) => typeof id === "string")) return null;
+    return parsed as PendingAutoUserRevise;
+  } catch {
+    return null;
+  }
+}
+
+/** Written and read back before the request that uses it; false means only this page remembers it. */
+export function savePendingUserRevise(pending: PendingAutoUserRevise): boolean {
+  try {
+    const text = JSON.stringify(pending);
+    window.sessionStorage.setItem(userReviseStorageKey(pending.projectId, pending.runId), text);
+    return window.sessionStorage.getItem(userReviseStorageKey(pending.projectId, pending.runId)) === text;
+  } catch {
+    return false;
+  }
+}
+
+export function clearPendingUserRevise(pending: PendingAutoUserRevise): void {
+  try {
+    if (readPendingUserRevise(pending.projectId, pending.runId)?.key === pending.key) {
+      window.sessionStorage.removeItem(userReviseStorageKey(pending.projectId, pending.runId));
+    }
+  } catch {
+    // Nothing to keep.
+  }
+}
+
+/**
+ * True when the server answered with a refusal it explains, so it did not apply this user revise.
+ * A lost answer, a gateway error or an unexplained failure is not a definite refuse.
+ */
+export function autoUserReviseRefused(error: unknown): boolean {
+  return error instanceof TitleWritingError && error.code !== "REQUEST_FAILED"
+    && (error.status < 500 || error.code.startsWith("AUTO_CREATION_"));
+}
+
 export function stageOf(run: AutoCreationRunView, stageKey: string): AutoCreationStageView | undefined {
   return run.stages.find((stage) => stage.stageKey === stageKey);
 }
