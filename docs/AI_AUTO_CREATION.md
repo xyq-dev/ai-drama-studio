@@ -33,9 +33,9 @@
 | `review:r` | 独立审阅提示与 10 项评价标准；问题须带**逐字原文证据**；程序检查结果并入 | 是 |
 | `revise:r:episode:k` | 只修指出的问题，记录逐条修改 | 是 |
 
-提示词版本 `ads.auto-creation.prompt.v15`、检查版本 `ads.auto-creation.checks.v16`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（checks.v16 见 3.18，分类序数不再误判为市场排名；checks.v15 见 3.17，创作流程与结构序数、排名拒收摘录；prompt.v11 / checks.v14 见 3.15，未标记的观看时长不再遮住其后的统计、观众自己作出的选择里的「是否」不算待验证，application 提示区分叙事时间与观众效果；checks.v13 见 3.14，验证计划里的流程序数不再当作排名，提示不变；checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但v15 之前冻结的短剧续跑时沿用 v14 提示和大纲契约。系列编剧借用的研究与选题仍使用 v14。
+提示词版本 `ads.auto-creation.prompt.v15`、检查版本 `ads.auto-creation.checks.v17`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（checks.v17 见 3.19，故事设定顶层额外字段可规范化保存；checks.v16 见 3.18，分类序数不再误判为市场排名；checks.v15 见 3.17，创作流程与结构序数、排名拒收摘录；prompt.v11 / checks.v14 见 3.15，未标记的观看时长不再遮住其后的统计、观众自己作出的选择里的「是否」不算待验证，application 提示区分叙事时间与观众效果；checks.v13 见 3.14，验证计划里的流程序数不再当作排名，提示不变；checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但v15 之前冻结的短剧续跑时沿用 v14 提示和大纲契约。系列编剧借用的研究与选题仍使用 v14。
 
-提示词 v12 为 `bible` 阶段列出 JSON 顶层字段，并提供带嵌套字段的完整示例。超出契约的字段仍整条拒收。顶层多出字段时，页面显示「JSON 顶层对象」。用户手动续跑时，从第一个未完成的阶段发送新请求。
+提示词 v12 为 `bible` 阶段列出 JSON 顶层字段，并提供带嵌套字段的完整示例。checks.v17 起：若唯一问题是契约不允许的额外字段，服务端去掉这些键后再次用严格 schema 与 `checkBible` 校验，通过则保存规范化结果，不另发模型修格式；缺字段、类型错误、`checkBible` 失败仍整份拒收。研究阶段多余字段语义不变（仍整份拒收、不静默删除）。顶层多出字段且无法规范化时，页面仍显示「JSON 顶层对象」。用户手动续跑时，从第一个未完成的阶段发送新请求。
 
 ## 3. 研究层：只说真正读到的
 
@@ -402,6 +402,24 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 | 不叠加第二类矛盾，；叠加第三种冲突；区分第2类冲突与第3种阻力 | 研究创作字段 | 通过 |
 | 第二个反转呈现角色人气的代价 | 本剧应用（v15 回归） | 通过 |
 | 该题材排名第一；榜单上位列第3；第三名 | 研究创作字段 | 拒收 ranking |
+
+### 3.19 故事设定顶层额外字段可规范化保存（2026-11-17，checks.v17；prompt.v15、research.v4 不变）
+
+**证据边界**：线上任务（项目 `8bee045a-…`，run `ded73174-…`，DeepSeek / deepseek-flash，checks.v16 / prompt.v15）的「故事、结局、人物与地点」连续两次被拒为 `invalid_output:unrecognized_keys`（位置：JSON 顶层对象）。被拒正文按设计没有保存，**多出的键名仍不知道**；提示已写明顶层键集合与 `story.ending` 固定位置。以下合成样本（含顶层 `ending`）用于回归，不还原线上原文。
+
+- **根因**：`autoBibleSchema` 为 `.strict()`；`validateAutoStageOutput` 在 bible 阶段把失败的 `safeParse` 直接写成 `zodFailure`。模型偶发在顶层多写字段（例如单独的 `ending`）时整份拒收，即使去掉多余键后其余内容合规。仅改提示无法解冻已在跑、仍用 prompt.v15 的任务。
+- **规则**：bible 阶段若 schema 失败的**全部** issue 都是 `unrecognized_keys`，则去掉这些键后再次 `safeParse`；通过后再走既有 `checkBible` 与审阅预算。通过则保存规范化后的 bible，**不**另发模型修格式。缺字段、类型错误、与多余键并存的其他 schema 问题、或 `checkBible` 失败，仍整份拒收。研究及其他严格阶段的多余字段语义不变（不静默删除）。费用未知仍不自动重发。
+- **诊断与隐私**：不把被拒正文或多余字段的**值**写入页面、调用记录或下载包。本轮不新增键名诊断持久化。
+- **版本与历史**：`AUTO_CREATION_CHECKS_VERSION` 升为 `ads.auto-creation.checks.v17`，历史类型保留 v1–v16。新任务冻结 v17；已冻结 prompt.v15 的任务在部署后手动续跑 bible 时走新检查逻辑，`executedWith` 记录实际检查版本。提示词与研究契约不改号。无 Migration。
+- **本轮不处理**：自动模型重试修格式、研究阶段多余字段放行、deploy / workflow / Migration、找回历史被拒正文。
+
+| 合成样本 | 适用范围 | 预期 |
+| --- | --- | --- |
+| 合法 bible 另加顶层 `ending` | bible | 去掉该键后保存；输出无顶层 `ending` |
+| 合法 bible 另加多个顶层多余键 | bible | 去掉后保存 |
+| 缺 title，或 title 类型错误（可同时带多余键） | bible | 仍拒收 |
+| 去掉多余键后仍超人物上限 | bible | `constraint_violation` |
+| 研究回答顶层多余键 | research | 仍整份拒收，不删除 |
 
 ## 4. 质量检查与有限修改
 

@@ -95,7 +95,7 @@ describe("research creative ordinals (synthetic cases on frozen 2×60)", () => {
   it("keeps the frozen historical version and reports the checks actually run", () => {
     const frozen = { ...input, checksVersion: "ads.auto-creation.checks.v14" } as const;
     const result = check("pattern", "计划在第一阶段收集反馈。", "limited", frozen);
-    expect(result.ok && (result.output as AutoResearch).serverRecord.executedWith?.checksVersion).toBe("ads.auto-creation.checks.v16");
+    expect(result.ok && (result.output as AutoResearch).serverRecord.executedWith?.checksVersion).toBe("ads.auto-creation.checks.v17");
     expect(frozen.checksVersion).toBe("ads.auto-creation.checks.v14");
   });
 });
