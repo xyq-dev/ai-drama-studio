@@ -765,6 +765,34 @@ function fieldPath(path: readonly PropertyKey[]): string {
   return path.map((part) => typeof part === "number" ? `[${String(part)}]` : `.${String(part)}`).join("").replace(/^\./u, "");
 }
 
+/** True when every schema issue is an unrecognized key (no missing fields, type errors, or other codes). */
+function onlyUnrecognizedKeys(error: { issues: ZodIssueLike[] }): boolean {
+  return error.issues.length > 0 && error.issues.every((issue) => issue.code === "unrecognized_keys" && (issue.keys?.length ?? 0) > 0);
+}
+
+/**
+ * Drop the keys named by unrecognized_keys issues. Used only for the bible stage when that is the sole schema problem:
+ * the stripped object is re-parsed with the strict schema. Key names may be inspected; values are never kept or logged.
+ */
+function stripUnrecognizedKeys(value: unknown, error: { issues: ZodIssueLike[] }): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  const root = structuredClone(value) as Record<string, unknown> | unknown[];
+  for (const issue of error.issues) {
+    if (issue.code !== "unrecognized_keys" || !issue.keys?.length) continue;
+    let target: unknown = root;
+    for (const part of issue.path) {
+      if (typeof target !== "object" || target === null) {
+        target = null;
+        break;
+      }
+      target = Array.isArray(target) ? target[part as number] : (target as Record<string, unknown>)[String(part)];
+    }
+    if (typeof target !== "object" || target === null || Array.isArray(target)) continue;
+    for (const key of issue.keys) delete (target as Record<string, unknown>)[key];
+  }
+  return root;
+}
+
 /**
  * What an uncited text is judged against: the numbers the run's frozen input puts in text (N 集, the target seconds
  * and minutes, the cast and location limits when set, only right next to their own word and never in a viewing,
@@ -1331,7 +1359,13 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
     return checked.ok && episodeMismatch ? { ok: false, code: "episode_mismatch" } : checked;
   }
   if (kind === "bible") {
-    const parsed = autoBibleSchema.safeParse(value);
+    // checks.v17: if the only schema problem is unrecognized keys, drop them and re-check. No model retry.
+    let candidate = value;
+    let parsed = autoBibleSchema.safeParse(candidate);
+    if (!parsed.success && onlyUnrecognizedKeys(parsed.error)) {
+      candidate = stripUnrecognizedKeys(candidate, parsed.error);
+      parsed = autoBibleSchema.safeParse(candidate);
+    }
     return parsed.success ? withinReviewBudget(stageKey, checkBible(input, parsed.data), input, context) : zodFailure(parsed.error);
   }
   if (kind === "outline") {

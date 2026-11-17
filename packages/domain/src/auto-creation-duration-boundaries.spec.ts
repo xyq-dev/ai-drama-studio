@@ -278,7 +278,7 @@ describe("C. the shared prompt", () => {
   it("names the versions it is sent with", () => {
     expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v15");
     expect(AUTO_CREATION_LEGACY_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v14");
-    expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v16");
+    expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v17");
     for (const [path, user] of prompts()) {
       expect(user).toContain(`提示版本：${path === "series" ? AUTO_CREATION_LEGACY_PROMPT_VERSION : AUTO_CREATION_PROMPT_VERSION}`);
     }

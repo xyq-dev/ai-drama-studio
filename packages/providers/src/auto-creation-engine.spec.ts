@@ -195,17 +195,17 @@ describe("automatic creation engine", () => {
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible"]);
   });
 
-  it("gives the model a valid bible example and resumes from the rejected bible only on request", async () => {
+  it("gives the model a valid bible example and strips unrecognized top-level keys without a model retry (checks.v17)", async () => {
     const deepseek = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
-    const { store, run, engine, seen, view } = await setup({
+    const { run, engine, seen, view } = await setup({
       providers: deepseek, providerKey: "deepseek", versions: { promptVersion: "ads.auto-creation.prompt.v11", checksVersion: "ads.auto-creation.checks.v14" },
       override: (stage, attempt) => stage === "bible" && attempt === 1
-        ? { status: 200, body: chatCompletionsAnswer({ ...fixtureAutoBible(), unexpectedModelField: "未保存的原始内容" }) }
+        ? { status: 200, body: chatCompletionsAnswer({ ...fixtureAutoBible(), unexpectedModelField: "未保存的原始内容", ending: "合成顶层结局" }) }
         : undefined,
     });
     await engine.drive(run.id);
     await engine.maintain();
-    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible"]);
+    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
     const prompt = seen[2]!.user;
     expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v14");
     expect(prompt).toContain("顶层只允许且必须包含这些键：schema、title、logline、synopsis、story、characters、relationships、locations、props");
@@ -214,24 +214,17 @@ describe("automatic creation engine", () => {
     expect(example).toBeDefined();
     expect(autoBibleSchema.safeParse(JSON.parse(example!)).success).toBe(true);
 
-    const stopped = await view();
-    expect(stopped).toMatchObject({ state: "partial", errorCode: "invalid_output", callsUsed: 3 });
-    expect(stopped.stages.find((stage) => stage.stageKey === "bible")).toMatchObject({
-      state: "rejected", errorCode: "invalid_output:unrecognized_keys", output: null,
-    });
-    expect(JSON.stringify(stopped)).not.toMatch(/unexpectedModelField|未保存的原始内容/u);
-    const savedStages = stopped.stages.slice(0, 3);
-    expect(savedStages.map((stage) => [stage.stageKey, stage.state])).toEqual([
-      ["sources", "completed"], ["research", "completed"], ["directions", "completed"],
-    ]);
-
-    expect((await store.prepareResume(WS, P1, run.id, { resumeKey: "r", requestHash: hashAutoResume(run.id, []), confirmedCallIds: [],
-      maxActiveRuns: 1, providerReady: true, blocked: false }, new Date(START).toISOString())).kind).toBe("ok");
-    await engine.drive(run.id);
-    const resumed = await view();
-    expect(resumed).toMatchObject({ state: "completed", storySave: "saved", callsUsed: 7, promptVersion: "ads.auto-creation.prompt.v11" });
-    expect(resumed.stages.slice(0, 3)).toEqual(savedStages);
-    expect(seen.slice(3).map((item) => item.stage)).toEqual(["bible", "outline", "episode:1", "review:1"]);
+    const completed = await view();
+    expect(completed).toMatchObject({ state: "completed", storySave: "saved", callsUsed: 6, promptVersion: "ads.auto-creation.prompt.v11" });
+    const bibleStage = completed.stages.find((stage) => stage.stageKey === "bible")!;
+    expect(bibleStage).toMatchObject({ state: "completed", errorCode: null });
+    expect(bibleStage.output).toEqual(fixtureAutoBible());
+    expect(bibleStage.output).not.toHaveProperty("unexpectedModelField");
+    expect(bibleStage.output).not.toHaveProperty("ending");
+    // Dropped key values are never retained on the run view or package.
+    expect(JSON.stringify(completed)).not.toMatch(/unexpectedModelField|未保存的原始内容|合成顶层结局/u);
+    // One bible call only: no automatic format-repair resend.
+    expect(seen.filter((item) => item.stage === "bible")).toHaveLength(1);
   });
 
   it("requires a string for bible production notes and resumes without rerunning research or selection", async () => {
@@ -361,7 +354,7 @@ describe("automatic creation engine", () => {
     expect(seen[0]!.stage).toBe("research");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v16" });
+    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v17" });
   });
 
   it.each([
@@ -428,7 +421,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application).toEqual({ pattern: "模型替身样例：用前两集建立主角与对手的冲突。", why: "模型替身样例：每两集推进一个阶段目标。" });
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v16" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v17" });
     const directions = result.stages.find((stage) => stage.stageKey === "directions")!.output as AutoDirections;
     expect(directions.candidates[0]!.difficultyNote).toBe("模型替身样例：本剧每两集设置一个小高潮。");
     expect(directions.unverified).toEqual([]);
@@ -484,7 +477,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划在第一轮试读后比较角色人气。");
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v16" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v17" });
     expect(seen[1]!.stage).toBe("directions");
   });
 
@@ -498,7 +491,7 @@ describe("automatic creation engine", () => {
     expect(result).toMatchObject({ state: "completed", storySave: "saved", errorCode: null, callsUsed: 8 });
     expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
-    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v16" });
+    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v17" });
   });
 
   it("refuses a ranking after a legal round with one send and stores only a bounded diagnostic outside the output and ledger", async () => {
@@ -548,7 +541,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application.why).toBe("模型替身样例：前3秒让主角陷入危机，待验证观众是否因此想继续看。");
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v16" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v17" });
   });
 
   it.each([
@@ -668,7 +661,7 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v16", researchSchema: "ads.auto-creation.research.v4",
+      executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v17", researchSchema: "ads.auto-creation.research.v4",
         answerContract: "limited" },
       marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },
@@ -739,7 +732,7 @@ describe("automatic creation engine", () => {
     expect(result).toMatchObject({ state: "completed", storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
     expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v14");
     expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v14", checksVersion: "ads.auto-creation.checks.v16", answerContract: "limited" } } });
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v14", checksVersion: "ads.auto-creation.checks.v17", answerContract: "limited" } } });
     expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
     expect(store.runs.find((item) => item.id === run.id)!.inputHash).toBe(hash);
   });
