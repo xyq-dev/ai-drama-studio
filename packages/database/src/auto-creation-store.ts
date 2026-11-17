@@ -694,8 +694,9 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
            FROM project p LEFT JOIN story_revision sr ON sr.id = p.approved_story_revision_id WHERE p.id = $1 AND p.workspace_id = $2`,
         [projectId, workspaceId])).rows[0];
       const approved = project?.approved_story_revision_id as string | null | undefined;
-      // After story_update_conflict the package and the saved/reviewed story are no longer the same version.
-      if (run.errorCode === "story_update_conflict" || run.storySave === "conflict") {
+      // Only story_update_conflict (revise finished; package ≠ saved/reviewed story) may place after explicit ack.
+      // Initial story_conflict (run never saved its story) stays on story_not_saved even with acceptStoryChanged.
+      if (run.errorCode === "story_update_conflict") {
         if (!options.acceptStoryChanged) return { kind: "story_changed" };
         if (!approved || project?.current_story_revision_id !== approved || project.review_status !== "APPROVED" || project.freshness_status !== "CURRENT") {
           return { kind: "story_not_approved" };

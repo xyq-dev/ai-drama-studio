@@ -973,8 +973,9 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (run.state === "running" || scripts.length !== run.input.episodeCount
       || !autoPackageComplete(this.stages.filter((stage) => stage.runId === runId))) return { kind: "not_ready" };
     const project = this.projects.get(projectId)!;
-    // After story_update_conflict the package and the saved/reviewed story are no longer the same version.
-    if (run.errorCode === "story_update_conflict" || run.storySave === "conflict") {
+    // Only story_update_conflict (revise finished; package ≠ saved/reviewed story) may place after explicit ack.
+    // Initial story_conflict (run never saved its story) stays on story_not_saved even with acceptStoryChanged.
+    if (run.errorCode === "story_update_conflict") {
       if (!options.acceptStoryChanged) return { kind: "story_changed" };
       // Explicit ack: still require an approved current story, then place against it.
       if (!project.approvedStoryId || project.currentStoryId !== project.approvedStoryId) return { kind: "story_not_approved" };

@@ -133,8 +133,10 @@ describe("user-revise OpenAI-strict JSON schema", () => {
     jsonShape(schema);
     const bibleSync = schema.properties!.bibleSync!;
     expect(bibleSync.anyOf?.some((item) => item.type === "null")).toBe(true);
-    const object = bibleSync.anyOf?.find((item) => item.type === "object")!;
-    expect([...object.required!].sort()).toEqual(["keyChoices", "logline", "obstacles", "synopsis"]);
+    const object = bibleSync.anyOf?.find((item) => item.type === "object");
+    expect(object).toBeDefined();
+    if (!object) return;
+    expect([...(object.required ?? [])].sort()).toEqual(["keyChoices", "logline", "obstacles", "synopsis"]);
     expect(object.additionalProperties).toBe(false);
   });
 });
