@@ -81,7 +81,8 @@ try {
   launch(["scripts/admin-models-browser-server.mjs"]);
   const webRequire = createRequire(resolve(root, "apps/web/package.json"));
   launch([webRequire.resolve("next/dist/bin/next"), "start", "--hostname", "127.0.0.1", "--port", "3820"], resolve(root, "apps/web"));
-  await waitHttp("http://127.0.0.1:3841/api/v1/auth/session", 401);
+  // Signed-out GET /auth/session is 200 with { authenticated: false, publicRegistrationEnabled } (registration flag).
+  await waitHttp("http://127.0.0.1:3841/api/v1/auth/session", 200);
   await waitHttp(`${origin}/admin/models`, 200);
   browser = await chromium.launch({ headless: true,
     ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : {}),

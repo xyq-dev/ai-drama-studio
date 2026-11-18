@@ -19,7 +19,7 @@ import type { RealMediaCapability, RealMediaQuote, SpeechBinding, SpeechCapabili
   SpeechPlanView, SpeechQuote, SpeechTakesPage, SpeechBatchInventory, SpeechBatchView, SpeechBatchConfirmation } from "@ai-drama/contracts";
 import { JobPersistenceService, MediaAssetStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
   RealMediaStore, RuntimeStore, TextChainService, createPostgresPool, runMigrations, type RealMediaExecution } from "@ai-drama/database";
-import { assertVoiceComposeSnapshot, VOICE_COMPOSE_JOB_SCHEMA } from "@ai-drama/domain";
+import { assertVoiceComposeSnapshot, LEGACY_OWNER_ACCOUNT_ID, LEGACY_OWNER_USERNAME, VOICE_COMPOSE_JOB_SCHEMA } from "@ai-drama/domain";
 import { assertComfyUiSourceImage, ComfyUiImageAdapter, comfyUiRequiredNodes, MediaSubmissionUnknownError, ServerRealMediaRuntime, type MediaProviderAdapter, type MediaProviderOutput } from "@ai-drama/providers";
 import { checkRealMediaAcceptanceEnv, verifyRealMediaAcceptanceDatabase } from "../../../../packages/database/src/real-media-acceptance-guard";
 import { RealMediaRecovery, runRealMediaJob, type RealMediaWorkerDependencies } from "../../../worker/src/runtime/real-media-job";
@@ -92,10 +92,32 @@ async function id(sql: string, values: unknown[] = []): Promise<string> {
 async function version(table: "project" | "episode" | "scene", entityId: string): Promise<number> {
   return Number((await q(`SELECT ${table === "project" ? "version" : "row_version"} AS value FROM ${table} WHERE id=$1`, [entityId])).rows[0]!.value);
 }
+/**
+ * One shared workspace for the suite, owned by the well-known LEGACY_OWNER_ACCOUNT_ID.
+ * Operator SITE_AUTH sessions filter by that id; a fresh workspace per test would get a random
+ * trigger-created legacy owner and then opaque-404 every media/job read.
+ */
+let sharedWorkspaceId: string | null = null;
+async function ensureLegacyWorkspace(): Promise<string> {
+  if (sharedWorkspaceId) return sharedWorkspaceId;
+  const workspaceId = await id("INSERT INTO workspace(name) VALUES('HTTP media acceptance') RETURNING id");
+  await q(
+    `INSERT INTO creator_account (id, workspace_id, username, password_hash, status)
+     VALUES ($1::uuid, $2::uuid, $3, 'legacy-not-a-password-hash', 'LEGACY')
+     ON CONFLICT (id) DO NOTHING`,
+    [LEGACY_OWNER_ACCOUNT_ID, workspaceId, LEGACY_OWNER_USERNAME],
+  );
+  sharedWorkspaceId = workspaceId;
+  return workspaceId;
+}
+
 /** Uses the existing speech acceptance's real text-chain creation/review gates, with an explicit narrator. */
 async function world() {
-  const workspaceId = await id("INSERT INTO workspace(name) VALUES('HTTP media acceptance') RETURNING id");
-  const projectId = await id("INSERT INTO project(workspace_id,title) VALUES($1,'HTTP media acceptance') RETURNING id", [workspaceId]);
+  const workspaceId = await ensureLegacyWorkspace();
+  const projectId = await id(
+    "INSERT INTO project(workspace_id,title,owner_account_id) VALUES($1,'HTTP media acceptance',$2::uuid) RETURNING id",
+    [workspaceId, LEGACY_OWNER_ACCOUNT_ID],
+  );
   const story = await chain.createStoryRevision({ workspaceId, projectId, content: { text: "Acceptance source" }, createdBy: actor, expectedVersion: 1 });
   const storyReview = await chain.transitionReview({ table: "story_revision", workspaceId, revisionId: story.revisionId,
     expectedVersion: story.rowVersion, expectedReviewVersion: 1, to: "IN_REVIEW" });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { presentStoredAttempt, type PresentedAttempt } from "@ai-drama/domain";
+import { LEGACY_OWNER_ACCOUNT_ID, presentStoredAttempt, type PresentedAttempt } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import { projectOwnerColumnReady, storeOwnerAccountFilter } from "./creator-access-context";
 import type { DatabasePool } from "./job-service";
@@ -882,6 +882,20 @@ export async function insertProject(
   }
   const owner = storeOwnerAccountFilter(input.ownerAccountId ?? undefined);
   const hasOwnerColumn = await projectOwnerColumnReadyIn(client);
+  // Operator SITE_AUTH stamps the well-known legacy owner. Workspaces provisioned after the migration
+  // (or acceptance DBs) may not have that row yet; ensure it before the FK insert. Creator stamps are
+  // already real ACTIVE rows. Auth-disabled creates omit owner and rely on the DB trigger.
+  if (hasOwnerColumn && owner === LEGACY_OWNER_ACCOUNT_ID) {
+    await client.query(
+      `INSERT INTO creator_account (id, workspace_id, username, password_hash, status)
+       SELECT $1::uuid, $2::uuid, 'legacy-owner', 'legacy-not-a-password-hash', 'LEGACY'
+        WHERE NOT EXISTS (SELECT 1 FROM creator_account WHERE id = $1::uuid)
+          AND NOT EXISTS (
+            SELECT 1 FROM creator_account WHERE workspace_id = $2::uuid AND username = 'legacy-owner'
+          )`,
+      [owner, input.workspaceId],
+    );
+  }
   const result = input.plan
     ? await client.query<QueryResultRow>(
       hasOwnerColumn && owner

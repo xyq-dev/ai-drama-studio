@@ -8,7 +8,8 @@ import styles from "./account-control.module.css";
  * The site-wide logout, shown in the shared header and the mobile drawer while a session exists (its readable CSRF
  * cookie is present; the session itself is HttpOnly and checked by the server on every request). Logging out revokes
  * the server session; every protected page and API then needs the login again. Shows nothing without a session, e.g.
- * when the site login is switched off.
+ * when the site login is switched off. No session request is made until a CSRF cookie is present (signed-out chrome
+ * and offline preview trees stay API-silent).
  */
 export function AccountControl({ variant }: { variant: "header" | "drawer" }) {
   const [signedIn, setSignedIn] = useState(false);
@@ -17,7 +18,10 @@ export function AccountControl({ variant }: { variant: "header" | "drawer" }) {
   const [state, setState] = useState<"idle" | "busy" | "failed">("idle");
 
   useEffect(() => {
-    setSignedIn(csrfToken() !== null);
+    const present = csrfToken() !== null;
+    setSignedIn(present);
+    // Only enrich the signed-in label when a session cookie exists; signed-out mounts must not hit /auth/session.
+    if (!present) return;
     void readSession(globalThis.fetch.bind(globalThis), { passive: true }).then((session) => {
       if (!session.authenticated) return;
       const name = session.username?.trim() || (session.role === "operator" ? "管理员" : "创作者");
