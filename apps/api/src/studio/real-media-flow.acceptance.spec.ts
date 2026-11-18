@@ -389,7 +389,7 @@ describe("ComfyUI storyboard flow against disposable PostgreSQL and a protocol f
     const listPath = `/projects/${w.projectId}/episodes/${w.episodeId}/scenes/${w.sceneId}/shots`;
     const storyboard = await h.http<{ items: { rowVersion: number }[] }>(listPath + "?view=storyboard");
     expect(storyboard).toMatchObject({
-      items: [{ storyboard: { ordinal: 1, action: "旁白", promptText: "Acceptance image prompt", characters: [],
+      items: [{ storyboard: { ordinal: 1, action: "旁白", promptText: "验收镜头：固定中景，旁白站在窗边回眸。", characters: [],
         candidates: expect.arrayContaining([{ id: editAsset.id, kind: "IMAGE", storageProvider: "s3", status: "ACTIVE" }]),
         selectedAssetId: editAsset.id } }],
     });
