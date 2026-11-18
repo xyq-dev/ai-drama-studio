@@ -234,7 +234,9 @@ async function harness(w: World, enabled = true, comfyFetch?: typeof fetch, site
     const csrf = (await login.json() as { csrfToken: string }).csrfToken;
     sessionHeaders = { cookie, origin: ORIGIN, "x-csrf-token": csrf, "content-type": "application/json" };
   }
-  const headers = (extra: Record<string, string> = {}) => ({ ...sessionHeaders, "idempotency-key": randomUUID(), ...extra });
+  const headers = (extra: Record<string, string> = {}): Record<string, string> => ({
+    ...sessionHeaders, "idempotency-key": randomUUID(), ...extra,
+  });
   async function http<T>(path: string, method = "GET", body?: unknown, extra: Record<string, string> = {}, status = 200): Promise<T> {
     const response = await local(path, { method, headers: headers(extra), ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     const result = await response.json() as T;
@@ -451,7 +453,9 @@ describe("guarded real HTTP + empty PostgreSQL media/speech orchestration", () =
   it("registers authenticated routes and refuses anonymous, missing-CSRF and disabled submit policy before any job", async () => {
     const w = await world(), h = await harness(w, false, undefined, true);
     expect((await h.local(`/projects/${w.projectId}/real-media/capabilities`)).status).toBe(401);
-    expect((await h.local(`${shotPath(w)}/quote`, { method: "POST", headers: { cookie: h.headers().cookie, origin: ORIGIN,
+    const cookie = h.headers().cookie;
+    expect(cookie).toBeTruthy();
+    expect((await h.local(`${shotPath(w)}/quote`, { method: "POST", headers: { cookie: cookie!, origin: ORIGIN,
       "content-type": "application/json" }, body: JSON.stringify({ capability: "image.generate" }) })).status).toBe(403);
     const capabilities = await h.http<{ available: boolean }>(`/projects/${w.projectId}/real-media/capabilities`);
     expect(capabilities.available).toBe(false);
