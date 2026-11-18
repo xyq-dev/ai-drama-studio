@@ -294,7 +294,7 @@ export class StudioRuntime implements OnModuleDestroy {
       },
       mediaVoiceProbe: async () => {
         const mediaEnv = env.REAL_MEDIA_ENV ?? {};
-        let configuration = null;
+        let configuration;
         try {
           const resolved = await realRuntime.minimaxTtsConfiguration();
           configuration = resolved && await mediaStore.configurationStillEnabled(resolved) ? resolved : null;
@@ -320,7 +320,7 @@ export class StudioRuntime implements OnModuleDestroy {
       },
       mediaVideoProbe: async () => {
         const mediaEnv = env.REAL_MEDIA_ENV ?? {};
-        let configuration = null;
+        let configuration;
         try {
           const resolved = await realRuntime.configurationFor("video.generate");
           configuration = resolved && await mediaStore.configurationStillEnabled(resolved) ? resolved : null;
