@@ -12,6 +12,7 @@ import {
   type AutoCreationQuality,
   type AutoCreationStore,
   type AutoResumePreparation,
+  type AutoUserRevisePreparation,
   type AutoRunBundle,
   type AutoRunCreation,
   type AutoRunRecord,
@@ -94,6 +95,11 @@ function toStage(row: Row): AutoStageRecord {
   // Rejected research uses this JSON column for a separate diagnostic envelope, never an output dependency.
   const rejectionDiagnostic = isAutoResearchRankingRejection(stageKey, state, errorCode)
     ? readAutoResearchRejectionDiagnostic(metadata?.[RESEARCH_REJECTION_DIAGNOSTIC_KEY]) : null;
+  // Completed stages keep upstream hashes; pending user-revise stages keep the brief under __adsUserRevise.
+  const dependsOn = rejectionDiagnostic ? null
+    : state === "completed" ? (metadata ?? null) as Record<string, string> | null
+      : metadata && typeof metadata.__adsUserRevise === "string" ? metadata as Record<string, string>
+        : null;
   return {
     runId: String(row.run_id),
     stageKey,
@@ -104,7 +110,7 @@ function toStage(row: Row): AutoStageRecord {
     // Written only after the output passed the domain checks.
     output: (row.output_json ?? null) as AutoStageOutput | null,
     outputHash: (row.output_hash as string | null) ?? null,
-    dependsOn: state === "completed" ? (metadata ?? null) as Record<string, string> | null : null,
+    dependsOn,
     ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}),
     scriptSave: (row.script_save as AutoStageRecord["scriptSave"]) ?? null,
     scriptRevisionId: (row.script_revision_id as string | null) ?? null,
@@ -364,6 +370,22 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       if (!found) return false;
       const runRow = await client.query<Row>("SELECT executor_id FROM auto_creation_run WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [found.run_id, workspaceId]);
       if (runRow.rows[0]?.executor_id !== executorId) return false;
+      if (patch.state === "completed" && patch.companionStages) {
+        for (const companion of patch.companionStages) {
+          const ready = await client.query(
+            "SELECT 1 FROM auto_creation_stage WHERE run_id = $1 AND stage_key = $2 AND state = 'completed'",
+            [found.run_id, companion.stageKey]);
+          if (ready.rowCount !== 1) return false;
+        }
+        // Synced bible/outline first: a later failure rolls back the transaction before the revise stage is completed.
+        for (const companion of patch.companionStages) {
+          const companionUpdated = await client.query(
+            `UPDATE auto_creation_stage SET output_json = $3::jsonb, output_hash = $4, updated_at = $5
+              WHERE run_id = $1 AND stage_key = $2 AND state = 'completed'`,
+            [found.run_id, companion.stageKey, JSON.stringify(companion.output), companion.outputHash, nowIso]);
+          if (companionUpdated.rowCount !== 1) throw new Error("auto-creation companion stage update failed");
+        }
+      }
       const updated = await client.query(
         `UPDATE auto_creation_call SET state = $3, error_code = $4, provider_request_id = $5, response_model = $6, usage_json = $7::jsonb, finished_at = $8
           WHERE id = $1 AND executor_id = $2 AND state = 'submitted'`,
@@ -380,6 +402,13 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       await client.query("UPDATE auto_creation_run SET updated_at = $2 WHERE id = $1", [found.run_id, nowIso]);
       return true;
     });
+  }
+
+  async peekResume(workspaceId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null> {
+    const row = (await this.query(
+      "SELECT request_hash FROM auto_creation_resume WHERE run_id = $1 AND workspace_id = $2 AND idempotency_key = $3",
+      [runId, workspaceId, resumeKey])).rows[0];
+    return row ? { requestHash: String(row.request_hash) } : null;
   }
 
   async saveStory(workspaceId: string, runId: string, executorId: string, storyText: string, quality: Exclude<AutoCreationQuality, "pending">, nowIso: string): Promise<"saved" | "conflict" | "lost"> {
@@ -432,6 +461,123 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
     return this.getRun(workspaceId, projectId, runId);
   }
 
+  async prepareUserRevise(workspaceId: string, projectId: string, runId: string, request: {
+    resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean;
+    findingIds: readonly string[]; instruction: string; stageKeys: readonly string[]; round: number; briefDepends: Record<string, string>;
+  }, nowIso: string): Promise<AutoUserRevisePreparation> {
+    return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [runLockKey(workspaceId)]);
+      const row = (await client.query<Row>(`SELECT ${RUN_COLUMNS} FROM auto_creation_run WHERE id = $1 AND workspace_id = $2 AND project_id = $3 FOR UPDATE`,
+        [runId, workspaceId, projectId])).rows[0];
+      if (!row) return { kind: "not_found" };
+      const run = toRun(row);
+      const previous = await client.query<Row>("SELECT request_hash FROM auto_creation_resume WHERE run_id = $1 AND idempotency_key = $2", [runId, request.resumeKey]);
+      if (previous.rows[0]) {
+        return String(previous.rows[0].request_hash) === request.requestHash ? { kind: "replayed", bundle: (await this.load(client, row))! } : { kind: "key_conflict" };
+      }
+      if (run.state === "running") return { kind: "active" };
+      const titles = await client.query<Row>("SELECT to_regclass('title_writing_run') IS NOT NULL AS present");
+      const titleProjects = titles.rows[0]?.present === true
+        ? (await client.query<Row>("SELECT project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId])).rows
+          .map((item) => String(item.project_id))
+        : [];
+      if (titleProjects.includes(projectId)) return { kind: "active" };
+      const others = await runningWritingRuns(client, workspaceId);
+      if (others.some((item) => (item.kind === "series" || item.kind === "vimax") && item.projectId === projectId)) return { kind: "active" };
+      if (titleProjects.length + others.length >= request.maxActiveRuns) return { kind: "active_cap" };
+      const stages = (await client.query<Row>(`SELECT ${STAGE_COLUMNS} FROM auto_creation_stage WHERE run_id = $1`, [runId])).rows.map(toStage);
+      if (!stages.every((stage) => stage.state === "completed")) return { kind: "not_eligible" };
+      if (run.revisionRoundsUsed !== request.round - 1) return { kind: "rounds_exhausted" };
+      if (run.callsUsed + request.stageKeys.length > run.callCap) return { kind: "budget_exhausted" };
+      if (!request.providerReady) return { kind: "provider_unconfigured" };
+      const calls = (await client.query<Row>("SELECT id, stage_key, attempt_no, state FROM auto_creation_call WHERE run_id = $1", [runId])).rows
+        .map((item) => ({ callId: String(item.id), stepKey: String(item.stage_key) as TitleWritingStepKey, attemptNo: Number(item.attempt_no), state: item.state as AutoCallRecord["state"] }));
+      const uncertain = currentUncertainCallIds(stages.map((stage) => ({ stepKey: stage.stageKey as TitleWritingStepKey, state: stage.state, attemptNo: stage.attemptNo })), calls);
+      const confirmed = [...request.confirmedCallIds].sort();
+      if (uncertain.length > 0 && confirmed.length === 0) return { kind: "needs_confirmation" };
+      if (uncertain.length !== confirmed.length || uncertain.some((id, index) => id !== confirmed[index])) return { kind: "stale_confirmation" };
+      await client.query(
+        `INSERT INTO auto_creation_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6)`, [runId, workspaceId, request.resumeKey, request.requestHash, JSON.stringify(confirmed), nowIso]);
+      const lastOrdinal = Math.max(0, ...stages.map((stage) => stage.ordinal));
+      let ordinal = lastOrdinal + 1;
+      for (const stageKey of request.stageKeys) {
+        const depends = stageKey.startsWith("revise:") ? request.briefDepends : null;
+        await client.query(
+          `INSERT INTO auto_creation_stage (run_id, workspace_id, stage_key, ordinal, state, attempt_no, depends_on_json, updated_at)
+           VALUES ($1, $2, $3, $4, 'pending', 0, $5::jsonb, $6)`,
+          [runId, workspaceId, stageKey, ordinal, depends === null ? null : JSON.stringify(depends), nowIso]);
+        ordinal += 1;
+      }
+      const updated = await client.query<Row>(
+        `UPDATE auto_creation_run SET state = 'running', error_code = NULL, cancel_requested_at = NULL, executor_id = NULL, lease_until = NULL,
+           revision_rounds_used = $2, quality = 'pending', updated_at = $3
+          WHERE id = $1 RETURNING ${RUN_COLUMNS}`, [runId, request.round, nowIso]);
+      return { kind: "ok", bundle: (await this.load(client, updated.rows[0]))! };
+    });
+  }
+
+  async replaceCompletedStageOutput(workspaceId: string, runId: string, executorId: string, stageKey: string, output: AutoStageOutput, outputHash: string, nowIso: string): Promise<boolean> {
+    return this.transaction(async (client) => {
+      if (!await this.ownedRun(client, workspaceId, runId, executorId, nowIso)) return false;
+      const updated = await client.query(
+        `UPDATE auto_creation_stage SET output_json = $3::jsonb, output_hash = $4, updated_at = $5
+          WHERE run_id = $1 AND stage_key = $2 AND state = 'completed'`,
+        [runId, stageKey, JSON.stringify(output), outputHash, nowIso]);
+      if (updated.rowCount !== 1) return false;
+      await client.query("UPDATE auto_creation_run SET updated_at = $2 WHERE id = $1", [runId, nowIso]);
+      return true;
+    });
+  }
+
+  async refreshStoryDraft(workspaceId: string, runId: string, executorId: string, storyText: string, quality: Exclude<AutoCreationQuality, "pending">, nowIso: string): Promise<"saved" | "conflict" | "lost" | "unchanged"> {
+    return this.transaction(async (client) => {
+      const run = await this.ownedRun(client, workspaceId, runId, executorId, nowIso);
+      if (!run) return "lost";
+      if (run.storySave !== "saved" || run.storyRevisionId === null) return "unchanged";
+      const project = await client.query<Row>(
+        "SELECT version, current_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+        [run.projectId, run.workspaceId]);
+      const projectRow = project.rows[0];
+      if (!projectRow || projectRow.current_story_revision_id === null) {
+        await client.query("UPDATE auto_creation_run SET quality = $3, updated_at = $2 WHERE id = $1", [runId, nowIso, quality]);
+        return "conflict";
+      }
+      const story = await client.query<Row>(
+        "SELECT id, review_status, created_by, content_json FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3",
+        [projectRow.current_story_revision_id, run.projectId, run.workspaceId]);
+      const storyRow = story.rows[0];
+      const stillOwnDraft = storyRow
+        && String(storyRow.id) === run.storyRevisionId
+        && String(storyRow.review_status) === "DRAFT"
+        && String(storyRow.created_by) === `auto-creation:${runId}`;
+      if (!stillOwnDraft) {
+        // Invalidate same-version claim so placeScripts cannot treat the new package as the old reviewed story.
+        await client.query(
+          "UPDATE auto_creation_run SET story_save = 'conflict', quality = $3, updated_at = $2 WHERE id = $1",
+          [runId, nowIso, quality]);
+        return "conflict";
+      }
+      const previousText = (storyRow.content_json as { text?: string } | null)?.text ?? null;
+      if (previousText === storyText) {
+        await client.query("UPDATE auto_creation_run SET quality = $3, updated_at = $2 WHERE id = $1", [runId, nowIso, quality]);
+        return "unchanged";
+      }
+      const created = await this.textChain.createStoryRevisionInTransaction(client, {
+        workspaceId: run.workspaceId,
+        projectId: run.projectId,
+        content: { text: storyText },
+        createdBy: `auto-creation:${runId}`,
+        expectedVersion: Number(projectRow.version),
+        traceId: `auto-creation:${runId}`,
+      });
+      await client.query(
+        "UPDATE auto_creation_run SET story_revision_id = $2, quality = $4, updated_at = $3 WHERE id = $1",
+        [runId, created.revisionId, nowIso, quality]);
+      return "saved";
+    });
+  }
+
   async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation> {
     return this.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [runLockKey(workspaceId)]);
@@ -476,7 +622,15 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       await client.query(
         `INSERT INTO auto_creation_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6)`, [runId, workspaceId, request.resumeKey, request.requestHash, JSON.stringify(confirmed), nowIso]);
-      await client.query("UPDATE auto_creation_stage SET state = 'pending', depends_on_json = NULL, updated_at = $2 WHERE run_id = $1 AND state IN ('unknown', 'rejected', 'canceled')",
+      // Keep __adsUserRevise brief so resumed user-revise stays on the multi-artifact path; clear other metadata.
+      await client.query(
+        `UPDATE auto_creation_stage SET state = 'pending', updated_at = $2,
+           depends_on_json = CASE
+             WHEN depends_on_json ? '__adsUserRevise'
+               THEN jsonb_build_object('__adsUserRevise', depends_on_json->'__adsUserRevise')
+             ELSE NULL
+           END
+         WHERE run_id = $1 AND state IN ('unknown', 'rejected', 'canceled')`,
         [runId, nowIso]);
       const updated = await client.query<Row>(
         `UPDATE auto_creation_run SET state = 'running', error_code = NULL, cancel_requested_at = NULL, executor_id = NULL, lease_until = NULL, updated_at = $2
@@ -532,10 +686,6 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
         `SELECT count(*) FILTER (WHERE state <> 'completed')::int AS open, count(*) FILTER (WHERE stage_key LIKE 'review:%')::int AS reviews
            FROM auto_creation_stage WHERE run_id = $1`, [runId]);
       if (Number(unfinished.rows[0]?.open ?? 1) !== 0 || Number(unfinished.rows[0]?.reviews ?? 0) === 0) return { kind: "not_ready" };
-      // The run's own story must have been saved into this work; accepting a later edit never stands in for that story.
-      if (run.storySave !== "saved" || run.storyRevisionId === null) return { kind: "story_not_saved" };
-      const own = await client.query("SELECT 1 FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3", [run.storyRevisionId, projectId, workspaceId]);
-      if (!own.rows[0]) return { kind: "story_not_saved" };
       // Project → episode, the order of the script editor's save.
       const locked = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
       if (!locked.rows[0]) return { kind: "not_found" };
@@ -544,10 +694,23 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
            FROM project p LEFT JOIN story_revision sr ON sr.id = p.approved_story_revision_id WHERE p.id = $1 AND p.workspace_id = $2`,
         [projectId, workspaceId])).rows[0];
       const approved = project?.approved_story_revision_id as string | null | undefined;
-      if (!approved || project?.current_story_revision_id !== approved || project.review_status !== "APPROVED" || project.freshness_status !== "CURRENT") {
-        return { kind: "story_not_approved" };
+      // Only story_update_conflict (revise finished; package ≠ saved/reviewed story) may place after explicit ack.
+      // Initial story_conflict (run never saved its story) stays on story_not_saved even with acceptStoryChanged.
+      if (run.errorCode === "story_update_conflict") {
+        if (!options.acceptStoryChanged) return { kind: "story_changed" };
+        if (!approved || project?.current_story_revision_id !== approved || project.review_status !== "APPROVED" || project.freshness_status !== "CURRENT") {
+          return { kind: "story_not_approved" };
+        }
+      } else {
+        // The run's own story must have been saved into this work; accepting a later edit never stands in for that story.
+        if (run.storySave !== "saved" || run.storyRevisionId === null) return { kind: "story_not_saved" };
+        const own = await client.query("SELECT 1 FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3", [run.storyRevisionId, projectId, workspaceId]);
+        if (!own.rows[0]) return { kind: "story_not_saved" };
+        if (!approved || project?.current_story_revision_id !== approved || project.review_status !== "APPROVED" || project.freshness_status !== "CURRENT") {
+          return { kind: "story_not_approved" };
+        }
+        if (approved !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };
       }
-      if (approved !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };
       const episodes = await client.query<Row>(
         "SELECT id, episode_no, row_version, current_script_revision_id FROM episode WHERE project_id = $1 AND workspace_id = $2 ORDER BY episode_no FOR UPDATE",
         [projectId, workspaceId]);

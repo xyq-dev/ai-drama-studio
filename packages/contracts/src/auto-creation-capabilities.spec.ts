@@ -123,6 +123,24 @@ describe("research v4: one mode builds the provider schema and the zod check", (
   });
 });
 
+describe("user-revise OpenAI-strict JSON schema", () => {
+  it("requires bibleSync (nullable) and nested bibleSync object keys for strict: true", () => {
+    const sent = autoCreationJsonSchema("revise", 1, null, null, undefined, false, true);
+    expect(sent.name).toBe("auto_user_revision");
+    const schema = sent.schema as Json;
+    expect(schema.required).toEqual(expect.arrayContaining(["changes", "outline", "bibleSync"]));
+    expect([...schema.required!].sort()).toEqual(Object.keys(schema.properties!).sort());
+    jsonShape(schema);
+    const bibleSync = schema.properties!.bibleSync!;
+    expect(bibleSync.anyOf?.some((item) => item.type === "null")).toBe(true);
+    const object = bibleSync.anyOf?.find((item) => item.type === "object");
+    expect(object).toBeDefined();
+    if (!object) return;
+    expect([...(object.required ?? [])].sort()).toEqual(["keyChoices", "logline", "obstacles", "synopsis"]);
+    expect(object.additionalProperties).toBe(false);
+  });
+});
+
 describe("the model answer of prompt v9 is apart from the stored research v4", () => {
   const answer = { ...limited, schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, contentStructure: [
     { referenceId: "R-0a1b2c3d4e", application: { pattern: "计划用两次反转推动主角主动选择。", why: "创作设计。" } },

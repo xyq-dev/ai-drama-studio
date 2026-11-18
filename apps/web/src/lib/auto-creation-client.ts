@@ -111,6 +111,44 @@ export class AutoCreationClient {
     return run;
   }
 
+  /** Quote (confirm=false) or start (confirm=true) a user-initiated revise from the result page. */
+  async userRevise(projectId: string, runId: string, options: {
+    findingIds: readonly string[];
+    instruction: string;
+    confirm: boolean;
+    confirmUncertainCallIds?: readonly string[];
+    token: string;
+    idempotencyKey?: string;
+  }): Promise<{ run: AutoCreationRunView; quote?: {
+    callsNeeded: number; roundsRemainingAfter: number; callsRemainingAfter: number; episodeTargets: number[];
+  } }> {
+    const headers: Record<string, string> = {
+      Accept: "application/json", "Content-Type": "application/json", ...operatorHeader(options.token),
+    };
+    if (options.confirm) {
+      if (!options.idempotencyKey) throw new TitleWritingError(400, "VALIDATION_ERROR", "缺少请求标识", null);
+      headers["Idempotency-Key"] = options.idempotencyKey;
+    }
+    const result = await this.call<{ run: AutoCreationRunView; quote?: {
+      callsNeeded: number; roundsRemainingAfter: number; callsRemainingAfter: number; episodeTargets: number[];
+    } }>(`/projects/${projectId}/auto-runs/${runId}/user-revise`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        findingIds: options.findingIds,
+        instruction: options.instruction,
+        confirm: options.confirm,
+        confirmUncertainCallIds: options.confirmUncertainCallIds ?? [],
+      }),
+    });
+    if (options.confirm) {
+      const run = autoStartReceiptRun(result.body, projectId);
+      if (!run || run.runId !== runId) throw new TitleWritingUnconfirmedError(result.status);
+      return { run };
+    }
+    return result.body;
+  }
+
   async placeScripts(projectId: string, runId: string, acceptStoryChanged: boolean): Promise<AutoCreationRunView> {
     return (await this.call<{ run: AutoCreationRunView }>(`/projects/${projectId}/auto-runs/${runId}/scripts`, {
       method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ acceptStoryChanged }),
@@ -212,6 +250,7 @@ const ERRORS: Record<string, string> = {
   revision_rounds_exhausted: "已用完允许的修改轮次，仍有问题未解决，标记为「待完善」。",
   revision_budget_exhausted: "剩余调用预算不够完成一整轮修改，没有开始修改，标记为「待完善」。",
   unrevisable_issues: "剩余问题出在故事设定或大纲上，定向修改单集无法解决，标记为「待完善」。",
+  story_update_conflict: "改稿后的新剧本包可下载；作品中的故事已被人改过或已审核，没有覆盖，请自行对照新包。",
   AUTO_CREATION_DAILY_CAP: "最近 24 小时的调用次数已达管理员上限，在发送前停止，已完成的内容保留。",
   AUTO_CREATION_RUN_CAP: "这次创作的调用预算已用完，在发送前停止。",
   canceled_before_send: "停止请求先到达，这一步没有发出。",
@@ -372,6 +411,82 @@ export function autoCanResume(run: AutoCreationRunView): boolean {
   if (autoRunSettledForGood(run, run.stages)) return false;
   // The server found the next request cannot be built (or a frozen page read is off): a resume would be refused.
   return (run.resumeBlock ?? null) === null;
+}
+
+/** True when the result page may offer a user-initiated revise (leftover rounds and call budget after pass/completion). */
+export function autoCanUserRevise(run: AutoCreationRunView): boolean {
+  if (run.state === "running") return false;
+  if (run.resumeBlock === "story_too_large") return false;
+  const roundsLeft = run.budget.revisionRounds - run.revisionRoundsUsed;
+  if (roundsLeft <= 0) return false;
+  if (run.callsUsed + 2 > run.callCap) return false;
+  if (run.state === "completed") return true;
+  return run.quality === "passed" && run.packageStatus === "ready";
+}
+
+/**
+ * One confirmed user-revise start whose answer never arrived: its key and exact body are one identity.
+ * A retry sends both unchanged; a new identity is made only after the server answered or definitely refused.
+ */
+export interface PendingAutoUserRevise {
+  version: 1;
+  projectId: string;
+  runId: string;
+  key: string;
+  findingIds: string[];
+  instruction: string;
+  confirmUncertainCallIds: string[];
+}
+
+const USER_REVISE_STORAGE_PREFIX = "auto-creation:user-revise:";
+
+function userReviseStorageKey(projectId: string, runId: string): string {
+  return `${USER_REVISE_STORAGE_PREFIX}${projectId}:${runId}`;
+}
+
+export function readPendingUserRevise(projectId: string, runId: string): PendingAutoUserRevise | null {
+  try {
+    const raw = window.sessionStorage.getItem(userReviseStorageKey(projectId, runId));
+    const parsed = raw ? JSON.parse(raw) as Partial<PendingAutoUserRevise> : null;
+    if (!parsed || parsed.version !== 1 || parsed.projectId !== projectId || parsed.runId !== runId
+      || typeof parsed.key !== "string" || typeof parsed.instruction !== "string"
+      || !Array.isArray(parsed.findingIds) || !parsed.findingIds.every((id) => typeof id === "string")
+      || !Array.isArray(parsed.confirmUncertainCallIds)
+      || !parsed.confirmUncertainCallIds.every((id) => typeof id === "string")) return null;
+    return parsed as PendingAutoUserRevise;
+  } catch {
+    return null;
+  }
+}
+
+/** Written and read back before the request that uses it; false means only this page remembers it. */
+export function savePendingUserRevise(pending: PendingAutoUserRevise): boolean {
+  try {
+    const text = JSON.stringify(pending);
+    window.sessionStorage.setItem(userReviseStorageKey(pending.projectId, pending.runId), text);
+    return window.sessionStorage.getItem(userReviseStorageKey(pending.projectId, pending.runId)) === text;
+  } catch {
+    return false;
+  }
+}
+
+export function clearPendingUserRevise(pending: PendingAutoUserRevise): void {
+  try {
+    if (readPendingUserRevise(pending.projectId, pending.runId)?.key === pending.key) {
+      window.sessionStorage.removeItem(userReviseStorageKey(pending.projectId, pending.runId));
+    }
+  } catch {
+    // Nothing to keep.
+  }
+}
+
+/**
+ * True when the server answered with a refusal it explains, so it did not apply this user revise.
+ * A lost answer, a gateway error or an unexplained failure is not a definite refuse.
+ */
+export function autoUserReviseRefused(error: unknown): boolean {
+  return error instanceof TitleWritingError && error.code !== "REQUEST_FAILED"
+    && (error.status < 500 || error.code.startsWith("AUTO_CREATION_"));
 }
 
 export function stageOf(run: AutoCreationRunView, stageKey: string): AutoCreationStageView | undefined {

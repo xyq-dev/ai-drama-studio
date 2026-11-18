@@ -134,6 +134,7 @@ export {
   currentEpisodeVersions,
   hashAutoCreationInput,
   hashAutoResume,
+  hashAutoUserRevise,
   newAutoRun,
   type AutoCreationEngineDeps,
 } from "./auto-creation-engine";

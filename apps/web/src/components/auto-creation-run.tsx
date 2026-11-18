@@ -23,13 +23,18 @@ import {
   AUTO_REVIEW_DIMENSION_LABELS,
   AutoCreationClient,
   autoCanResume,
+  autoCanUserRevise,
   autoErrorText,
   autoOutputRefused,
   autoResearchRejectionDiagnosticOf,
   autoResumeRefused,
+  autoUserReviseRefused,
   clearPendingResume,
+  clearPendingUserRevise,
   readPendingResume,
+  readPendingUserRevise,
   savePendingResume,
+  savePendingUserRevise,
   autoHeadline,
   autoStageLabel,
   autoStageStateText,
@@ -38,6 +43,7 @@ import {
   stageOf,
   type AutoCreationRunView,
   type PendingAutoResume,
+  type PendingAutoUserRevise,
 } from "../lib/auto-creation-client";
 import { AutoEpisodeList } from "./auto-episode-list";
 import { AutoEpisodeStoryboards } from "./auto-episode-storyboards";
@@ -66,16 +72,25 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   const [acceptStoryChanged, setAcceptStoryChanged] = useState(false);
   const [needsToken, setNeedsToken] = useState(false);
   const [token, setToken] = useState("");
+  const [selectedFindings, setSelectedFindings] = useState<string[]>([]);
+  const [reviseInstruction, setReviseInstruction] = useState("");
+  const [reviseQuote, setReviseQuote] = useState<{
+    callsNeeded: number; roundsRemainingAfter: number; callsRemainingAfter: number;
+  } | null>(null);
+  const [reviseConfirm, setReviseConfirm] = useState(false);
   const reading = useRef(false);
   const acting = useRef(false);
   const openedEpisodeList = useRef(false);
   // The resume whose answer has not arrived, for this work and run only (restored after a reload).
   const [pendingResume, setPendingResume] = useState<PendingAutoResume | null>(null);
+  // Confirmed user-revise start whose receipt never arrived (same identity until answered or refused).
+  const [pendingUserRevise, setPendingUserRevise] = useState<PendingAutoUserRevise | null>(null);
   const runId = run?.runId ?? null;
   const runState = run?.state ?? null;
 
   useEffect(() => {
     setPendingResume(runId ? readPendingResume(projectId, runId) : null);
+    setPendingUserRevise(runId ? readPendingUserRevise(projectId, runId) : null);
   }, [projectId, runId]);
 
   useEffect(() => {
@@ -85,6 +100,15 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
       setPendingResume(null);
     }
   }, [runState, pendingResume]);
+
+  useEffect(() => {
+    // Once the run is running again, a remembered unconfirmed start is moot (the server already took it, or a
+    // later poll will show the new round). Clear only when running so a still-completed unconfirmed start can retry.
+    if (runState === "running" && pendingUserRevise) {
+      clearPendingUserRevise(pendingUserRevise);
+      setPendingUserRevise(null);
+    }
+  }, [runState, pendingUserRevise]);
 
   const read = useCallback(async () => {
     if (reading.current) return;
@@ -177,6 +201,12 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   const rejected = run.stages.find((stage) => stage.state === "rejected" || stage.state === "unknown");
   const writing = run.state === "running" ? run.stages.find((stage) => stage.kind === "episode" && (stage.state === "submitted" || stage.state === "reserved")) : undefined;
   const writingEpisodeNo = writing ? autoStageEpisodeNo(writing.stageKey) : null;
+  // After story_update_conflict the new package and the saved/reviewed story are different versions: show write + ack.
+  // (Initial story_conflict keeps storySave=conflict too, but that path never saved this run's story — do not offer place.)
+  const storyUpdateConflict = run.storyUpdateConflict === true || run.errorCode === "story_update_conflict"
+    || (run.storySave === "conflict" && run.errorCode === "story_update_conflict");
+  const canOfferPlaceScripts = (run.storySave === "saved" || storyUpdateConflict) && run.state !== "running";
+  const needsStoryInconsistencyAck = storyChanged || storyUpdateConflict;
 
   function resume() {
     if (acting.current) return;
@@ -225,7 +255,11 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
           <ul className={autoStyles.list}>
             <li data-testid="auto-package-status">剧本包：{run.packageStatus === "ready" ? "已完成，可下载" : run.packageStatus === "in_progress" ? "进行中" : "未完成"}</li>
             <li data-testid="auto-quality">机器质量检查（内部参考，不是人工审核）：{run.quality === "passed" ? "通过" : run.quality === "needs_work" ? "待完善" : "未完成"}</li>
-            <li>人工审核：{run.storySave === "saved" ? "故事已存为「AI 自动生成草稿」，请在作品中由人审核" : run.storySave === "conflict" ? "作品已有故事，未覆盖" : "尚未保存"}</li>
+            <li data-testid="auto-human-review">人工审核：{storyUpdateConflict
+              ? "新剧本包与作品中已保存/已审核的故事不是同一版本（未覆盖作品故事）"
+              : run.storySave === "saved" ? "故事已存为「AI 自动生成草稿」，请在作品中由人审核"
+                : run.storySave === "conflict" ? "作品已有故事，未覆盖"
+                  : "尚未保存"}</li>
             <li data-testid="auto-video-status">视频成片：未开始。之后可以去生成配音、动态和成片。</li>
           </ul>
           {runError ? <p className={run.state === "completed" ? styles.warning : styles.error} role="status">{runError}</p> : null}
@@ -247,8 +281,147 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
               <a className={styles.secondary} href={client.packageUrl(projectId, run.runId, "json")} download data-testid="auto-download-json">下载结构化数据（JSON）</a>
             </>
           ) : null}
-          {run.storySave === "saved" ? <a className={styles.textLink} href={`/projects/${projectId}/create?step=story`}>去作品中人工审核故事</a> : null}
+          {canOfferPlaceScripts ? <a className={styles.textLink} href={`/projects/${projectId}/create?step=story`} data-testid="auto-review-story-link">去作品中人工审核故事</a> : null}
         </div>
+
+        {autoCanUserRevise(run) || pendingUserRevise ? (
+          <section className={autoStyles.section} aria-labelledby="auto-user-revise-title" data-testid="auto-user-revise">
+            <h2 id="auto-user-revise-title" className={styles.sectionTitle}>按意见再改一稿</h2>
+            <p className={styles.helper}>
+              机器检查通过后仍可占用剩余修改轮次。可勾选审阅意见、写下自己的说明，或两者一起；改完仍是 AI 草稿，不会自动人工审核或写入分集。
+            </p>
+            {(run.selectableFindings ?? []).length > 0 ? (
+              <ul className={autoStyles.list} data-testid="auto-user-revise-findings">
+                {(run.selectableFindings ?? []).map((item) => (
+                  <li key={item.id}>
+                    <label className={styles.check}>
+                      <input
+                        type="checkbox"
+                        checked={(pendingUserRevise?.findingIds ?? selectedFindings).includes(item.id)}
+                        disabled={busy || run.state === "running" || pendingUserRevise !== null}
+                        onChange={(event) => {
+                          setReviseQuote(null);
+                          setReviseConfirm(false);
+                          setSelectedFindings((prev) => event.target.checked
+                            ? [...prev, item.id] : prev.filter((id) => id !== item.id));
+                        }}
+                      />
+                      {item.id}（{item.target}·{item.severity}）：{item.detail}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className={styles.helper}>本次没有列出可选意见，仍可只写修改说明。</p>}
+            <label className={styles.label} htmlFor="auto-user-revise-instruction">你的修改说明（可选）</label>
+            <textarea
+              id="auto-user-revise-instruction"
+              className={styles.input}
+              data-testid="auto-user-revise-instruction"
+              rows={3}
+              value={pendingUserRevise?.instruction ?? reviseInstruction}
+              disabled={busy || run.state === "running" || pendingUserRevise !== null}
+              onChange={(event) => {
+                setReviseQuote(null);
+                setReviseConfirm(false);
+                setReviseInstruction(event.target.value);
+              }}
+            />
+            {pendingUserRevise ? (
+              <p className={styles.warning} data-testid="auto-user-revise-pending">
+                上一次改稿请求没有收到确认
+                {pendingUserRevise.confirmUncertainCallIds.length > 0
+                  ? `（确认重发的调用：${pendingUserRevise.confirmUncertainCallIds.join("、")}）` : ""}。
+                重试会原样发送同一个请求（同一个请求标识与同一组意见/说明），不会换成新的计费请求；收到结果后才能发起新的改稿。
+              </p>
+            ) : null}
+            {!pendingUserRevise && reviseQuote ? (
+              <p className={styles.helper} data-testid="auto-user-revise-quote" role="status">
+                确认后将消耗 {reviseQuote.callsNeeded} 次调用；剩余修改轮次将变为 {reviseQuote.roundsRemainingAfter}；
+                调用余额约余 {reviseQuote.callsRemainingAfter} 次。未确认不会扣次或发模型。
+              </p>
+            ) : null}
+            {needsToken ? <input className={styles.input} aria-label="操作者令牌" type="password" value={token} onChange={(event) => setToken(event.target.value)} /> : null}
+            {!pendingUserRevise && reviseQuote ? (
+              <label className={styles.check} data-testid="auto-user-revise-confirm">
+                <input type="checkbox" checked={reviseConfirm} disabled={busy} onChange={(event) => setReviseConfirm(event.target.checked)} />
+                我确认消耗上述次数并开始改稿
+              </label>
+            ) : null}
+            <div className={styles.actions}>
+              <button
+                className={styles.secondary}
+                type="button"
+                data-testid="auto-user-revise-preview"
+                disabled={busy || pendingUserRevise !== null
+                  || (selectedFindings.length === 0 && reviseInstruction.trim().length === 0)}
+                onClick={() => void act(async () => {
+                  const quoted = await client.userRevise(projectId, run.runId, {
+                    findingIds: selectedFindings, instruction: reviseInstruction, confirm: false, token,
+                  });
+                  setRun(quoted.run);
+                  setReviseQuote(quoted.quote ? {
+                    callsNeeded: quoted.quote.callsNeeded,
+                    roundsRemainingAfter: quoted.quote.roundsRemainingAfter,
+                    callsRemainingAfter: quoted.quote.callsRemainingAfter,
+                  } : null);
+                  setReviseConfirm(false);
+                  return quoted.run;
+                }, "没有确认报价请求。")}
+              >
+                查看将消耗的次数
+              </button>
+              <button
+                className={styles.primary}
+                type="button"
+                data-testid="auto-user-revise-start"
+                disabled={busy || (!pendingUserRevise && (!reviseQuote || !reviseConfirm))}
+                onClick={() => {
+                  if (acting.current) return;
+                  const identity: PendingAutoUserRevise = pendingUserRevise ?? {
+                    version: 1,
+                    projectId,
+                    runId: run.runId,
+                    key: crypto.randomUUID(),
+                    findingIds: [...selectedFindings],
+                    instruction: reviseInstruction,
+                    confirmUncertainCallIds: [...uncertain],
+                  };
+                  if (!pendingUserRevise) {
+                    savePendingUserRevise(identity);
+                    setPendingUserRevise(identity);
+                  }
+                  void act(async () => {
+                    try {
+                      const next = await client.userRevise(projectId, identity.runId, {
+                        findingIds: identity.findingIds,
+                        instruction: identity.instruction,
+                        confirm: true,
+                        confirmUncertainCallIds: identity.confirmUncertainCallIds,
+                        token: needsToken ? token.trim() : "",
+                        idempotencyKey: identity.key,
+                      });
+                      clearPendingUserRevise(identity);
+                      setPendingUserRevise(null);
+                      setReviseQuote(null);
+                      setReviseConfirm(false);
+                      setSelectedFindings([]);
+                      setReviseInstruction("");
+                      return next.run;
+                    } catch (caught) {
+                      if (autoUserReviseRefused(caught)) {
+                        clearPendingUserRevise(identity);
+                        setPendingUserRevise(null);
+                      }
+                      throw caught;
+                    }
+                  }, "没有确认是否已开始改稿。重试会原样发送同一个请求（同一个请求标识和同一组意见/说明）。");
+                }}
+              >
+                {pendingUserRevise ? "重试上次改稿请求" : "确认并开始改稿"}
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         {autoCanResume(run) ? (
           <section className={styles.resume} aria-labelledby="auto-resume-title">
@@ -276,17 +449,25 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
             </button>
           </section>
         ) : null}
-        {run.storySave === "saved" && run.state !== "running" ? (
-          <p className={styles.helper}>
-            故事经人工审核通过后，可以把各集剧本一次写入作品：
-            <button className={styles.textLink} type="button" disabled={busy || (storyChanged && !acceptStoryChanged)}
-              onClick={() => void act(() => client.placeScripts(projectId, run.runId, storyChanged && acceptStoryChanged), "写入没有确认。")}>写入分集剧本草稿</button>
+        {canOfferPlaceScripts ? (
+          <p className={styles.helper} data-testid="auto-place-scripts">
+            {storyUpdateConflict
+              ? "新剧本包可下载，但与作品中已保存/已审核的故事不是同一版本。重新人工审核故事后，或明确确认不一致后，才可写入分集草稿："
+              : "故事经人工审核通过后，可以把各集剧本一次写入作品："}
+            <button className={styles.textLink} type="button" data-testid="auto-place-scripts-button"
+              disabled={busy || (needsStoryInconsistencyAck && !acceptStoryChanged)}
+              onClick={() => void act(
+                () => client.placeScripts(projectId, run.runId, needsStoryInconsistencyAck ? acceptStoryChanged : false),
+                "写入没有确认。",
+              )}>写入分集剧本草稿</button>
           </p>
         ) : null}
-        {storyChanged && run.storySave === "saved" ? (
+        {needsStoryInconsistencyAck && canOfferPlaceScripts ? (
           <label className={styles.check} data-testid="auto-accept-story-changed">
             <input type="checkbox" checked={acceptStoryChanged} onChange={(event) => setAcceptStoryChanged(event.target.checked)} />
-            审核通过的故事和生成剧本时用的故事不同（审核时改过）。我确认仍按 AI 生成的分集剧本写入草稿，之后再自行修改。
+            {storyUpdateConflict
+              ? "我确认新剧本包与作品中已保存/已审核的故事不是同一版本，仍按新包写入分集草稿，并自行对照处理不一致。"
+              : "审核通过的故事和生成剧本时用的故事不同（审核时改过）。我确认仍按 AI 生成的分集剧本写入草稿，之后再自行修改。"}
           </label>
         ) : null}
         {actionError ? <p className={styles.error} role="alert">{actionError}</p> : null}

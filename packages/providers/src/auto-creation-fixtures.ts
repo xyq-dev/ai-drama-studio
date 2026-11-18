@@ -47,6 +47,9 @@ export function autoFixtureStageOf(user: string): AutoFixtureStage {
   if (review) return `review:${review}` as AutoFixtureStage;
   const revise = /任务：定向修改第 (\d) 集（第 (\d) 轮修改）/.exec(user);
   if (revise) return `revise:${revise[2]!}:episode:${revise[1]!}` as AutoFixtureStage;
+  // User-initiated multi-artifact revise (phase 0): same stage key space, different task line.
+  const userRevise = /任务：用户发起的一致性改稿（[^）]+），修改第 (\d) 集（第 (\d) 轮）/.exec(user);
+  if (userRevise) return `revise:${userRevise[2]!}:episode:${userRevise[1]!}` as AutoFixtureStage;
   const episode = /任务：写第 (\d) 集剧本/.exec(user)?.[1];
   if (episode) return `episode:${episode}` as AutoFixtureStage;
   throw new Error("unrecognised auto creation prompt");
@@ -449,6 +452,8 @@ export function fixtureAutoCrowdedEpisode(episodeNo: number, options: { tag?: st
 export interface AutoReviewPlan {
   /** Verified high-severity issue on episode 1 in these rounds (a revision is then due). */
   highIssueRounds?: number[];
+  /** Verified low-severity findings that still leave the review as pass (user-revise selection). */
+  lowIssueRounds?: number[];
   /** An issue whose quote is not in the text (kept, never acted on). */
   unverifiedIssue?: boolean;
   /** A verified high-severity issue on the bible in these rounds (no episode revision can fix it). */
@@ -464,6 +469,12 @@ export function fixtureAutoReview(round: number, plan: AutoReviewPlan = {}): Aut
   if (plan.highIssueRounds?.includes(round)) {
     issues.push({ id: "R1", dimension: "conflictAction", severity: "high", target: "episode:1",
       evidence: "陈默把餐盒放在门口", problem: "开场动作没有体现陈默的主动选择。", suggestion: "让陈默主动请求签名并说明理由。" });
+  }
+  if (plan.lowIssueRounds?.includes(round)) {
+    issues.push({ id: "R1", dimension: "conflictAction", severity: "low", target: "episode:1",
+      evidence: "陈默把餐盒放在门口", problem: "开门前缺少可见权衡。", suggestion: "写清可见犹豫。" });
+    issues.push({ id: "R2", dimension: "motivation", severity: "low", target: "outline",
+      evidence: "赵强要求补签名", problem: "阻碍者动机可改为误以为争房产。", suggestion: "同步大纲与正文动机。" });
   }
   if (plan.bibleIssueRounds?.includes(round)) {
     issues.push({ id: "R3", dimension: "motivation", severity: "high", target: "bible",
@@ -695,7 +706,33 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
       : plan.soloCast ? fixtureAutoSoloEpisode(episodeNo, { tag: "模型替身样例（修订）" })
       : plan.crowdedCast ? fixtureAutoCrowdedEpisode(episodeNo, { tag: "模型替身样例（修订）", padding: plan.crowdedPadding })
         : fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.revisionsStayLong, tag: "模型替身样例（修订）" });
-    return { ...revised, changes: ids.map((issueId) => ({ issueId, change: "按问题定向修改。" })) };
+    const base = { ...revised, changes: ids.map((issueId) => ({ issueId, change: "按问题定向修改。" })) };
+    // User-initiated multi-artifact path: also return outline + pointed bible sync (not the frozen single-episode path).
+    if (user.includes("ads.auto-creation.user-revise.v1") || user.includes("用户发起的一致性改稿")) {
+      const outline = xianxia ? fixtureAutoXianxiaOutline(count) : fixtureAutoOutline(count);
+      outline.storyProse = xianxia ? AUTO_XIANXIA_STORY_PROSE : fixtureAutoStoryProse(Boolean(plan.soloCast || plan.crowdedCast));
+      // Synthetic R2-style motive sync in outline/body so tests can assert the unfrozen path ran.
+      if (outline.episodes[0]) {
+        outline.episodes[0] = {
+          ...outline.episodes[0],
+          obstacle: "对方误以为她是来争房产或拖延签字，隔着门逼她说清真正来意。",
+          action: "她没有哀求，隔着门说清自己只是要取回遗物、补上没能说完的告别。",
+        };
+      }
+      if (outline.storyProse[1]) {
+        outline.storyProse = [...outline.storyProse];
+        outline.storyProse[1] = `${outline.storyProse[1]!.slice(0, 80)}他误以为她是来争房产或拖延签字，隔着门逼她说清真正来意。${outline.storyProse[1]!.slice(80)}`.slice(0, 360);
+      }
+      return {
+        ...base,
+        outline,
+        bibleSync: {
+          obstacles: ["对方已换锁，误以为她是来争房产或拖延签字，隔着门不肯放行"],
+          keyChoices: [{ choice: "说清来意而不是哀求", consequence: "对方放下清空清单并开门" }],
+        },
+      };
+    }
+    return base;
   }
   if (xianxia) return fixtureAutoXianxiaEpisode(episodeNo, count, autoFixtureEpisodeSeconds(user));
   if (plan.soloCast) return fixtureAutoSoloEpisode(episodeNo, { mentionedOnScreen: true });
