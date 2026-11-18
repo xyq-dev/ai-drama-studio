@@ -9,7 +9,7 @@ import {
   autoCreationWorstCalls,
   type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
-import { formatAutoCreationStartBillingNote } from "@ai-drama/domain";
+import { formatAutoCreationStartBillingNote } from "@ai-drama/domain/auto-creation-cost-display";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { suggestTitle } from "../lib/beginner-start";
 import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, providerTarget, tokenRequired } from "../lib/title-writing-client";

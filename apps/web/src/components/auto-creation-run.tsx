@@ -22,7 +22,7 @@ import {
   formatAutoCreationBudgetBillingNote,
   formatAutoCreationCallRecord,
   formatAutoCreationReviseQuoteBillingNote,
-} from "@ai-drama/domain";
+} from "@ai-drama/domain/auto-creation-cost-display";
 import { TitleWritingError, tokenRequired } from "../lib/title-writing-client";
 import {
   AUTO_REVIEW_DIMENSION_LABELS,
