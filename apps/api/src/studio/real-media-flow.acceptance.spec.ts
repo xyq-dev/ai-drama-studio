@@ -139,7 +139,12 @@ function wav(): Buffer {
   bytes.write("data", 36); bytes.writeUInt32LE(bytes.length - 44, 40); return bytes;
 }
 
-async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
+/**
+ * Default: site auth disabled → ALS kind "open" (no owner filter), matching production when SITE_AUTH is off.
+ * Each test still gets its own workspace/provider configs. Pass siteAuth=true only for session/CSRF refusal coverage;
+ * those calls use operator ?view=ops so multi-workspace fixtures stay readable without weakening creator opaque 404.
+ */
+async function harness(w: World, enabled = true, comfyFetch?: typeof fetch, siteAuth = false) {
   const comfyOrigin = "http://127.0.0.1:8188";
   const comfyCheckpoint = "protocol-test.safetensors";
   const runtime = new ServerRealMediaRuntime(w.workspaceId, { REAL_MEDIA_ENABLED: "true", REAL_MEDIA_PRICE_VERSION: "fixture-v1",
@@ -193,9 +198,11 @@ async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
     false, null, false, false, true, "/fixture-must-not-read-in-refusal-tests", true, false, undefined, "legacy", true, true);
   // Keep the production controller list and all runtime->service factories. Replace only runtime construction:
   // it would otherwise open independent credentials, maintenance timers and external infrastructure.
+  const authState = siteAuth
+    ? { kind: "enabled" as const, auth: new SiteAuth({ username: "admin", passwordHash, publicOrigin: ORIGIN }) }
+    : { kind: "disabled" as const };
   const module = await Test.createTestingModule({ imports: [
-    AuthModule.register({ NODE_ENV: "test" } as ApiEnv,
-      { kind: "enabled", auth: new SiteAuth({ username: "admin", passwordHash, publicOrigin: ORIGIN }) }),
+    AuthModule.register({ NODE_ENV: "test" } as ApiEnv, authState),
     StudioModule.register({ NODE_ENV: "test" } as ApiEnv),
   ] }).overrideProvider(STUDIO_RUNTIME).useValue({
     service: studio, store: runtimeStore, realMedia: media,
@@ -208,13 +215,8 @@ async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
   const app = module.createNestApplication({ logger: false }); apps.push(app);
   app.setGlobalPrefix("api/v1"); app.useGlobalFilters(new SafeExceptionFilter());
   await app.listen(0, "127.0.0.1"); const base = `${await app.getUrl()}/api/v1`;
-  /**
-   * Operator 「我的作品」 ALS binds LEGACY_OWNER_ACCOUNT_ID; each acceptance workspace gets its own trigger
-   * legacy owner (the well-known id is globally unique). Authenticated fixture calls use the operator ops view
-   * so media/job routes stay open across those workspaces without weakening creator cross-account 404.
-   */
   function withOpsView(path: string): string {
-    if (path.startsWith("/auth/") || /(?:^|[?&])view=/.test(path)) return path;
+    if (!siteAuth || path.startsWith("/auth/") || /(?:^|[?&])view=/.test(path)) return path;
     return path.includes("?") ? `${path}&view=ops` : `${path}?view=ops`;
   }
   // Every HTTP request is restricted to this bound localhost server; no URL comes from a provider result.
@@ -223,13 +225,16 @@ async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
     if (target.origin !== new URL(base).origin || target.hostname !== "127.0.0.1") throw new Error("External HTTP forbidden");
     return fetch(target, { ...init, redirect: "error", signal: AbortSignal.timeout(10_000) });
   }
-  const login = await local("/auth/login", { method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" },
-    body: JSON.stringify({ username: "admin", password: PASSWORD }) });
-  expect(login.status).toBe(200);
-  const cookie = login.headers.getSetCookie().map(v => v.split(";", 1)[0]).join("; ");
-  const csrf = (await login.json() as { csrfToken: string }).csrfToken;
-  const headers = (extra: Record<string, string> = {}) => ({ cookie, origin: ORIGIN, "x-csrf-token": csrf,
-    "content-type": "application/json", "idempotency-key": randomUUID(), ...extra });
+  let sessionHeaders: Record<string, string> = { origin: ORIGIN, "content-type": "application/json" };
+  if (siteAuth) {
+    const login = await local("/auth/login", { method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ username: "admin", password: PASSWORD }) });
+    expect(login.status).toBe(200);
+    const cookie = login.headers.getSetCookie().map(v => v.split(";", 1)[0]).join("; ");
+    const csrf = (await login.json() as { csrfToken: string }).csrfToken;
+    sessionHeaders = { cookie, origin: ORIGIN, "x-csrf-token": csrf, "content-type": "application/json" };
+  }
+  const headers = (extra: Record<string, string> = {}) => ({ ...sessionHeaders, "idempotency-key": randomUUID(), ...extra });
   async function http<T>(path: string, method = "GET", body?: unknown, extra: Record<string, string> = {}, status = 200): Promise<T> {
     const response = await local(path, { method, headers: headers(extra), ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     const result = await response.json() as T;
@@ -444,7 +449,7 @@ async function narratorPlan(h: Harness, w: World) {
 
 describe("guarded real HTTP + empty PostgreSQL media/speech orchestration", () => {
   it("registers authenticated routes and refuses anonymous, missing-CSRF and disabled submit policy before any job", async () => {
-    const w = await world(), h = await harness(w, false);
+    const w = await world(), h = await harness(w, false, undefined, true);
     expect((await h.local(`/projects/${w.projectId}/real-media/capabilities`)).status).toBe(401);
     expect((await h.local(`${shotPath(w)}/quote`, { method: "POST", headers: { cookie: h.headers().cookie, origin: ORIGIN,
       "content-type": "application/json" }, body: JSON.stringify({ capability: "image.generate" }) })).status).toBe(403);

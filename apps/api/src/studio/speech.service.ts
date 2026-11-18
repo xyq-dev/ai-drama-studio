@@ -156,7 +156,11 @@ export class SpeechService {
   }
   async takes(planRevisionId: string, query: unknown = {}): Promise<SpeechResult> {
     return this.access(async () => {
-      const parsed = body(z.object({ cursor: z.string().uuid().optional() }).strict(), query);
+      // `view=ops` is consumed by site-auth middleware (operator open list); ignore it here.
+      const parsed = body(z.object({
+        cursor: z.string().uuid().optional(),
+        view: z.literal("ops").optional(),
+      }).strict(), query);
       return { status: 200, body: await this.deps.store.takes(this.deps.workspaceId, planRevisionId, parsed.cursor) };
     });
   }
