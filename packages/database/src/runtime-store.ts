@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { presentStoredAttempt, type PresentedAttempt } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
-import { storeOwnerAccountFilter } from "./creator-access-context";
+import { projectOwnerColumnReady, storeOwnerAccountFilter } from "./creator-access-context";
 import type { DatabasePool } from "./job-service";
 import { canRequestComfyUiCancellation, isComfyUiMediaJob, PersistenceError } from "./job-service";
 import { EpisodePlanStore, LEGACY_EPISODE_PLAN, episodePlanReadyIn, type ProjectEpisodePlan } from "./episode-plan";
@@ -581,16 +581,33 @@ export class RuntimeStore {
   }
 
   async getJob(workspaceId: string, jobId: string): Promise<JobView> {
-    const jobs = await this.queryJobs(
-      `SELECT ${JOB_COLUMNS}
-         FROM generation_job j
-         ${ATTEMPT_JOINS}
-        WHERE j.id = $1 AND j.workspace_id = $2`,
-      [jobId, workspaceId],
-    );
-    const job = jobs[0];
-    if (!job) throw new PersistenceError("NOT_FOUND", "Generation job not found");
-    return job;
+    const client = await this.pool.connect();
+    try {
+      const params: unknown[] = [jobId, workspaceId];
+      let ownerSql = "";
+      const owner = storeOwnerAccountFilter();
+      if (owner && await projectOwnerColumnReadyIn(client)) {
+        params.push(owner);
+        ownerSql = `AND EXISTS (
+          SELECT 1 FROM project p
+           WHERE p.id = j.project_id AND p.workspace_id = j.workspace_id
+             AND p.owner_account_id = $3::uuid
+        )`;
+      }
+      const jobs = await this.queryJobs(
+        `SELECT ${JOB_COLUMNS}
+           FROM generation_job j
+           ${ATTEMPT_JOINS}
+          WHERE j.id = $1 AND j.workspace_id = $2 ${ownerSql}`,
+        params,
+        client,
+      );
+      const job = jobs[0];
+      if (!job) throw new PersistenceError("NOT_FOUND", "Generation job not found");
+      return job;
+    } finally {
+      client.release();
+    }
   }
 
   async getWorkflow(workspaceId: string, workflowRunId: string): Promise<WorkflowView> {
@@ -626,10 +643,21 @@ export class RuntimeStore {
     workspaceId: string,
     workflowRunId: string,
   ): Promise<WorkflowView> {
+    const params: unknown[] = [workflowRunId, workspaceId];
+    let ownerSql = "";
+    const owner = storeOwnerAccountFilter();
+    if (owner && await projectOwnerColumnReadyIn(client)) {
+      params.push(owner);
+      ownerSql = `AND EXISTS (
+        SELECT 1 FROM project p
+         WHERE p.id = workflow_run.project_id AND p.workspace_id = workflow_run.workspace_id
+           AND p.owner_account_id = $3::uuid
+      )`;
+    }
     const workflow = await client.query<QueryResultRow>(
       `SELECT id, workspace_id, project_id, type, status, created_at
-         FROM workflow_run WHERE id = $1 AND workspace_id = $2`,
-      [workflowRunId, workspaceId],
+         FROM workflow_run WHERE id = $1 AND workspace_id = $2 ${ownerSql}`,
+      params,
     );
     const row = workflow.rows[0];
     if (!row) throw new PersistenceError("NOT_FOUND", "Workflow run not found");
@@ -693,14 +721,27 @@ export class RuntimeStore {
   async listEventsAfter(workspaceId: string, lastEventId: string, limit: number): Promise<DomainEventView[]> {
     const client = await this.pool.connect();
     try {
+      const params: unknown[] = [workspaceId, lastEventId, limit];
+      let ownerSql = "";
+      const owner = storeOwnerAccountFilter();
+      if (owner && await projectOwnerColumnReadyIn(client)) {
+        params.push(owner);
+        // Scoped creators only see events tied to their projects; workspace-global rows stay operator/open-only.
+        ownerSql = `AND e.project_id IS NOT NULL AND EXISTS (
+          SELECT 1 FROM project p
+           WHERE p.id = e.project_id AND p.workspace_id = e.workspace_id
+             AND p.owner_account_id = $4::uuid
+        )`;
+      }
       const result = await client.query<QueryResultRow>(
-        `SELECT id, event_type, occurred_at, trace_id, payload_json, retention_until
-           FROM domain_event
-          WHERE workspace_id = $1 AND id > $2
-            AND (retention_until IS NULL OR retention_until > now())
-          ORDER BY id
+        `SELECT e.id, e.event_type, e.occurred_at, e.trace_id, e.payload_json, e.retention_until
+           FROM domain_event e
+          WHERE e.workspace_id = $1 AND e.id > $2
+            AND (e.retention_until IS NULL OR e.retention_until > now())
+            ${ownerSql}
+          ORDER BY e.id
           LIMIT $3`,
-        [workspaceId, lastEventId, limit],
+        params,
       );
       return result.rows.map((row) => ({
         eventId: String(row.id),
@@ -872,13 +913,7 @@ export async function insertProject(
 }
 
 async function projectOwnerColumnReadyIn(client: PoolClient): Promise<boolean> {
-  const result = await client.query<{ present: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'project' AND column_name = 'owner_account_id'
-     ) AS present`,
-  );
-  return result.rows[0]?.present === true;
+  return projectOwnerColumnReady(client);
 }
 
 function mapLease(row: QueryResultRow): ExpiredLeaseRow {

@@ -136,4 +136,13 @@ describe("creator isolation access scope (phase 4)", () => {
   it("store ALS open access keeps null owner filter for legacy tests", () => {
     expect(runWithStoreCreatorAccess({ kind: "open" }, () => storeOwnerAccountFilter())).toBeNull();
   });
+
+  it("signed-out session probe returns the registration flag (default off)", async () => {
+    await start();
+    const response = await fetch(`${base}/auth/session`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      enabled: true, authenticated: false, publicRegistrationEnabled: false,
+    });
+  });
 });

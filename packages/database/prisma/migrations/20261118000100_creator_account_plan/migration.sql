@@ -28,6 +28,9 @@ CREATE TABLE creator_account (
   UNIQUE (id, workspace_id),
   FOREIGN KEY (workspace_id) REFERENCES workspace(id)
 );
+-- Login matches lower(username); uniqueness must follow the same rule so alice/Alice cannot both exist.
+CREATE UNIQUE INDEX creator_account_workspace_username_lower_idx
+  ON creator_account (workspace_id, lower(username));
 CREATE INDEX creator_account_workspace_idx ON creator_account (workspace_id, created_at DESC);
 
 -- Plan catalog: unit prices are configurable and may be empty (NULL = 尚未计价). No committed RMB / membership tiers.

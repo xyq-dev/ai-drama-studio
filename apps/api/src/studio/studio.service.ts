@@ -1102,10 +1102,13 @@ export class StudioService {
   }
 
   async getJob(jobId: string) {
+    // Ownership is enforced inside RuntimeStore.getJob via the request ALS scope.
     return this.store.getJob(this.workspaceId, jobId);
   }
 
   async cancelJob(jobId: string, context: StudioContext) {
+    // Opaque ownership gate before mutation: another creator's job id looks like NOT_FOUND.
+    await this.store.getJob(this.workspaceId, jobId);
     return this.jobs.cancelJobIdempotent(
       this.scope(context, "POST", `/generation-jobs/${jobId}/cancel`, {}),
       { workspaceId: this.workspaceId, jobId, traceId: context.traceId },
@@ -1159,6 +1162,7 @@ export class StudioService {
   }
 
   async getWorkflow(workflowRunId: string) {
+    // Ownership is enforced inside RuntimeStore.getWorkflow via the request ALS scope.
     return this.store.getWorkflow(this.workspaceId, workflowRunId);
   }
 
@@ -1168,6 +1172,8 @@ export class StudioService {
   }
 
   async cancelWorkflow(workflowRunId: string, context: StudioContext) {
+    // Opaque ownership gate before mutation: another creator's run id looks like NOT_FOUND.
+    await this.store.getWorkflow(this.workspaceId, workflowRunId);
     return this.jobs.cancelWorkflowRunIdempotent(
       this.scope(context, "POST", `/workflow-runs/${workflowRunId}/cancel`, {}),
       { workspaceId: this.workspaceId, workflowRunId, traceId: context.traceId },

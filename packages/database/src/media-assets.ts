@@ -37,6 +37,7 @@ import {
 } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import type { SpeechMixManifest } from "@ai-drama/contracts";
+import { projectOwnerColumnReady, storeOwnerAccountFilter } from "./creator-access-context";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
 import { assertFrozenReferencesUsable, frozenCharacterReferences } from "./character-reference-store";
@@ -368,11 +369,22 @@ export class MediaAssetStore {
   async getWorkspaceAsset(workspaceId: string, assetId: string): Promise<MediaAssetRecord> {
     const client = await this.pool.connect();
     try {
+      const params: unknown[] = [assetId, workspaceId];
+      let ownerSql = "";
+      const owner = storeOwnerAccountFilter();
+      if (owner && await projectOwnerColumnReady(client)) {
+        params.push(owner);
+        ownerSql = `AND EXISTS (
+          SELECT 1 FROM project p
+           WHERE p.id = asset.project_id AND p.workspace_id = asset.workspace_id
+             AND p.owner_account_id = $3::uuid
+        )`;
+      }
       const result = await client.query<QueryResultRow>(
         `SELECT ${ASSET_COLUMNS}
            FROM asset
-          WHERE id = $1 AND workspace_id = $2`,
-        [assetId, workspaceId],
+          WHERE id = $1 AND workspace_id = $2 ${ownerSql}`,
+        params,
       );
       const row = result.rows[0];
       if (!row) throw new PersistenceError("NOT_FOUND", "Asset not found");

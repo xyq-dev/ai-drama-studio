@@ -217,6 +217,8 @@ export {
   runWithStoreCreatorAccess,
   storeOwnerAccountFilter,
   storeActorId,
+  projectOwnerColumnReady,
+  ownedProjectBind,
   type StoreCreatorAccess,
 } from "./creator-access-context";
 export {

@@ -34,8 +34,18 @@ export class AuthController {
       if (this.state.kind === "disabled") {
         return { enabled: false, authenticated: false, publicRegistrationEnabled: false };
       }
-      // A passive check (a page asking whether its session is still there) must not keep the session alive.
-      return headers["x-session-check"] === "passive" ? this.auth().peek(headers) : this.auth().session(headers);
+      const auth = this.auth();
+      try {
+        // A passive check (a page asking whether its session is still there) must not keep the session alive.
+        return headers["x-session-check"] === "passive" ? auth.peek(headers) : auth.session(headers);
+      } catch (cause) {
+        // No cookie at all: return the registration flag so signed-out visitors can use /register when enabled.
+        // Expired/forged cookies still raise AUTH_SESSION_EXPIRED and stay 401.
+        if (cause instanceof SiteAuthError && cause.code === "AUTH_REQUIRED") {
+          return auth.anonymousSession();
+        }
+        throw cause;
+      }
     });
   }
 

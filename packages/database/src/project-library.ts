@@ -210,23 +210,32 @@ export class ProjectLibraryStore {
            ) AS present`,
         ).then((result) => result.rows[0]?.present === true)
         : false;
-      const ownerClause = ownerFilter ? "AND p.owner_account_id = $7::uuid" : "";
-      const searchClause = `p.workspace_id = $1 AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND ${matchesSearch} ${ownerClause}`;
+      // Count and list use separate contiguous parameter lists so PostgreSQL never sees unused/untyped binds.
+      const countOwnerClause = ownerFilter ? "AND p.owner_account_id = $4::uuid" : "";
+      const listOwnerClause = ownerFilter ? "AND p.owner_account_id = $7::uuid" : "";
+      const countSearchClause = `p.workspace_id = $1 AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND ${matchesSearch} ${countOwnerClause}`;
+      const listSearchClause = `p.workspace_id = $1 AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND ${matchesSearch} ${listOwnerClause}`;
       const assignmentJoin = ready.categories
         ? "LEFT JOIN project_library_assignment a ON a.project_id = p.id AND a.workspace_id = p.workspace_id"
         : "LEFT JOIN LATERAL (SELECT NULL::uuid AS category_id, 0 AS revision) a ON true";
       const categoryClause = "($3::text = 'all' OR ($3 = 'uncategorized' AND a.category_id IS NULL) OR a.category_id::text = $3)";
+      const countParams: unknown[] = [workspaceId, search, query.category];
+      if (ownerFilter) countParams.push(ownerAccountId);
       const listParams: unknown[] = [
         workspaceId, search, query.category, cursor?.at ?? null, cursor?.id ?? null, PROJECT_LIBRARY_PAGE_SIZE + 1,
-        ownerFilter ? ownerAccountId : null,
       ];
+      if (ownerFilter) listParams.push(ownerAccountId);
       const counts = await client.query<{ all_count: string; total: string; unclassified_count: string }>(`
         SELECT count(*) AS all_count, count(*) FILTER (WHERE ${categoryClause}) AS total,
           count(*) FILTER (WHERE a.category_id IS NULL) AS unclassified_count
-        FROM project p ${assignmentJoin} ${searchJoins} WHERE ${searchClause}`, listParams);
+        FROM project p ${assignmentJoin} ${searchJoins} WHERE ${countSearchClause}`, countParams);
       let categories: ProjectLibraryCategory[] = [];
       if (ready.categories) {
-        const ownerJoin = ownerFilter ? "AND p.owner_account_id = $3::uuid" : "";
+        const ownerJoin = ownerFilter
+          ? (query.q ? "AND p.owner_account_id = $3::uuid" : "AND p.owner_account_id = $2::uuid")
+          : "";
+        const categoryParams: unknown[] = query.q ? [workspaceId, search] : [workspaceId];
+        if (ownerFilter) categoryParams.push(ownerAccountId);
         const result = await client.query<{ id: string; name: string; count: string }>(`
           SELECT c.id, c.name, count(p.id)${query.q ? ` FILTER (WHERE ${matchesSearch})` : ""} AS count FROM project_library_category c
           LEFT JOIN project_library_assignment a ON a.category_id = c.id AND a.workspace_id = c.workspace_id
@@ -234,9 +243,7 @@ export class ProjectLibraryStore {
             AND p.archived_at IS NULL AND p.status = 'ACTIVE' ${ownerJoin}
           ${searchJoins}
           WHERE c.workspace_id = $1 GROUP BY c.id, c.name ORDER BY c.created_at, c.id`,
-        query.q
-          ? (ownerFilter ? [workspaceId, search, ownerAccountId] : [workspaceId, search])
-          : (ownerFilter ? [workspaceId, null, ownerAccountId] : [workspaceId]));
+        categoryParams);
         categories = result.rows.map((row) => ({ ...row, count: Number(row.count) }));
       }
       const timestamp = query.sort === "updated" ? "p.updated_at" : "p.created_at";
@@ -261,7 +268,7 @@ export class ProjectLibraryStore {
           script.title AS script_title, script.source AS script_source, script.provider_key AS script_provider_key,
           script.model AS script_model, script.destination AS script_destination
         FROM project p ${assignmentJoin} ${categoryJoin} ${thumbnailJoin} ${scriptJoin}
-        WHERE ${searchClause} AND ${categoryClause}
+        WHERE ${listSearchClause} AND ${categoryClause}
           AND ($4::timestamptz IS NULL OR (${timestamp}, p.id) < ($4::timestamptz, $5::uuid))
         ORDER BY ${timestamp} DESC, p.id DESC LIMIT $6`, listParams);
       await client.query("COMMIT");

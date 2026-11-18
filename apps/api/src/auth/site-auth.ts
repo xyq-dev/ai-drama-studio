@@ -213,6 +213,23 @@ export class SiteAuth {
   }
 
   /**
+   * Signed-out visitor view for GET /auth/session. Carries the registration flag so /register can decide
+   * whether to show the form; never authenticates. Used only when there is no session cookie at all
+   * (AUTH_REQUIRED); expired/forged cookies still surface as AUTH_SESSION_EXPIRED.
+   */
+  anonymousSession(): {
+    enabled: true;
+    authenticated: false;
+    publicRegistrationEnabled: boolean;
+  } {
+    return {
+      enabled: true,
+      authenticated: false,
+      publicRegistrationEnabled: this.publicRegistrationEnabled,
+    };
+  }
+
+  /**
    * For long-lived responses (the event stream): binds to the session the request carries and returns a check that
    * is true only while that very session still exists and has not expired. The check never counts as activity, so
    * server pushes cannot extend the idle limit. Null when the request has no valid session.

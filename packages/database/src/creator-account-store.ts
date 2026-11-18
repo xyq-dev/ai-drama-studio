@@ -82,6 +82,17 @@ export class CreatorAccountStore {
         throw new PersistenceError("NOT_FOUND", "Creator accounts are not migrated");
       }
       const id = input.id ?? randomUUID();
+      // Case-insensitive uniqueness matches findActiveByUsername (lower(username)).
+      const clash = await client.query<{ present: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM creator_account
+            WHERE workspace_id = $1 AND lower(username) = lower($2)
+         ) AS present`,
+        [input.workspaceId, input.username],
+      );
+      if (clash.rows[0]?.present === true) {
+        throw new PersistenceError("VALIDATION_ERROR", "账号已存在");
+      }
       const result = await client.query<QueryResultRow>(
         `INSERT INTO creator_account (id, workspace_id, username, password_hash, status)
          VALUES ($1, $2, $3, $4, 'ACTIVE')

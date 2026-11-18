@@ -179,6 +179,15 @@ describe("site login over real HTTP", () => {
     expect(isAnonymous("GET", "/api/v1/projects")).toBe(false);
   });
 
+  it("exposes the registration flag to signed-out visitors without a session cookie", async () => {
+    await start();
+    const response = await request("/auth/session");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      enabled: true, authenticated: false, publicRegistrationEnabled: false,
+    });
+  });
+
   it("serves reads with the session, restores it on refresh, and requires origin and CSRF for writes", async () => {
     await start();
     const { read, write, view } = await signedIn();
