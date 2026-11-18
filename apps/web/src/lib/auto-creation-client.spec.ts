@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { autoErrorText, autoOutputRefused } from "./auto-creation-client";
+import {
+  autoErrorText,
+  autoHeadline,
+  autoOutputRefused,
+  autoResumeRefused,
+  autoUserReviseRefused,
+  isAutoCreationAuthSessionLoss,
+} from "./auto-creation-client";
+import { TitleWritingError } from "./title-writing-client";
+import type { AutoCreationRunView } from "@ai-drama/contracts";
 
 describe("auto-creation refusal wording", () => {
   it("prompt v9: a method id outside the run's catalog is a refused answer with its own wording and field", () => {
@@ -19,5 +28,28 @@ describe("auto-creation refusal wording", () => {
     expect(autoOutputRefused(viewing)).toBe(true);
     expect(autoErrorText(viewing)).toContain("程序命中了「观看习惯词」");
     expect(autoOutputRefused("auth")).toBe(false);
+  });
+});
+
+describe("phase 5 auth expiry vs definite refusal", () => {
+  it("does not treat AUTH_SESSION_EXPIRED / AUTH_REQUIRED as a definite resume or revise refusal", () => {
+    const expired = new TitleWritingError(401, "AUTH_SESSION_EXPIRED", "登录已过期", null);
+    const required = new TitleWritingError(401, "AUTH_REQUIRED", "请先登录", null);
+    const stale = new TitleWritingError(409, "AUTO_CREATION_CONFIRMATION_STALE", "确认已过期", null);
+    expect(isAutoCreationAuthSessionLoss(expired)).toBe(true);
+    expect(isAutoCreationAuthSessionLoss(required)).toBe(true);
+    expect(isAutoCreationAuthSessionLoss(stale)).toBe(false);
+    expect(autoResumeRefused(expired)).toBe(false);
+    expect(autoResumeRefused(required)).toBe(false);
+    expect(autoResumeRefused(stale)).toBe(true);
+    expect(autoUserReviseRefused(expired)).toBe(false);
+    expect(autoUserReviseRefused(required)).toBe(false);
+    expect(autoUserReviseRefused(stale)).toBe(true);
+  });
+
+  it("completed machine-pass headline still requires human review and is not publishable wording", () => {
+    const run = { state: "completed", quality: "passed", stages: [] } as unknown as AutoCreationRunView;
+    expect(autoHeadline(run)).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
+    expect(autoHeadline(run)).not.toMatch(/可发布|一键发布/);
   });
 });

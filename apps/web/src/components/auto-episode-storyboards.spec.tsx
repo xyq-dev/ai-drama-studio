@@ -142,6 +142,21 @@ describe("Auto episode storyboard", () => {
     await waitFor(() => expect(writes.filter((item) => item.url.endsWith("/generate"))).toHaveLength(1));
   });
 
+  it("phase 5: unconfirmed quote click is not billed and never auto-submits authorize/generate or external publish", async () => {
+    const { writes } = fixture(view(episode(1, [shot(A)])));
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote={false} />);
+    fireEvent.click(await screen.findByRole("button", { name: "生成本镜 门口一镜" }));
+    expect(await screen.findByText("0.1 USD")).toBeTruthy();
+    const confirm = screen.getByRole("button", { name: "确认生成 1 镜" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(writes.every((item) => item.url.endsWith("/quote"))).toBe(true);
+    expect(writes.some((item) => item.url.endsWith("/authorize") || item.url.endsWith("/generate"))).toBe(false);
+    expect(screen.getByTestId("auto-storyboard-keep-note").textContent).toContain("不等于分镜审核通过");
+    expect(screen.queryByRole("button", { name: /一键发布|发布到红果|发布到抖音|自动外发|发布/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /一键发布|发布到红果|发布到抖音/ })).toBeNull();
+  });
+
   it.each([
     ["TITLE_WRITING_DISABLED", "当前未开启 AI 剧本拆解。"],
     ["SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE", "剧本拆解的数据存储还没有就绪。"],
