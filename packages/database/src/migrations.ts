@@ -104,6 +104,12 @@ export const AUTO_CREATION_MIGRATION = "20261019000100_auto_creation";
 export const SERIES_WRITING_MIGRATION = "20261023000100_series_writing";
 
 /**
+ * Creator account isolation + usage-plan / ledger skeleton (phase 4). Additive; independent of script breakdown,
+ * writing, auto-creation and series migrations. Requires only the seven base migrations (workspace, project).
+ */
+export const CREATOR_ACCOUNT_PLAN_MIGRATION = "20261118000100_creator_account_plan";
+
+/**
  * The only migrations a guarded single run may apply, each with the migrations it requires. Each is applied by its own
  * command; none of them takes the script breakdown (or anything else pending) along.
  */
@@ -113,6 +119,7 @@ export const GUARDED_SINGLE_MIGRATIONS: Readonly<Record<string, readonly string[
   [WRITING_CANDIDATE_DEEPSEEK_MIGRATION]: [...BASE_MIGRATIONS, WRITING_CANDIDATE_MIGRATION],
   [AUTO_CREATION_MIGRATION]: BASE_MIGRATIONS,
   [SERIES_WRITING_MIGRATION]: BASE_MIGRATIONS,
+  [CREATOR_ACCOUNT_PLAN_MIGRATION]: BASE_MIGRATIONS,
 };
 
 export async function runMigrations(

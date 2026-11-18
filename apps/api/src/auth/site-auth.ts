@@ -1,11 +1,18 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { LEGACY_OWNER_ACCOUNT_ID, type CreatorAccountRole } from "@ai-drama/domain";
 import { parsePasswordHash, verifyPassword, type ParsedPasswordHash } from "./password-hash";
 
 /**
- * One administrator login for the whole site (pages, the same-origin API, assets, downloads and the model console).
- * Sessions are random, server-side and revocable; only SHA-256 digests of session IDs are kept, in this API process.
- * A restart therefore ends every session (single API instance by design). Nothing here touches the model vault.
+ * Site login: the existing operator (SITE_AUTH_USERNAME / SITE_AUTH_PASSWORD_HASH) plus optional creator accounts.
+ * Operator login is never replaced. Creator passwords live in creator_account (migration); public registration is a
+ * separate server flag defaulting off. Sessions are random, server-side and revocable; only SHA-256 digests of
+ * session IDs are kept in this API process. A restart ends every session (single API instance by design).
  */
+
+/** Lookup used only for creator (non-operator) usernames. LEGACY / DISABLED rows must not be returned. */
+export interface CreatorLoginDirectory {
+  findActiveByUsername(username: string): Promise<{ id: string; username: string; passwordHash: string } | null>;
+}
 export const SITE_AUTH = "SITE_AUTH";
 export const SESSION_IDLE_MS = 2 * 60 * 60 * 1_000;
 export const SESSION_ABSOLUTE_MS = 12 * 60 * 60 * 1_000;
@@ -28,6 +35,7 @@ const MESSAGES = {
   AUTH_ORIGIN_REJECTED: "请求来源不受信任。",
   AUTH_CSRF_REJECTED: "请求校验失败，请刷新页面后重试。",
   AUTH_CONTENT_TYPE_REJECTED: "请求必须使用 JSON。",
+  AUTH_REGISTRATION_DISABLED: "公开自助注册未开启。",
 } as const;
 
 export type SiteAuthErrorCode = keyof typeof MESSAGES;
@@ -43,14 +51,21 @@ export interface SiteSessionView {
   enabled: true;
   authenticated: true;
   username: string;
+  role: CreatorAccountRole;
+  accountId: string;
   csrfToken: string;
   expiresAt: string;
+  /** Echoed for the login page; never enables registration by itself. */
+  publicRegistrationEnabled: boolean;
 }
 
 interface StoredSession {
   csrfToken: string;
   createdAt: number;
   lastSeenAt: number;
+  role: CreatorAccountRole;
+  accountId: string;
+  username: string;
 }
 
 const digest = (value: string): Buffer => createHash("sha256").update(value, "utf8").digest();
@@ -83,13 +98,20 @@ export class SiteAuth {
   private readonly sessions = new Map<string, StoredSession>();
   private loginAttempts: number[] = [];
   private readonly now: () => number;
+  private readonly creators: CreatorLoginDirectory | null;
+  private readonly publicRegistrationEnabled: boolean;
   readonly username: string;
   readonly publicOrigin: string;
   readonly secure: boolean;
   readonly sessionCookie: string;
   readonly csrfCookie: string;
 
-  constructor(config: SiteAuthConfig, options: { now?: () => number; allowHttpLoopback?: boolean } = {}) {
+  constructor(config: SiteAuthConfig, options: {
+    now?: () => number;
+    allowHttpLoopback?: boolean;
+    creators?: CreatorLoginDirectory | null;
+    publicRegistrationEnabled?: boolean;
+  } = {}) {
     if (!/^[A-Za-z0-9._-]{1,64}$/u.test(config.username)) throw new SiteAuthError(503, "AUTH_NOT_CONFIGURED");
     const hash = parsePasswordHash(config.passwordHash);
     if (!hash) throw new SiteAuthError(503, "AUTH_NOT_CONFIGURED");
@@ -113,6 +135,8 @@ export class SiteAuth {
     this.sessionCookie = this.secure ? "__Host-ads_session" : "ads_session";
     this.csrfCookie = this.secure ? "__Host-ads_csrf" : "ads_csrf";
     this.now = options.now ?? Date.now;
+    this.creators = options.creators ?? null;
+    this.publicRegistrationEnabled = options.publicRegistrationEnabled === true;
   }
 
   /** The browser origin must be exactly the configured one; Host and forwarded headers are never trusted. */
@@ -121,8 +145,9 @@ export class SiteAuth {
   }
 
   /**
-   * Username and password from the login form. The failure is the same for an unknown user and a wrong password,
-   * and the password is always verified so both take the same time. Attempts are limited per minute.
+   * Username and password from the login form. Operator credentials are always tried first (unchanged SITE_AUTH_*).
+   * Otherwise an ACTIVE creator_account may authenticate. Unknown user and wrong password share one failure, and a
+   * password verification always runs so both take similar time. Attempts are limited per minute.
    */
   async login(headers: RequestHeaders, body: unknown): Promise<{ session: SiteSessionView; cookies: string[] }> {
     this.assertOrigin(headers);
@@ -138,10 +163,25 @@ export class SiteAuth {
     const username = typeof input.username === "string" && input.username.length <= 64 ? input.username : "";
     const password = typeof input.password === "string" && input.password.length >= 1 && input.password.length <= 1_024
       ? input.password : "";
-    const passwordOk = await verifyPassword(password, this.hash);
-    const usernameOk = same(username, this.usernameDigest);
-    if (keys !== "password,username" || !usernameOk || !passwordOk || password.length === 0) {
+    if (keys !== "password,username" || password.length === 0 || username.length === 0) {
+      await verifyPassword(password || " ", this.hash);
       throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    }
+    const operatorUsernameOk = same(username, this.usernameDigest);
+    const operatorPasswordOk = await verifyPassword(password, this.hash);
+    let role: CreatorAccountRole = "operator";
+    let accountId = LEGACY_OWNER_ACCOUNT_ID;
+    let sessionUsername = this.username;
+    if (operatorUsernameOk && operatorPasswordOk) {
+      // Operator session: existing SITE_AUTH login; still reaches model-admin. Works list uses legacy ownership unless ops view.
+    } else {
+      const creator = this.creators ? await this.creators.findActiveByUsername(username) : null;
+      const creatorHash = creator ? parsePasswordHash(creator.passwordHash) : null;
+      const creatorOk = creatorHash ? await verifyPassword(password, creatorHash) : await verifyPassword(password, this.hash);
+      if (!creator || !creatorHash || !creatorOk) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+      role = "creator";
+      accountId = creator.id;
+      sessionUsername = creator.username;
     }
     // A new login never reuses an earlier session ID from this browser.
     const previous = this.lookup(headers);
@@ -149,7 +189,10 @@ export class SiteAuth {
     this.prune(now);
     if (this.sessions.size >= MAX_SESSIONS) throw new SiteAuthError(429, "AUTH_SESSION_LIMIT");
     const id = randomBytes(32).toString("base64url");
-    const value: StoredSession = { csrfToken: randomBytes(32).toString("base64url"), createdAt: now, lastSeenAt: now };
+    const value: StoredSession = {
+      csrfToken: randomBytes(32).toString("base64url"), createdAt: now, lastSeenAt: now,
+      role, accountId, username: sessionUsername,
+    };
     this.sessions.set(digest(id).toString("hex"), value);
     return { session: this.view(value), cookies: this.issue(id, value.csrfToken) };
   }
@@ -252,8 +295,20 @@ export class SiteAuth {
   }
 
   private view(value: StoredSession): SiteSessionView {
-    return { enabled: true, authenticated: true, username: this.username, csrfToken: value.csrfToken,
-      expiresAt: new Date(this.expiresAt(value)).toISOString() };
+    return {
+      enabled: true,
+      authenticated: true,
+      username: value.username,
+      role: value.role,
+      accountId: value.accountId,
+      csrfToken: value.csrfToken,
+      expiresAt: new Date(this.expiresAt(value)).toISOString(),
+      publicRegistrationEnabled: this.publicRegistrationEnabled,
+    };
+  }
+
+  registrationEnabled(): boolean {
+    return this.publicRegistrationEnabled;
   }
 }
 

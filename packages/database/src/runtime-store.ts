@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { presentStoredAttempt, type PresentedAttempt } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
+import { storeOwnerAccountFilter } from "./creator-access-context";
 import type { DatabasePool } from "./job-service";
 import { canRequestComfyUiCancellation, isComfyUiMediaJob, PersistenceError } from "./job-service";
 import { EpisodePlanStore, LEGACY_EPISODE_PLAN, episodePlanReadyIn, type ProjectEpisodePlan } from "./episode-plan";
@@ -177,6 +178,7 @@ export class RuntimeStore {
     workspaceId: string;
     title: string;
     premise: string;
+    ownerAccountId?: string | null;
   }): Promise<ProjectRecord> {
     const client = await this.pool.connect();
     try {
@@ -186,10 +188,25 @@ export class RuntimeStore {
     }
   }
 
-  async listProjects(workspaceId: string, limit: number, cursor?: string): Promise<{ items: ProjectRecord[]; nextCursor: string | null }> {
+  /**
+   * Lists active projects. When ownerAccountId is set, only that creator's works are returned (phase-4 isolation).
+   * Omit ownerAccountId for open access (auth disabled) or an explicit operator ops view.
+   */
+  async listProjects(
+    workspaceId: string,
+    limit: number,
+    cursor?: string,
+    ownerAccountId?: string | null,
+  ): Promise<{ items: ProjectRecord[]; nextCursor: string | null }> {
     const client = await this.pool.connect();
     try {
       const params: unknown[] = [workspaceId, limit + 1];
+      let ownerSql = "";
+      const owner = storeOwnerAccountFilter(ownerAccountId);
+      if (owner && await projectOwnerColumnReadyIn(client)) {
+        params.push(owner);
+        ownerSql = `AND owner_account_id = $${String(params.length)}::uuid`;
+      }
       let cursorSql = "";
       if (cursor) {
         const [createdAt, id, extra] = cursor.split("|");
@@ -206,12 +223,14 @@ export class RuntimeStore {
           throw new PersistenceError("VALIDATION_ERROR", "Project cursor is invalid");
         }
         params.push(createdAt, id);
-        cursorSql = `AND (created_at, id) < ($3::timestamptz, $4::uuid)`;
+        const createdAtParam = params.length - 1;
+        const idParam = params.length;
+        cursorSql = `AND (created_at, id) < ($${String(createdAtParam)}::timestamptz, $${String(idParam)}::uuid)`;
       }
       const result = await client.query<QueryResultRow>(
         `SELECT id, workspace_id, title, premise, status, version, created_at, updated_at
            FROM project
-          WHERE workspace_id = $1 AND archived_at IS NULL AND status = 'ACTIVE' ${cursorSql}
+          WHERE workspace_id = $1 AND archived_at IS NULL AND status = 'ACTIVE' ${ownerSql} ${cursorSql}
           ORDER BY created_at DESC, id DESC
           LIMIT $2`,
         params,
@@ -225,13 +244,24 @@ export class RuntimeStore {
     }
   }
 
-  async getProject(workspaceId: string, projectId: string): Promise<ProjectRecord> {
+  /**
+   * Loads one active project. When ownerAccountId is set, another creator's id yields the same NOT_FOUND as a
+   * missing project (opaque 404; never a revealing 403).
+   */
+  async getProject(workspaceId: string, projectId: string, ownerAccountId?: string | null): Promise<ProjectRecord> {
     const client = await this.pool.connect();
     try {
+      const params: unknown[] = [projectId, workspaceId];
+      let ownerSql = "";
+      const owner = storeOwnerAccountFilter(ownerAccountId);
+      if (owner && await projectOwnerColumnReadyIn(client)) {
+        params.push(owner);
+        ownerSql = "AND owner_account_id = $3::uuid";
+      }
       const result = await client.query<QueryResultRow>(
         `SELECT id, workspace_id, title, premise, status, version, created_at, updated_at
-           FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE'`,
-        [projectId, workspaceId],
+           FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE' ${ownerSql}`,
+        params,
       );
       const row = result.rows[0];
       if (!row) throw new PersistenceError("NOT_FOUND", "Project not found");
@@ -797,27 +827,58 @@ const JOB_COLUMNS = `j.id, j.workspace_id, j.project_id, j.workflow_run_id, j.ki
  */
 export async function insertProject(
   client: PoolClient,
-  input: { workspaceId: string; title: string; premise: string; plan?: { episodeCount: number; targetEpisodeSeconds: number } },
+  input: {
+    workspaceId: string;
+    title: string;
+    premise: string;
+    plan?: { episodeCount: number; targetEpisodeSeconds: number };
+    /** When set, stamps creator ownership. When omitted, the DB trigger assigns the workspace legacy owner. */
+    ownerAccountId?: string | null;
+  },
 ): Promise<ProjectRecord & ProjectEpisodePlan> {
   if (input.plan && !await episodePlanReadyIn(client)) {
     throw new PersistenceError("EPISODE_PLAN_UNAVAILABLE", "Episode plan storage is not migrated; nothing was created");
   }
+  const owner = storeOwnerAccountFilter(input.ownerAccountId ?? undefined);
+  const hasOwnerColumn = await projectOwnerColumnReadyIn(client);
   const result = input.plan
     ? await client.query<QueryResultRow>(
-      `INSERT INTO project (workspace_id, title, premise, episode_count, target_episode_seconds)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`,
-      [input.workspaceId, input.title, input.premise, input.plan.episodeCount, input.plan.targetEpisodeSeconds],
+      hasOwnerColumn && owner
+        ? `INSERT INTO project (workspace_id, title, premise, episode_count, target_episode_seconds, owner_account_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`
+        : `INSERT INTO project (workspace_id, title, premise, episode_count, target_episode_seconds)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`,
+      hasOwnerColumn && owner
+        ? [input.workspaceId, input.title, input.premise, input.plan.episodeCount, input.plan.targetEpisodeSeconds, owner]
+        : [input.workspaceId, input.title, input.premise, input.plan.episodeCount, input.plan.targetEpisodeSeconds],
     )
     : await client.query<QueryResultRow>(
-      `INSERT INTO project (workspace_id, title, premise)
-       VALUES ($1, $2, $3)
-       RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`,
-      [input.workspaceId, input.title, input.premise],
+      hasOwnerColumn && owner
+        ? `INSERT INTO project (workspace_id, title, premise, owner_account_id)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`
+        : `INSERT INTO project (workspace_id, title, premise)
+           VALUES ($1, $2, $3)
+           RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`,
+      hasOwnerColumn && owner
+        ? [input.workspaceId, input.title, input.premise, owner]
+        : [input.workspaceId, input.title, input.premise],
     );
   const row = result.rows[0];
   if (!row) throw new PersistenceError("PROJECT_CREATE_FAILED", "Project was not created");
   return { ...mapProject(row), ...(input.plan ? { ...input.plan, writingMode: "short" as const } : LEGACY_EPISODE_PLAN) };
+}
+
+async function projectOwnerColumnReadyIn(client: PoolClient): Promise<boolean> {
+  const result = await client.query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'project' AND column_name = 'owner_account_id'
+     ) AS present`,
+  );
+  return result.rows[0]?.present === true;
 }
 
 function mapLease(row: QueryResultRow): ExpiredLeaseRow {

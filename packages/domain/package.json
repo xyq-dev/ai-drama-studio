@@ -32,6 +32,10 @@
     "./commercial-web-robustness": {
       "types": "./dist/commercial-web-robustness.d.ts",
       "default": "./dist/commercial-web-robustness.js"
+    },
+    "./creator-account-plan": {
+      "types": "./dist/creator-account-plan.d.ts",
+      "default": "./dist/creator-account-plan.js"
     }
   },
   "dependencies": {

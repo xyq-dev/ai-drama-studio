@@ -141,6 +141,8 @@ export interface StudioContext {
   actorId: string;
   traceId: string;
   idempotencyKey?: string;
+  /** Phase-4 creator ownership stamp for creates; null keeps legacy-owner DB default. */
+  ownerAccountId?: string | null;
 }
 
 export class StudioService {
@@ -179,22 +181,28 @@ export class StudioService {
       throw new PersistenceError("EPISODE_PLAN_UNAVAILABLE", "Episode plan storage is not migrated; nothing was created");
     }
     return this.jobs.runIdempotent(this.scope(context, "POST", "/projects", identity), 201, (client) =>
-      insertProject(client, { workspaceId: this.workspaceId, title: input.title, premise: input.premise, ...(plan ? { plan } : {}) }),
+      insertProject(client, {
+        workspaceId: this.workspaceId, title: input.title, premise: input.premise,
+        ...(plan ? { plan } : {}),
+        ...(context.ownerAccountId ? { ownerAccountId: context.ownerAccountId } : {}),
+      }),
     );
   }
 
-  async listProjects(cursor?: string) {
-    return this.store.listProjects(this.workspaceId, 20, cursor);
+  async listProjects(cursor?: string, ownerAccountId?: string | null) {
+    return this.store.listProjects(this.workspaceId, 20, cursor, ownerAccountId);
   }
 
   /** The project with its episode plan: episodeCount (three without a plan) and targetEpisodeSeconds (null when unknown). */
-  async getProject(projectId: string) {
-    const project = await this.store.getProject(this.workspaceId, projectId);
+  async getProject(projectId: string, ownerAccountId?: string | null) {
+    const project = await this.store.getProject(this.workspaceId, projectId, ownerAccountId);
     return { ...project, ...await this.store.getProjectEpisodePlan(this.workspaceId, projectId) };
   }
 
-  getProjectCostSummary(projectId: string) {
-    return this.store.readProjectCostSummary(this.workspaceId, projectId);
+  getProjectCostSummary(projectId: string, ownerAccountId?: string | null) {
+    // Ownership check first so cross-account cost reads are opaque 404s.
+    return this.store.getProject(this.workspaceId, projectId, ownerAccountId).then(() =>
+      this.store.readProjectCostSummary(this.workspaceId, projectId));
   }
 
   async createStoryRevision(

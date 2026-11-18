@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Head, Headers, Inject, Optional, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
-import { PersistenceError, RuntimeStore } from "@ai-drama/database";
+import { PersistenceError, RuntimeStore, storeActorId, storeOwnerAccountFilter } from "@ai-drama/database";
 import { SITE_AUTH, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import { RUNTIME_STORE, STUDIO_SERVICE } from "./tokens";
 import { attachmentDisposition } from "./episode-export";
@@ -795,7 +795,12 @@ export class StudioController {
   }
 
   private context(idempotencyKey: string | undefined, traceHeader: string | undefined): StudioContext {
-    return { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey };
+    return {
+      actorId: storeActorId(),
+      traceId: createTraceId(traceHeader),
+      idempotencyKey,
+      ownerAccountId: storeOwnerAccountFilter() ?? undefined,
+    };
   }
 
   private async send<T>(response: StatusResponse, work: Promise<{ status: number; body: T }>): Promise<T> {

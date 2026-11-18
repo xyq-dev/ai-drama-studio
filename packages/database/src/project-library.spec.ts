@@ -51,8 +51,8 @@ describe("project library reads", () => {
     const next = await store.list(WORKSPACE, { q: "都市%_", category: CATEGORY, cursor: page.nextCursor! });
     expect(next.nextCursor).toBeNull();
     const pages = statements.filter((statement) => statement.sql.includes("LIMIT $6"));
-    expect(pages[0]?.values).toEqual([WORKSPACE, "%都市\\%\\_%", CATEGORY, null, null, 21]);
-    expect(pages[1]?.values).toEqual([WORKSPACE, "%都市\\%\\_%", CATEGORY, cursor.at, cursor.id, 21]);
+    expect(pages[0]?.values).toEqual([WORKSPACE, "%都市\\%\\_%", CATEGORY, null, null, 21, null]);
+    expect(pages[1]?.values).toEqual([WORKSPACE, "%都市\\%\\_%", CATEGORY, cursor.at, cursor.id, 21, null]);
     expect(pages[0]?.sql).toContain("asset.workspace_id = p.workspace_id");
     expect(pages[0]?.sql).toContain("asset.review_status <> 'REJECTED'");
     expect(pages[0]?.sql).toContain("asset.width > 1 AND asset.height > 1");

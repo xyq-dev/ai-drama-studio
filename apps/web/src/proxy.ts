@@ -51,6 +51,6 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
 }
 
 export const config = {
-  // Everything except the login page, the API (which enforces the session itself) and built static assets.
-  matcher: ["/((?!login$|api/|_next/static/).*)"],
+  // Everything except login/register, the API (which enforces the session itself) and built static assets.
+  matcher: ["/((?!login$|register$|api/|_next/static/).*)"],
 };

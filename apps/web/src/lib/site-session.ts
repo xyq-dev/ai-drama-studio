@@ -109,8 +109,11 @@ export interface SiteSession {
   enabled: boolean;
   authenticated: boolean;
   username?: string;
+  role?: "operator" | "creator";
+  accountId?: string;
   csrfToken?: string;
   expiresAt?: string;
+  publicRegistrationEnabled?: boolean;
 }
 
 /**

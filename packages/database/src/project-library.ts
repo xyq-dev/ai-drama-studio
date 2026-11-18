@@ -1,11 +1,19 @@
 import { Buffer } from "node:buffer";
 import { SCRIPT_WORKBENCH_SCHEMA, type ProjectLibraryScript } from "@ai-drama/contracts";
 import type { PoolClient } from "pg";
+import { storeOwnerAccountFilter } from "./creator-access-context";
 import { PersistenceError, type DatabasePool } from "./job-service";
 
 export const PROJECT_LIBRARY_PAGE_SIZE = 20;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export interface ProjectLibraryQuery { q?: string; category?: string; sort?: "updated" | "created"; cursor?: string }
+export interface ProjectLibraryQuery {
+  q?: string;
+  category?: string;
+  sort?: "updated" | "created";
+  cursor?: string;
+  /** Phase-4 creator isolation: when set, only that account's works appear in 「我的作品」. */
+  ownerAccountId?: string | null;
+}
 export interface ProjectLibraryCategory { id: string; name: string; count: number }
 export interface ProjectLibraryItem {
   id: string; title: string; premise: string; createdAt: string; updatedAt: string;
@@ -36,7 +44,10 @@ interface LibraryReadiness {
 }
 interface Cursor { v: 1; sort: "updated" | "created"; q: string; category: string; at: string; id: string }
 
-export function normalizeLibraryQuery(input: ProjectLibraryQuery): Required<Omit<ProjectLibraryQuery, "cursor">> & { cursor?: string } {
+export function normalizeLibraryQuery(input: ProjectLibraryQuery): Required<Omit<ProjectLibraryQuery, "cursor" | "ownerAccountId">> & {
+  cursor?: string;
+  ownerAccountId?: string | null;
+} {
   const q = input.q?.trim() ?? "";
   const category = input.category ?? "all";
   const sort = input.sort ?? "updated";
@@ -45,7 +56,14 @@ export function normalizeLibraryQuery(input: ProjectLibraryQuery): Required<Omit
     throw new PersistenceError("VALIDATION_ERROR", "作品查询参数无效。");
   }
   if (input.cursor && input.cursor.length > 2048) throw new PersistenceError("VALIDATION_ERROR", "分页参数无效。");
-  return { q, category: category.toLowerCase(), sort, ...(input.cursor ? { cursor: input.cursor } : {}) };
+  if (input.ownerAccountId != null && !UUID.test(input.ownerAccountId)) {
+    throw new PersistenceError("VALIDATION_ERROR", "作品查询参数无效。");
+  }
+  return {
+    q, category: category.toLowerCase(), sort,
+    ...(input.cursor ? { cursor: input.cursor } : {}),
+    ...(input.ownerAccountId ? { ownerAccountId: input.ownerAccountId.toLowerCase() } : {}),
+  };
 }
 
 function decodeCursor(raw: string | undefined, query: ReturnType<typeof normalizeLibraryQuery>): Cursor | null {
@@ -183,24 +201,42 @@ export class ProjectLibraryStore {
       const scriptJoin = scriptJoins(ready);
       const searchJoins = query.q ? scriptJoin : "";
       const matchesSearch = `(p.title ILIKE $2 OR p.premise ILIKE $2${query.q ? " OR script.title ILIKE $2" : ""})`;
-      const searchClause = `p.workspace_id = $1 AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND ${matchesSearch}`;
+      const ownerAccountId = storeOwnerAccountFilter(query.ownerAccountId);
+      const ownerFilter = ownerAccountId
+        ? await client.query<{ present: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = 'project' AND column_name = 'owner_account_id'
+           ) AS present`,
+        ).then((result) => result.rows[0]?.present === true)
+        : false;
+      const ownerClause = ownerFilter ? "AND p.owner_account_id = $7::uuid" : "";
+      const searchClause = `p.workspace_id = $1 AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND ${matchesSearch} ${ownerClause}`;
       const assignmentJoin = ready.categories
         ? "LEFT JOIN project_library_assignment a ON a.project_id = p.id AND a.workspace_id = p.workspace_id"
         : "LEFT JOIN LATERAL (SELECT NULL::uuid AS category_id, 0 AS revision) a ON true";
       const categoryClause = "($3::text = 'all' OR ($3 = 'uncategorized' AND a.category_id IS NULL) OR a.category_id::text = $3)";
+      const listParams: unknown[] = [
+        workspaceId, search, query.category, cursor?.at ?? null, cursor?.id ?? null, PROJECT_LIBRARY_PAGE_SIZE + 1,
+        ownerFilter ? ownerAccountId : null,
+      ];
       const counts = await client.query<{ all_count: string; total: string; unclassified_count: string }>(`
         SELECT count(*) AS all_count, count(*) FILTER (WHERE ${categoryClause}) AS total,
           count(*) FILTER (WHERE a.category_id IS NULL) AS unclassified_count
-        FROM project p ${assignmentJoin} ${searchJoins} WHERE ${searchClause}`, [workspaceId, search, query.category]);
+        FROM project p ${assignmentJoin} ${searchJoins} WHERE ${searchClause}`, listParams);
       let categories: ProjectLibraryCategory[] = [];
       if (ready.categories) {
+        const ownerJoin = ownerFilter ? "AND p.owner_account_id = $3::uuid" : "";
         const result = await client.query<{ id: string; name: string; count: string }>(`
           SELECT c.id, c.name, count(p.id)${query.q ? ` FILTER (WHERE ${matchesSearch})` : ""} AS count FROM project_library_category c
           LEFT JOIN project_library_assignment a ON a.category_id = c.id AND a.workspace_id = c.workspace_id
           LEFT JOIN project p ON p.id = a.project_id AND p.workspace_id = a.workspace_id
-            AND p.archived_at IS NULL AND p.status = 'ACTIVE'
+            AND p.archived_at IS NULL AND p.status = 'ACTIVE' ${ownerJoin}
           ${searchJoins}
-          WHERE c.workspace_id = $1 GROUP BY c.id, c.name ORDER BY c.created_at, c.id`, query.q ? [workspaceId, search] : [workspaceId]);
+          WHERE c.workspace_id = $1 GROUP BY c.id, c.name ORDER BY c.created_at, c.id`,
+        query.q
+          ? (ownerFilter ? [workspaceId, search, ownerAccountId] : [workspaceId, search])
+          : (ownerFilter ? [workspaceId, null, ownerAccountId] : [workspaceId]));
         categories = result.rows.map((row) => ({ ...row, count: Number(row.count) }));
       }
       const timestamp = query.sort === "updated" ? "p.updated_at" : "p.created_at";
@@ -227,8 +263,7 @@ export class ProjectLibraryStore {
         FROM project p ${assignmentJoin} ${categoryJoin} ${thumbnailJoin} ${scriptJoin}
         WHERE ${searchClause} AND ${categoryClause}
           AND ($4::timestamptz IS NULL OR (${timestamp}, p.id) < ($4::timestamptz, $5::uuid))
-        ORDER BY ${timestamp} DESC, p.id DESC LIMIT $6`,
-      [workspaceId, search, query.category, cursor?.at ?? null, cursor?.id ?? null, PROJECT_LIBRARY_PAGE_SIZE + 1]);
+        ORDER BY ${timestamp} DESC, p.id DESC LIMIT $6`, listParams);
       await client.query("COMMIT");
       const rows = result.rows.slice(0, PROJECT_LIBRARY_PAGE_SIZE);
       const last = rows.at(-1);
@@ -296,7 +331,17 @@ export class ProjectLibraryStore {
       await client.query("BEGIN");
       await requireWorkspace(client, workspaceId);
       requireCategories(await readiness(client));
-      const project = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE' FOR UPDATE", [projectId, workspaceId]);
+      const owner = storeOwnerAccountFilter();
+      const project = owner
+        ? await client.query(
+          `SELECT id FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE'
+             AND owner_account_id = $3::uuid FOR UPDATE`,
+          [projectId, workspaceId, owner],
+        )
+        : await client.query(
+          "SELECT id FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE' FOR UPDATE",
+          [projectId, workspaceId],
+        );
       if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "作品不存在。");
       let categoryName: string | null = null;
       if (categoryId) {
