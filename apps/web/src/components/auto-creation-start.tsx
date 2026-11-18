@@ -9,6 +9,7 @@ import {
   autoCreationWorstCalls,
   type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
+import { formatAutoCreationStartBillingNote } from "@ai-drama/domain";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { suggestTitle } from "../lib/beginner-start";
 import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, providerTarget, tokenRequired } from "../lib/title-writing-client";
@@ -399,7 +400,7 @@ export function AutoCreationStart() {
             ) : null}
             <li data-testid="auto-calls">调用次数：正常 {normal} 次；含最多 {shown.rounds} 轮修改（每轮最多改 {autoCreationRevisionsPerRound(shown.episodeCount)} 集并复查）最坏 {worst} 次；
               包括你确认的续跑重发（{AUTO_CREATION_RESEND_ALLOWANCE} 次）在内，本次预算上限 {budgetValue} 次，不会超出。</li>
-            <li>每次输出上限 {options.maxOutputTokensPerCall} tokens，输入不超过约 {options.maxPromptChars} 字。费用以服务商账单为准，本页不估算金额（费用未知）。</li>
+            <li data-testid="auto-billing-note">每次输出上限 {options.maxOutputTokensPerCall} tokens，输入不超过约 {options.maxPromptChars} 字。{formatAutoCreationStartBillingNote(options.billing)}。</li>
             <li>管理员限额：最近 24 小时最多 {options.maxCallsPerDay} 次调用（与其他 AI 创作共用），同时最多 {options.maxActiveRuns} 个创作任务。</li>
             <li data-testid="auto-research-mode">研究方式：内置资料快照 {research?.builtInSources} 条（其中可读的市场资料 {research?.readableMarketSources} 条）
               {research?.fetchEnabled ? `，并读取公开页面（${research.allowedHosts.join("、")}）` : "；服务端未开启公开页面读取"}；没有视频画面分析能力，只分析文字。
