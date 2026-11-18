@@ -118,7 +118,7 @@ async function world() {
     expectedReviewVersion: sceneReview.reviewVersion, to: "APPROVED", reviewedBy: actor }));
   const shot = await tx(async client => chain.createShotScopedInTransaction(client, { workspaceId, projectId, sceneId: scene.entityId,
     sourceSceneRevisionId: scene.revisionId, ordinal: 1, shotType: "中景", camera: "固定", action: "旁白", dialogue,
-    promptText: "Acceptance image prompt", createdBy: actor, expectedVersion: await version("scene", scene.entityId) }));
+    promptText: "验收镜头：固定中景，旁白站在窗边回眸。", createdBy: actor, expectedVersion: await version("scene", scene.entityId) }));
   const shotReview = await tx(client => chain.reviewSceneShotInTransaction(client, { kind: "shot", workspaceId, projectId, episodeId,
     sceneId: scene.entityId, shotId: shot.entityId, revisionId: shot.revisionId, expectedVersion: shot.rowVersion,
     expectedReviewVersion: 1, to: "IN_REVIEW", reviewedBy: actor }));
@@ -146,6 +146,9 @@ async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
     DASHSCOPE_MEDIA_API_KEY: "synthetic-never-sent-key", DASHSCOPE_MEDIA_CREDENTIAL_VERSION: "fixture-v1",
     DASHSCOPE_MEDIA_PRICE_IMAGE: "0.18", DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND: "0.1", DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER: "0.00008",
     DASHSCOPE_MEDIA_VIDEO_SECONDS: "15",
+    MINIMAX_API_KEY: "synthetic-minimax-never-sent-key", MINIMAX_TTS_CREDENTIAL_VERSION: "fixture-v1",
+    MINIMAX_TTS_PRICE_CHARACTER: "0.0002", MINIMAX_TTS_MODEL: "speech-2.8-hd",
+    MINIMAX_TTS_BASE_URL: "https://api.minimaxi.com", MINIMAX_TTS_OUTPUT_FORMAT: "wav", MINIMAX_TTS_SAMPLE_RATE: "44100",
     REAL_MEDIA_MAX_SINGLE_CNY: "2",
     ...(comfyFetch ? { COMFYUI_IMAGE_ENABLED: "true", COMFYUI_BASE_URL: comfyOrigin, COMFYUI_ALLOWED_ORIGINS: comfyOrigin,
       COMFYUI_CHECKPOINT: comfyCheckpoint, COMFYUI_PRICE_IMAGE_ESTIMATE: "0.01", COMFYUI_TARGETED_CANCELLATION: "true" } : {}),
@@ -161,6 +164,9 @@ async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
     await q(`INSERT INTO provider_configuration(id,workspace_id,provider_key,capability,default_timeout_ms,max_attempts)
       VALUES($1,$2,$3,$4,180000,1)`, [config.id, w.workspaceId, config.providerKey, capability]);
   }
+  const minimaxConfig = (await runtime.minimaxTtsConfiguration())!;
+  await q(`INSERT INTO provider_configuration(id,workspace_id,provider_key,capability,default_timeout_ms,max_attempts)
+      VALUES($1,$2,$3,$4,180000,1)`, [minimaxConfig.id, w.workspaceId, minimaxConfig.providerKey, minimaxConfig.capability]);
   const memory = new Map<string, Buffer>();
   const s3: S3MediaClient = {
     async put(input) { if (memory.has(input.key)) return "exists"; memory.set(input.key, Buffer.from(input.bytes)); return "created"; },
@@ -172,7 +178,12 @@ async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
     configurationFor: async (capability, client) => {
       const config = await runtime.configurationFor(capability);
       return config && await store.configurationStillEnabled(config, client) ? config : null;
-    }, speechCatalog: () => runtime.speechCatalog(),
+    },
+    minimaxTtsConfigurationFor: async client => {
+      const config = await runtime.minimaxTtsConfiguration();
+      return config && await store.configurationStillEnabled(config, client) ? config : null;
+    },
+    speechCatalog: () => runtime.minimaxSpeechCatalog(),
     ...(comfyConfig ? { comfyUiConfigurationFor: async () => comfyConfig,
       comfyUiReadiness: async () => ({ status: (await comfyAdapter("query").checkReadiness()).state === "READY" ? "available" : "missing_dependencies", workflows: [] }) } : {}) };
   const media = new RealMediaService(policy);
@@ -378,7 +389,7 @@ describe("ComfyUI storyboard flow against disposable PostgreSQL and a protocol f
     const listPath = `/projects/${w.projectId}/episodes/${w.episodeId}/scenes/${w.sceneId}/shots`;
     const storyboard = await h.http<{ items: { rowVersion: number }[] }>(listPath + "?view=storyboard");
     expect(storyboard).toMatchObject({
-      items: [{ storyboard: { ordinal: 1, action: "旁白", promptText: "Acceptance image prompt", characters: [],
+      items: [{ storyboard: { ordinal: 1, action: "旁白", promptText: "验收镜头：固定中景，旁白站在窗边回眸。", characters: [],
         candidates: expect.arrayContaining([{ id: editAsset.id, kind: "IMAGE", storageProvider: "s3", status: "ACTIVE" }]),
         selectedAssetId: editAsset.id } }],
     });

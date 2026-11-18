@@ -11,6 +11,20 @@ describe("local pre-paid media dependency preflight",()=>{
   it("refuses missing binaries with a safe local error",async()=>{
     await expect(preflightRealMediaTools({workDir:tmpdir(),ffprobeBin:"/definitely-missing/ffprobe"})).rejects.toMatchObject({code:"REAL_MEDIA_TOOLS_UNAVAILABLE"});
   });
+  it.skipIf(process.env.REAL_MEDIA_TOOL_SMOKE!=="true")("normalizes a MiniMax speech-2.8-hd wav data receipt into probed studio WAV",async()=>{
+    const directory=await mkdtemp(join(tmpdir(),"real-media-minimax-"));
+    try{
+      await preflightRealMediaTools({workDir:directory});
+      const file=join(directory,"fixture.wav");
+      await promisify(execFile)("ffmpeg",["-v","error","-f","lavfi","-i","sine=frequency=440:duration=0.2","-ar","44100","-ac","1","-c:a","pcm_s16le",file],{timeout:10000,maxBuffer:1024*1024});
+      const uri=`data:audio/wav;rate=44100;base64,${(await readFile(file)).toString("base64")}`;
+      const adapter={resolveOutput:async()=>({uri})} as unknown as MediaProviderAdapter;
+      const configuration={providerKey:"minimax-tts",model:"speech-2.8-hd",parameters:{outputFormat:"wav",sampleRate:44100}} as RealMediaConfiguration;
+      const result=await createRealMediaMaterializer({workDir:directory})({kind:"AUDIO",retrieval:{kind:"URI",uri},mimeTypeHint:"audio/wav"},adapter,configuration);
+      expect(result.mimeType).toBe("audio/wav");expect(result.bytes.subarray(0,4).toString()).toBe("RIFF");
+      expect(result.durationMs).toBeGreaterThanOrEqual(190);expect(result.durationMs).toBeLessThan(300);
+    }finally{await rm(directory,{recursive:true,force:true});}
+  },30000);
   it.skipIf(process.env.REAL_MEDIA_TOOL_SMOKE!=="true")("preflights installed codecs and normalizes an offline MP3 fixture into probed WAV",async()=>{
     const directory=await mkdtemp(join(tmpdir(),"real-media-offline-"));
     try{

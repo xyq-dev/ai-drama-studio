@@ -39,7 +39,7 @@ import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
 import { PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore } from "@ai-drama/database";
-import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject } from "@ai-drama/providers";
+import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject, canonicalMiniMaxTtsBaseUrl } from "@ai-drama/providers";
 import { StorageSettingsService } from "../admin/storage-settings.service";
 import { VimaxPlanningService } from "./vimax-planning.service";
 import { RealMediaService } from "./real-media.service";
@@ -292,6 +292,52 @@ export class StudioRuntime implements OnModuleDestroy {
           configuration,
         };
       },
+      mediaVoiceProbe: async () => {
+        const mediaEnv = env.REAL_MEDIA_ENV ?? {};
+        let configuration;
+        try {
+          const resolved = await realRuntime.minimaxTtsConfiguration();
+          configuration = resolved && await mediaStore.configurationStillEnabled(resolved) ? resolved : null;
+        } catch {
+          configuration = null;
+        }
+        let baseUrlCompliant = true;
+        try {
+          canonicalMiniMaxTtsBaseUrl(mediaEnv.MINIMAX_TTS_BASE_URL ?? "https://api.minimaxi.com");
+        } catch {
+          baseUrlCompliant = false;
+        }
+        return {
+          // Only MINIMAX_API_KEY counts — never ELEVENLABS_TTS_API_KEY or writing OPENAI_API_KEY.
+          minimaxApiKeyPresent: Boolean(mediaEnv.MINIMAX_API_KEY),
+          unitPricePresent: Boolean(mediaEnv.MINIMAX_TTS_PRICE_CHARACTER),
+          priceVersionPresent: Boolean(mediaEnv.REAL_MEDIA_PRICE_VERSION),
+          baseUrlCompliant,
+          configuration,
+          // Phase 3 wires speech catalog/quote/generate onto MiniMax; assertRealMediaInput accepts minimaxSpeech.
+          webPathAcceptsMinimax: true,
+        };
+      },
+      mediaVideoProbe: async () => {
+        const mediaEnv = env.REAL_MEDIA_ENV ?? {};
+        let configuration;
+        try {
+          const resolved = await realRuntime.configurationFor("video.generate");
+          configuration = resolved && await mediaStore.configurationStillEnabled(resolved) ? resolved : null;
+        } catch {
+          configuration = null;
+        }
+        return {
+          dashscopeApiKeyPresent: Boolean(mediaEnv.DASHSCOPE_MEDIA_API_KEY),
+          unitPricePresent: Boolean(mediaEnv.DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND),
+          priceVersionPresent: Boolean(mediaEnv.REAL_MEDIA_PRICE_VERSION),
+          configuration,
+          chinesePromptGateReady: true,
+          characterReferenceGate: env.M3_CHARACTER_REFERENCE_GATE,
+          shotComposeEnabled: localComposeEnabled && (mockAvEnabled || realComposeAllowed),
+          episodeComposeEnabled,
+        };
+      },
     });
     const shortSequelAi = new ShortSequelAiService({ workspaceId, enabled: autoCreationEnabled,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null, siteOperator: siteLoginValid, defaultProvider,
@@ -345,9 +391,15 @@ export class StudioRuntime implements OnModuleDestroy {
         return configuration?.enabled && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
       },
       comfyUiReadiness: () => realRuntime.checkComfyUi(),
+      minimaxTtsConfigurationFor: async client => {
+        const configuration = await realRuntime.minimaxTtsConfiguration();
+        return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
+      },
       speechCatalog: async () => {
-        const configuration = await realRuntime.configurationFor("audio.tts");
-        return configuration && await mediaStore.configurationStillEnabled(configuration) ? realRuntime.speechCatalog()
+        // Official website voice is MiniMax speech-2.8-hd only — never Bailian qwen3-tts-flash.
+        const configuration = await realRuntime.minimaxTtsConfiguration();
+        return configuration && await mediaStore.configurationStillEnabled(configuration)
+          ? realRuntime.minimaxSpeechCatalog()
           : { available: false, reasonCode: "SPEECH_PROVIDER_NOT_CONFIGURED", catalogVersion: "none", voices: [] };
       },
       ...(mediaClient ? { objects: { readVerified: (asset, scope) => readVerifiedS3MediaObject(mediaClient, asset, scope) } } : {}) });

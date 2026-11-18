@@ -310,14 +310,17 @@ function sourceGuard(role: ComposePreflightRole, asset: ComposeAssetFacts | null
 function realRequestId(role: ComposePreflightRole, asset: ComposeAssetFacts, job: ComposeJobFacts, attempt: ComposeAttemptFacts): string {
   const receipt = attempt.realMediaReceipt;
   const snapshot = job.inputSnapshot;
-  const provider = role === "music" ? "elevenlabs-media" : "dashscope-media";
+  // Official website speech is MiniMax; legacy Bailian audio receipts remain readable. Video stays DashScope; music stays ElevenLabs.
+  const allowedProviders = role === "music" ? ["elevenlabs-media"]
+    : role === "audio" ? ["minimax-tts", "dashscope-media"]
+    : ["dashscope-media"];
   if (
     role === "subtitle" ||
     asset.sourceKind !== "PROVIDER" ||
     !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) ||
     (snapshot as Record<string, unknown>).schema !== "real-media.v1" ||
     !receipt || receipt.state !== "SUCCEEDED" ||
-    receipt.providerKey !== provider || receipt.capability !== SLOT_RULES[role].capability ||
+    !allowedProviders.includes(receipt.providerKey) || receipt.capability !== SLOT_RULES[role].capability ||
     !job.inputHash || !/^[0-9a-f]{64}$/.test(job.inputHash) || receipt.inputHash !== job.inputHash ||
     !receipt.providerRequestId || receipt.providerRequestId !== asset.providerRequestId ||
     receipt.providerRequestId !== attempt.providerRequestId ||

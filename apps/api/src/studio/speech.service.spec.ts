@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SpeechAudioOverflowError } from "@ai-drama/domain";
-import type { SpeechGenerationInput, SpeechGenerationPort } from "@ai-drama/contracts";
+import { speechVoiceSchema, type SpeechGenerationInput, type SpeechGenerationPort } from "@ai-drama/contracts";
 import { PersistenceError, type SpeechPersistence } from "@ai-drama/database";
 import { SpeechService } from "./speech.service";
 const id = "11111111-1111-4111-8111-111111111111";
@@ -30,6 +30,24 @@ describe("speech API service", () => {
     expect(await service.batchConfirm(id, { ...request, extra: "x".repeat(128 * 1024) }, context)).toMatchObject({ status: 413,
       body: { error: { code: "SPEECH_BATCH_REQUEST_TOO_LARGE" } } });
     expect(batchStore.confirm).toHaveBeenCalledOnce();
+  });
+  it("parses the MiniMax website catalog through speechVoiceSchema without Zod rejection", async () => {
+    const voices = [
+      ["female-shaonv", "少女"], ["female-yujie", "御姐"], ["female-chengshu", "成熟女声"],
+      ["male-qn-qingse", "青涩男声"], ["male-qn-jingying", "精英男声"],
+    ].map(([voiceId, name]) => speechVoiceSchema.parse({
+      catalogVoiceId: "minimax:" + voiceId, name, providerConfigurationId: id, providerConfigurationVersion: "mm-v1",
+      providerKey: "minimax-tts", model: "speech-2.8-hd", modelVersion: "mm-v1", voiceId, locale: "zh-CN",
+      rightsRef: "https://platform.minimaxi.com/",
+      capabilities: { emotions: ["neutral"], speedMin: 1, speedMax: 1, maxTextCharacters: 2000 },
+    }));
+    const { service, port } = setup();
+    port.capabilities.mockResolvedValue({ available: true, reasonCode: null, catalogVersion: "minimax-voices.v1", voices });
+    const result = await service.capabilities(id);
+    expect(result).toMatchObject({ status: 200, body: { available: true, catalogVersion: "minimax-voices.v1" } });
+    expect((result.body as { voices: unknown[] }).voices).toHaveLength(5);
+    expect((result.body as { voices: Array<{ capabilities: { maxTextCharacters?: number } }> }).voices
+      .every((voice) => (voice.capabilities.maxTextCharacters ?? 0) <= 2000)).toBe(true);
   });
   it("exposes explicit unavailable storage/configuration without fabricating quotes or jobs", async () => {
     const missing = setup({ ready: false });

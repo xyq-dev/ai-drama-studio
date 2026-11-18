@@ -62,10 +62,14 @@ export class PostgresVoiceComposeStore {
         const receipt = receipts.get(String(row.source_attempt_id));
         const snapshot = row.source_input_snapshot as { schema?: string } | null;
         const capability = role === "video" ? "video.generate" : role === "music" ? "audio.music" : "audio.tts";
+        // Official website speech is MiniMax; legacy Bailian dashscope TTS receipts remain readable. Video stays DashScope; music stays ElevenLabs.
+        const allowedProviders = role === "music" ? ["elevenlabs-media"]
+          : role === "video" ? ["dashscope-media"]
+          : ["minimax-tts", "dashscope-media"];
         if (!receipt || receipt.state !== "SUCCEEDED" || receipt.generation_job_id !== row.source_generation_job_id ||
           receipt.provider_configuration_id !== row.provider_configuration_id || receipt.provider_request_id !== row.provider_request_id ||
           receipt.input_hash !== row.source_input_hash || snapshot?.schema !== "real-media.v1" ||
-          receipt.provider_key !== (role === "music" ? "elevenlabs-media" : "dashscope-media") || receipt.capability !== capability ||
+          !allowedProviders.includes(String(receipt.provider_key)) || receipt.capability !== capability ||
           String(row.provider_request_id).startsWith("mock-media|")) fail("COMPOSE_INPUT_INVALID", "Voice compose real source has no matching successful receipt");
       }
       return { role, assetId, ...(lineId ? { lineId } : {}), storageProvider: row.storage_provider as VoiceComposeSourceObject["storageProvider"],

@@ -1550,8 +1550,9 @@ export interface AutoCreationOptionsView {
   };
   /**
    * Media chain behind the script package.
-   * Phase 2: `openai-media` appears in realProviders only when REAL_MEDIA_IMAGE_PROVIDER=openai-media and an
-   * enabled gpt-image-2.5-sunburst configuration passes isAutoStoryboardImageConfiguration. Voice/video stay missing.
+   * Phase 2–3: `openai-media` when sunburst image is connected; `minimax-tts` when MiniMax speech-2.8-hd is
+   * connected and the website path accepts it; `dashscope-media` when wan2.6-i2v-flash video generate is connected.
+   * missing lists concrete gaps (never hard-coded demo-only placeholders when a probe exists).
    */
   media: { realProviders: string[]; mockOnly: boolean; missing: string[] };
 }
