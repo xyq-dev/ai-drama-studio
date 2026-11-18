@@ -121,8 +121,25 @@ describe("Auto episode storyboard", () => {
     const { writes } = fixture({ ...view(episode(1)), imageAvailable: false });
     render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
     await screen.findByText("还没有接通 OpenAI 生图，不能生成分镜头");
+    expect(screen.getByTestId("auto-storyboard-keep-note").textContent).toContain("不等于分镜审核通过");
     expect((screen.getByRole("button", { name: "生成这一集的分镜头" }) as HTMLButtonElement).disabled).toBe(true);
     expect(writes).toEqual([]);
+  });
+
+  it("opens a quote only after confirmation gates and never treats keep as review approval", async () => {
+    const { writes } = fixture(view(episode(1, [shot(A)])));
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote={false} />);
+    expect(await screen.findByTestId("auto-storyboard-keep-note")).toBeTruthy();
+    expect(screen.getByTestId("auto-storyboard-keep-note").textContent).toContain("未审核不得进入后续受控制作");
+    expect(writes).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "生成本镜 门口一镜" }));
+    expect(await screen.findByText("0.1 USD")).toBeTruthy();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.url).toMatch(/\/quote$/u);
+    expect(writes.some((item) => item.url.endsWith("/authorize") || item.url.endsWith("/generate"))).toBe(false);
+    fireEvent.click(screen.getByRole("checkbox", { name: "确认按上述额度生成分镜图" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成 1 镜" }));
+    await waitFor(() => expect(writes.filter((item) => item.url.endsWith("/generate"))).toHaveLength(1));
   });
 
   it.each([
@@ -324,9 +341,12 @@ describe("Auto episode storyboard", () => {
   it("keeps a successful candidate with an explicit compare-and-set", async () => {
     const { writes } = fixture(view(episode(1, [shot(A, "generated", ASSET)])));
     render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote={false} />);
+    expect((await screen.findByTestId("auto-storyboard-keep-note")).textContent).toContain("不等于分镜审核通过");
     fireEvent.click(await screen.findByRole("button", { name: "保留本图 门口一镜" }));
     await waitFor(() => expect(writes).toEqual([expect.objectContaining({
       method: "PUT", url: `${BASE}/${A}/selection`, body: { assetId: ASSET, expectedSelectedAssetId: null },
     })]));
+    // Keep only selects the image draft; it is not a storyboard-review approval write.
+    expect(writes.every((item) => !item.url.includes("/review") && !String(item.body).includes("APPROVE"))).toBe(true);
   });
 });

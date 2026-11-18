@@ -260,6 +260,8 @@ export class StudioRuntime implements OnModuleDestroy {
       maxCallsPerDay,
       ...(env.AUTO_CREATION_RESEARCH_FETCH ? { fetchPages: createResearchFetcher({ allowedHosts }), defaultResearchUrls: [...OCEAN_ENGINE_ENTRY_URLS] } : {}),
     });
+    // Shared with RealMediaService below: options.media must use the same enabled sunburst config path.
+    const mediaStore = new RealMediaStore(pool, realRuntime.receiptCipher ? { receiptCipher: realRuntime.receiptCipher } : {});
     const autoCreation = new AutoCreationService({
       workspaceId,
       enabled: autoCreationEnabled,
@@ -274,6 +276,22 @@ export class StudioRuntime implements OnModuleDestroy {
       maxActiveRuns,
       research: { fetchEnabled: env.AUTO_CREATION_RESEARCH_FETCH, allowedHosts },
       ...(configurationPending ? { configurationPending } : {}),
+      mediaImageProbe: async () => {
+        const mediaEnv = env.REAL_MEDIA_ENV ?? {};
+        let configuration;
+        try {
+          const resolved = await realRuntime.configurationFor("image.generate");
+          configuration = resolved && await mediaStore.configurationStillEnabled(resolved) ? resolved : null;
+        } catch {
+          configuration = null;
+        }
+        return {
+          imageProvider: mediaEnv.REAL_MEDIA_IMAGE_PROVIDER,
+          // Writing OPENAI_API_KEY is intentionally ignored — only the media key counts.
+          mediaApiKeyPresent: Boolean(mediaEnv.OPENAI_MEDIA_API_KEY),
+          configuration,
+        };
+      },
     });
     const shortSequelAi = new ShortSequelAiService({ workspaceId, enabled: autoCreationEnabled,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null, siteOperator: siteLoginValid, defaultProvider,
@@ -314,7 +332,6 @@ export class StudioRuntime implements OnModuleDestroy {
       store: planningStore, executor: new VimaxPlanningExecutor({ workspaceId, store: planningStore, providers: titleProviders,
         transport: createFetchTransport() }), maxCallsPerDay, maxActiveRuns });
 
-    const mediaStore = new RealMediaStore(pool, realRuntime.receiptCipher ? { receiptCipher: realRuntime.receiptCipher } : {});
     const mediaAssets = new MediaAssetStore(pool);
     const mediaClient = realRuntime.receiptCipher ? (storageAuthority
       ? new ManagedStorageRouter(storageAuthority, storageOptions) : new MediaS3Client(legacyStorage)) : null;

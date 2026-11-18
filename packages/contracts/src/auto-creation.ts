@@ -1548,7 +1548,11 @@ export interface AutoCreationOptionsView {
     expectedMode: "sourced" | "limited";
     visualAnalysis: false;
   };
-  /** The media chain behind the script package: real providers configured (none in this build) and what is missing. */
+  /**
+   * Media chain behind the script package.
+   * Phase 2: `openai-media` appears in realProviders only when REAL_MEDIA_IMAGE_PROVIDER=openai-media and an
+   * enabled gpt-image-2.5-sunburst configuration passes isAutoStoryboardImageConfiguration. Voice/video stay missing.
+   */
   media: { realProviders: string[]; mockOnly: boolean; missing: string[] };
 }
 

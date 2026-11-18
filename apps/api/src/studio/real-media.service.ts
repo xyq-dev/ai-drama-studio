@@ -1,7 +1,7 @@
 import { createHash, randomInt } from "node:crypto";
-import { comfyUiShotSelectionSchema,isAutoStoryboardImageConfiguration,realMediaAuthorizationSchema,realMediaGenerateSchema,realMediaQuoteRequestSchema,type ComfyUiAvailability,type RealMediaConfiguration,
+import { comfyUiShotSelectionSchema,realMediaAuthorizationSchema,realMediaGenerateSchema,realMediaQuoteRequestSchema,type ComfyUiAvailability,type RealMediaConfiguration,
   type RealMediaCapability,type SpeechCapabilities,type SpeechGenerationInput,type SpeechGenerationPort,type SpeechBatchDispatchRef } from "@ai-drama/contracts";
-import { realMediaAmountUnits,realMediaInputHash,realMediaJobKind } from "@ai-drama/domain";
+import { passesAutoStoryboardImageRuntimeGate,realMediaInputHash,realMediaJobKind } from "@ai-drama/domain";
 import { assertComfyUiImageInput, assertComfyUiPromptText, canonicalOpenAiImageBaseUrl } from "@ai-drama/providers";
 import { PersistenceError,assertSpeechGenerationInputInTransaction,assertSpeechBatchDispatchInTransaction,bindSpeechBatchJobInTransaction,freezeComfyUiReference,type JobPersistenceService,type MediaAssetStore,
   adoptAutoStoryboardImage,assertAutoStoryboardSource,autoStoryboardMediaReadiness,freezeAutoStoryboardSource,readAutoEpisodeStoryboardSources,
@@ -183,13 +183,12 @@ export class RealMediaService {
   }
   private async autoStoryboardConfiguration(client?:MediaTransactionClient){
     const configuration=await this.options.configurationFor("image.generate",client);
-    if(isAutoStoryboardImageConfiguration(configuration)){
-      const url=String(configuration.parameters.baseUrl);
+    // Budget/origin/region gate is shared with auto-creation options.media reporting.
+    if(passesAutoStoryboardImageRuntimeGate(configuration)){
       try{
-        const limit=configuration.maximumOperationAmount??configuration.unitPrice;
-        if(canonicalOpenAiImageBaseUrl(url)===url&&new URL(url).hostname===configuration.region
-          &&realMediaAmountUnits(limit)>=realMediaAmountUnits(configuration.unitPrice))return configuration;
-      }catch{/* Invalid origin or price. */}
+        const url=String(configuration.parameters.baseUrl);
+        if(canonicalOpenAiImageBaseUrl(url)===url)return configuration;
+      }catch{/* Invalid OpenAI image origin. */}
     }
     throw new PersistenceError("AUTO_STORYBOARD_OPENAI_UNAVAILABLE","OpenAI storyboard images are unavailable");
   }

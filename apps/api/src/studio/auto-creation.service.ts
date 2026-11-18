@@ -30,6 +30,8 @@ import {
   autoPackageMarkdown,
   encodeUserReviseDepends,
   planAutoUserRevise,
+  resolveAutoCreationMediaOptions,
+  type AutoStoryboardImageProbe,
 } from "@ai-drama/domain";
 import {
   TEXT_WRITING_MAX_OUTPUT_TOKENS,
@@ -64,6 +66,12 @@ export interface AutoCreationDependencies {
   maxActiveRuns: number;
   research: { fetchEnabled: boolean; allowedHosts: readonly string[] };
   configurationPending?: () => Promise<boolean>;
+  /**
+   * Honest OpenAI sunburst image probe for options.media.
+   * Must not treat writing OPENAI_API_KEY as media authorization.
+   * When omitted, options report image + voice + video as disconnected.
+   */
+  mediaImageProbe?: () => Promise<AutoStoryboardImageProbe>;
   clock?: () => Date;
   schedule?: (work: () => Promise<void>) => void;
 }
@@ -119,13 +127,6 @@ const MESSAGES: Record<string, string> = {
 function failure(status: number, code: string, details?: Record<string, unknown>): AutoCreationResult {
   return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
 }
-
-const MEDIA_MISSING = [
-  "真实图片生成服务（当前只有演示素材）",
-  "真实语音合成服务（当前只有演示素材）",
-  "真实视频生成服务（当前只有演示素材）",
-  "剧本拆解功能（服务端关闭，不会写入分镜生产数据）",
-];
 
 /**
  * Project-scoped AI automatic creation. Starting and resuming may cost money: the switch, the operator, ready storage,
@@ -200,9 +201,17 @@ export class AutoCreationService {
         expectedMode: readableMarket > 0 ? "sourced" : "limited",
         visualAnalysis: false,
       },
-      media: { realProviders: [], mockOnly: true, missing: MEDIA_MISSING },
+      media: await this.mediaOptions(),
     };
     return { status: 200, body };
+  }
+
+  /** Report OpenAI image from the live probe; voice/video stay disconnected until phase 3. */
+  private async mediaOptions(): Promise<AutoCreationOptionsView["media"]> {
+    const probe: AutoStoryboardImageProbe = this.deps.mediaImageProbe
+      ? await this.deps.mediaImageProbe()
+      : { imageProvider: undefined, mediaApiKeyPresent: false, configuration: null };
+    return resolveAutoCreationMediaOptions(probe);
   }
 
   private async gate(token: OperatorProof | string | undefined): Promise<AutoCreationResult | null> {

@@ -24,6 +24,10 @@
     "./auto-creation-cost-display": {
       "types": "./dist/auto-creation-cost-display.d.ts",
       "default": "./dist/auto-creation-cost-display.js"
+    },
+    "./auto-creation-media-capability": {
+      "types": "./dist/auto-creation-media-capability.d.ts",
+      "default": "./dist/auto-creation-media-capability.js"
     }
   },
   "dependencies": {
