@@ -68,6 +68,18 @@ describe("AI 自动创作 start card", () => {
     expect(writes[1]?.body).toMatchObject({ autoStoryboardAfterScripts: checked });
   });
 
+  it("start page keeps call budget honest and does not collapse unpriced amount into 费用未知", async () => {
+    server(options());
+    render(<AutoCreationStart />);
+    await screen.findByTestId("auto-provider-target");
+    expect(screen.getByTestId("auto-calls").textContent).toContain("正常 6 次");
+    const billing = screen.getByTestId("auto-billing-note").textContent!;
+    expect(billing).toContain("本页不估算金额");
+    expect(billing).toContain("金额尚未计价");
+    expect(billing).not.toContain("费用未知");
+    expect(billing).not.toMatch(/金额\s*0|费用\s*0/u);
+  });
+
   it("uses the same optional genre for presets and advanced settings without starting a request", async () => {
     const calls = server(options());
     render(<AutoCreationStart />);
@@ -1261,7 +1273,12 @@ describe("AI 自动创作 run page", () => {
     fireEvent.click(within(section).getByText(/R2/).closest("label")!.querySelector("input")!);
     fireEvent.change(screen.getByTestId("auto-user-revise-instruction"), { target: { value: "并写清可见犹豫" } });
     fireEvent.click(screen.getByTestId("auto-user-revise-preview"));
-    expect((await screen.findByTestId("auto-user-revise-quote")).textContent).toContain("消耗 2 次");
+    const quote = await screen.findByTestId("auto-user-revise-quote");
+    expect(quote.textContent).toContain("消耗 2 次");
+    expect(quote.textContent).toContain("剩余修改轮次将变为 1");
+    expect(quote.textContent).toContain("金额尚未计价");
+    expect(quote.textContent).not.toContain("费用未知");
+    expect(quote.textContent).not.toMatch(/金额\s*0|费用\s*0/u);
     expect(posts).toHaveLength(1);
     expect(posts[0]!.body).toMatchObject({ confirm: false, findingIds: ["R2"] });
     expect(posts[0]!.key).toBeFalsy();
@@ -1271,6 +1288,36 @@ describe("AI 自动创作 run page", () => {
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1]!.body).toMatchObject({ confirm: true, findingIds: ["R2"], instruction: "并写清可见犹豫" });
     expect(posts[1]!.key).toBeTruthy();
+  });
+
+  it("result page separates recorded usage from amount not yet priced and lists bill-check call fields", async () => {
+    const callId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const done = run({
+      state: "completed", quality: "passed", errorCode: null, callsUsed: 8, callCap: 12, revisionRoundsUsed: 0,
+      openIssues: [],
+      calls: [{
+        callId, stageKey: "research", attemptNo: 1, providerKey: "deepseek", model: "deepseek-flash",
+        responseModel: "deepseek-flash", providerRequestId: "req-last-key-1", state: "completed", errorCode: null,
+        usage: { status: "present", inputTokens: 120, outputTokens: 340, totalTokens: 460 },
+        billingStatus: "unknown", createdAt: "2026-11-17T01:00:00.000Z", finishedAt: "2026-11-17T01:00:02.000Z",
+      }],
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: done }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    const header = await screen.findByTestId("auto-call-count");
+    expect(header.textContent).toContain("已用 8 / 预算 12 次");
+    expect(header.textContent).toContain("金额尚未计价");
+    expect(header.textContent).not.toContain("费用未知");
+    expect(header.textContent).not.toMatch(/金额\s*0|费用\s*0/u);
+    const row = await screen.findByTestId(`auto-call-${callId}`);
+    expect(row.textContent).toContain("研究与受众分析");
+    expect(row.textContent).toContain("服务商 DeepSeek");
+    expect(row.textContent).toContain("模型 deepseek-flash");
+    expect(row.textContent).toContain("请求 id req-last-key-1");
+    expect(row.textContent).toContain("用量 输入 120 / 输出 340 / 合计 460 tokens");
+    expect(row.textContent).toContain("时间 2026-11-17T01:00:02.000Z");
+    expect(row.textContent).toContain("计费 尚未计价");
+    expect(row.textContent).not.toContain("费用未知");
   });
 
   it("a user-revise start whose answer was lost is replayed with its own key and body; a new key only after a confirmed result", async () => {

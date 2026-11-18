@@ -18,6 +18,11 @@ import {
   type AutoRevision,
   type AutoSourcesOutput,
 } from "@ai-drama/contracts";
+import {
+  formatAutoCreationBudgetBillingNote,
+  formatAutoCreationCallRecord,
+  formatAutoCreationReviseQuoteBillingNote,
+} from "@ai-drama/domain/auto-creation-cost-display";
 import { TitleWritingError, tokenRequired } from "../lib/title-writing-client";
 import {
   AUTO_REVIEW_DIMENSION_LABELS,
@@ -242,7 +247,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
           <h1 className={styles.heading} data-testid="auto-headline">{autoHeadline(run)}</h1>
           <ul className={autoStyles.list}>
             <li>模型：{PROVIDER_LABELS[run.providerKey] ?? run.providerKey} · {run.model}（冻结，不会改用其他服务）</li>
-            <li data-testid="auto-call-count">调用：已用 {run.callsUsed} / 预算 {run.callCap} 次（正常 {run.budget.normalCalls}，最坏 {run.budget.worstCalls}）；修改轮次 {run.revisionRoundsUsed} / {run.budget.revisionRounds}；费用未知</li>
+            <li data-testid="auto-call-count">调用：已用 {run.callsUsed} / 预算 {run.callCap} 次（正常 {run.budget.normalCalls}，最坏 {run.budget.worstCalls}）；修改轮次 {run.revisionRoundsUsed} / {run.budget.revisionRounds}；{formatAutoCreationBudgetBillingNote(run.budget.billing)}</li>
             <li>规模：{run.episodeCount} 集 · 每集目标约 {run.episodeSeconds} 秒（写作目标，不是成片实测）</li>
             <li data-testid="auto-research">研究：{run.researchMode === "limited" ? "AI 创作策划（受众待验证，市场证据不可用；不是实时市场验证）" : run.researchMode === "sourced" ? "有可读取的市场资料" : "尚未整理"}</li>
             {run.idea ? <li>你的想法：{run.idea}</li> : <li>你没有提供想法，由 AI 自主策划。</li>}
@@ -337,7 +342,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
             {!pendingUserRevise && reviseQuote ? (
               <p className={styles.helper} data-testid="auto-user-revise-quote" role="status">
                 确认后将消耗 {reviseQuote.callsNeeded} 次调用；剩余修改轮次将变为 {reviseQuote.roundsRemainingAfter}；
-                调用余额约余 {reviseQuote.callsRemainingAfter} 次。未确认不会扣次或发模型。
+                调用余额约余 {reviseQuote.callsRemainingAfter} 次；{formatAutoCreationReviseQuoteBillingNote(run.budget.billing)}。
               </p>
             ) : null}
             {needsToken ? <input className={styles.input} aria-label="操作者令牌" type="password" value={token} onChange={(event) => setToken(event.target.value)} /> : null}
@@ -682,8 +687,21 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
           <summary>调用记录（{run.calls.length} 次）</summary>
           <ul className={autoStyles.list}>
             {run.calls.map((call) => (
-              <li key={call.callId}>{autoStageLabel(call.stageKey)} 第 {call.attemptNo} 次：{autoStageStateText(call.state)}{call.errorCode ? `（${call.errorCode}）` : ""}；
-                用量 {call.usage.status === "present" ? `${String(call.usage.totalTokens)} tokens` : "未知"}；费用未知</li>
+              <li key={call.callId} data-testid={`auto-call-${call.callId}`}>
+                {formatAutoCreationCallRecord({
+                  stageLabel: autoStageLabel(call.stageKey),
+                  attemptNo: call.attemptNo,
+                  stateText: autoStageStateText(call.state),
+                  errorCode: call.errorCode,
+                  providerLabel: PROVIDER_LABELS[call.providerKey] ?? call.providerKey,
+                  model: call.model,
+                  providerRequestId: call.providerRequestId,
+                  usage: call.usage,
+                  billingStatus: call.billingStatus,
+                  createdAt: call.createdAt,
+                  finishedAt: call.finishedAt,
+                })}
+              </li>
             ))}
           </ul>
         </details>

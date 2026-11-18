@@ -434,6 +434,11 @@ describe("automatic creation API", () => {
     const quoted = await service.userRevise(P1, runId, { instruction: "改动机", confirm: false }, TOKEN, CONTEXT());
     expect(quoted.status).toBe(200);
     expect(quoted.body).toMatchObject({ quote: { callsNeeded: 2, roundsRemainingAfter: 1 } });
+    // Quote is call/round counts only — no invented money fields while billing stays unknown.
+    expect(quoted.body).toEqual(expect.objectContaining({
+      quote: expect.not.objectContaining({ amount: expect.anything(), price: expect.anything(), total: expect.anything() }),
+    }));
+    expect(JSON.stringify(quoted.body)).not.toMatch(/"(amount|unitPrice|totalPrice|priceYen|fee)"\s*:/u);
     expect(seen).toHaveLength(before);
     expect((await service.userRevise(P1, runId, { instruction: "改动机", confirm: true }, TOKEN, CONTEXT())).status).toBe(400);
     const confirmed = await service.userRevise(P1, runId, { instruction: "改动机", confirm: true }, TOKEN, CONTEXT("user-revise-1"));
@@ -445,6 +450,27 @@ describe("automatic creation API", () => {
     const replay = await service.userRevise(P1, runId, { instruction: "改动机", confirm: true }, TOKEN, CONTEXT("user-revise-1"));
     expect(replay.status).toBe(200);
     expect(seen.slice(before)).toHaveLength(2);
+  });
+
+  it("completed run exposes recorded usage and unknown billing on bill-checkable call records", async () => {
+    const { service, settle, run } = setup();
+    const started = await service.start(P1, { revisionRounds: 0, callBudget: 7 }, TOKEN, CONTEXT("usage-visible"));
+    const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+    await settle();
+    const done = await run(runId);
+    expect(done).toMatchObject({ state: "completed", budget: { billing: "unknown" }, callsUsed: autoCreationNormalCalls(1) });
+    expect(done.calls.length).toBe(autoCreationNormalCalls(1));
+    expect(done.calls.every((call) => call.billingStatus === "unknown")).toBe(true);
+    expect(done.calls.every((call) => call.usage.status === "present"
+      && call.usage.inputTokens === 100
+      && call.usage.outputTokens === 200
+      && call.usage.totalTokens === 300
+      && typeof call.providerKey === "string"
+      && typeof call.model === "string"
+      && typeof call.stageKey === "string"
+      && typeof call.createdAt === "string")).toBe(true);
+    expect(done.calls.some((call) => call.providerRequestId !== null && call.providerRequestId.length > 0)).toBe(true);
+    expect(JSON.stringify(done.calls)).not.toMatch(/"(amount|unitPrice|totalPrice)"\s*:/u);
   });
 
   it("user revise findings-only and both quote paths work without charging before confirm", async () => {
