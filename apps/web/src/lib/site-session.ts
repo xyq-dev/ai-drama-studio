@@ -109,8 +109,11 @@ export interface SiteSession {
   enabled: boolean;
   authenticated: boolean;
   username?: string;
+  role?: "operator" | "creator";
+  accountId?: string;
   csrfToken?: string;
   expiresAt?: string;
+  publicRegistrationEnabled?: boolean;
 }
 
 /**
@@ -120,10 +123,22 @@ export interface SiteSession {
 export async function readSession(fetchImpl: FetchLike = globalThis.fetch.bind(globalThis), options: { passive?: boolean } = {}): Promise<SiteSession> {
   const response = await fetchImpl("/api/v1/auth/session", { headers: { Accept: "application/json", ...(options.passive ? { "X-Session-Check": "passive" } : {}) },
     credentials: "same-origin", cache: "no-store" });
-  if (response.status === 401) return { enabled: true, authenticated: false };
+  if (response.status === 401) {
+    // Expired/forged cookie path: treat as signed out. Registration flag is unavailable here (safe default off).
+    return { enabled: true, authenticated: false, publicRegistrationEnabled: false };
+  }
   if (!response.ok) throw new Error("LOGIN_SERVICE_UNAVAILABLE");
   const body = await response.json() as SiteSession;
-  return { enabled: body.enabled !== false, authenticated: body.authenticated === true, username: body.username, csrfToken: body.csrfToken, expiresAt: body.expiresAt };
+  return {
+    enabled: body.enabled !== false,
+    authenticated: body.authenticated === true,
+    username: body.username,
+    role: body.role,
+    accountId: body.accountId,
+    csrfToken: body.csrfToken,
+    expiresAt: body.expiresAt,
+    publicRegistrationEnabled: body.publicRegistrationEnabled === true,
+  };
 }
 
 export function logout(fetchImpl: FetchLike = globalThis.fetch.bind(globalThis)): Promise<void> {

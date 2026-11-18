@@ -125,6 +125,11 @@ export interface ApiEnv {
   SITE_AUTH_USERNAME?: string;
   SITE_AUTH_PASSWORD_HASH?: string;
   SITE_AUTH_PUBLIC_ORIGIN?: string;
+  /**
+   * Public creator self-service registration. Process environment only; default off.
+   * Set CREATOR_PUBLIC_REGISTRATION_ENABLED=true to allow POST /auth/register on the official web path.
+   */
+  CREATOR_PUBLIC_REGISTRATION_ENABLED?: string;
 }
 
 /** Provider secrets and endpoints are accepted only from the process environment. */
@@ -149,6 +154,7 @@ const PROCESS_ONLY_KEYS = [
   "SITE_AUTH_USERNAME",
   "SITE_AUTH_PASSWORD_HASH",
   "SITE_AUTH_PUBLIC_ORIGIN",
+  "CREATOR_PUBLIC_REGISTRATION_ENABLED",
 ] as const;
 
 const API_KEYS = [

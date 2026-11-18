@@ -89,9 +89,19 @@ describe("CSRF and session handling for API requests", () => {
   });
   it("reads the session state and logs out with the CSRF token", async () => {
     document.cookie = `ads_csrf=${CSRF}; Path=/`;
-    expect(await readSession(async () => new Response("{}", { status: 401 }))).toEqual({ enabled: true, authenticated: false });
-    expect(await readSession(async () => new Response(JSON.stringify({ enabled: false, authenticated: false }))))
-      .toMatchObject({ enabled: false, authenticated: false });
+    expect(await readSession(async () => new Response("{}", { status: 401 }))).toEqual({
+      enabled: true, authenticated: false, publicRegistrationEnabled: false,
+    });
+    expect(await readSession(async () => new Response(JSON.stringify({
+      enabled: false, authenticated: false, publicRegistrationEnabled: true,
+    })))).toEqual({ enabled: false, authenticated: false, publicRegistrationEnabled: true });
+    expect(await readSession(async () => new Response(JSON.stringify({
+      enabled: true, authenticated: true, username: "alice", role: "creator",
+      accountId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", csrfToken: CSRF,
+      publicRegistrationEnabled: true,
+    })))).toMatchObject({
+      authenticated: true, username: "alice", role: "creator", publicRegistrationEnabled: true,
+    });
     await expect(readSession(async () => new Response("{}", { status: 503 }))).rejects.toThrow();
     window.sessionStorage.setItem(WORKBENCH_DRAFT_PREFIX + "project-one", "unsaved-one");
     window.sessionStorage.setItem(WORKBENCH_DRAFT_PREFIX + "project-two", "unsaved-two");

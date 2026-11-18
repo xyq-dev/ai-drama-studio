@@ -179,6 +179,15 @@ describe("site login over real HTTP", () => {
     expect(isAnonymous("GET", "/api/v1/projects")).toBe(false);
   });
 
+  it("exposes the registration flag to signed-out visitors without a session cookie", async () => {
+    await start();
+    const response = await request("/auth/session");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      enabled: true, authenticated: false, publicRegistrationEnabled: false,
+    });
+  });
+
   it("serves reads with the session, restores it on refresh, and requires origin and CSRF for writes", async () => {
     await start();
     const { read, write, view } = await signedIn();
@@ -186,7 +195,9 @@ describe("site login over real HTTP", () => {
     // A page reload reads the session again: same CSRF token, still signed in.
     const again = await request("/auth/session", { headers: read });
     expect(again.status).toBe(200);
-    expect(await again.json()).toMatchObject({ authenticated: true, username: USERNAME, csrfToken: view.csrfToken });
+    expect(await again.json()).toMatchObject({
+      authenticated: true, username: USERNAME, role: "operator", csrfToken: view.csrfToken,
+    });
 
     const post = (headers: Record<string, string>) => request("/projects", { method: "POST", headers, body: JSON.stringify({ title: "t" }) });
     expect((await post({ ...write, origin: "https://evil.example" })).status).toBe(403);
@@ -289,7 +300,9 @@ describe("site login over real HTTP", () => {
   it("leaves routes open only when login is explicitly off, and says so to the web", async () => {
     await start({ kind: "disabled" });
     expect((await request("/projects")).status).toBe(200);
-    expect(await (await request("/auth/session")).json()).toEqual({ enabled: false, authenticated: false });
+    expect(await (await request("/auth/session")).json()).toEqual({
+      enabled: false, authenticated: false, publicRegistrationEnabled: false,
+    });
     expect((await login()).status).toBe(503);
   });
 

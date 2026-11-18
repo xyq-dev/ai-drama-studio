@@ -38,7 +38,7 @@ export class AdminModelsController {
   models(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
-      auth.session(headers);
+      this.requireOperator(headers, auth);
       return backend.view();
     });
   }
@@ -47,6 +47,7 @@ export class AdminModelsController {
   comfyUiConnection(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
       const { auth } = this.configured();
+      this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length > 0) {
         throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -65,6 +66,7 @@ export class AdminModelsController {
   ) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
+      this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       const key = adminProviderKeySchema.safeParse(providerKey);
       const input = adminProviderUpdateSchema.safeParse(body);
@@ -81,6 +83,7 @@ export class AdminModelsController {
   ) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
+      this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       const input = adminLimitsUpdateSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -91,6 +94,12 @@ export class AdminModelsController {
   private configured(): { auth: SiteAuth; backend: AdminModelsBackend } {
     if (!this.backend || this.site?.kind !== "enabled") throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
     return { auth: this.site.auth, backend: this.backend };
+  }
+
+  /** Model console stays operator-only; creator sessions get the same opaque refusal as an unauthenticated call. */
+  private requireOperator(headers: RequestHeaders, auth: SiteAuth): void {
+    const session = auth.session(headers);
+    if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
   }
 
   private async send(response: AdminResponse, work: () => unknown | Promise<unknown>, status = 200): Promise<unknown> {

@@ -141,6 +141,8 @@ export interface StudioContext {
   actorId: string;
   traceId: string;
   idempotencyKey?: string;
+  /** Phase-4 creator ownership stamp for creates; null keeps legacy-owner DB default. */
+  ownerAccountId?: string | null;
 }
 
 export class StudioService {
@@ -179,22 +181,28 @@ export class StudioService {
       throw new PersistenceError("EPISODE_PLAN_UNAVAILABLE", "Episode plan storage is not migrated; nothing was created");
     }
     return this.jobs.runIdempotent(this.scope(context, "POST", "/projects", identity), 201, (client) =>
-      insertProject(client, { workspaceId: this.workspaceId, title: input.title, premise: input.premise, ...(plan ? { plan } : {}) }),
+      insertProject(client, {
+        workspaceId: this.workspaceId, title: input.title, premise: input.premise,
+        ...(plan ? { plan } : {}),
+        ...(context.ownerAccountId ? { ownerAccountId: context.ownerAccountId } : {}),
+      }),
     );
   }
 
-  async listProjects(cursor?: string) {
-    return this.store.listProjects(this.workspaceId, 20, cursor);
+  async listProjects(cursor?: string, ownerAccountId?: string | null) {
+    return this.store.listProjects(this.workspaceId, 20, cursor, ownerAccountId);
   }
 
   /** The project with its episode plan: episodeCount (three without a plan) and targetEpisodeSeconds (null when unknown). */
-  async getProject(projectId: string) {
-    const project = await this.store.getProject(this.workspaceId, projectId);
+  async getProject(projectId: string, ownerAccountId?: string | null) {
+    const project = await this.store.getProject(this.workspaceId, projectId, ownerAccountId);
     return { ...project, ...await this.store.getProjectEpisodePlan(this.workspaceId, projectId) };
   }
 
-  getProjectCostSummary(projectId: string) {
-    return this.store.readProjectCostSummary(this.workspaceId, projectId);
+  getProjectCostSummary(projectId: string, ownerAccountId?: string | null) {
+    // Ownership check first so cross-account cost reads are opaque 404s.
+    return this.store.getProject(this.workspaceId, projectId, ownerAccountId).then(() =>
+      this.store.readProjectCostSummary(this.workspaceId, projectId));
   }
 
   async createStoryRevision(
@@ -950,6 +958,8 @@ export class StudioService {
     if (!this.episodeComposeEnabled || !this.composeObjectDir || !this.mediaAssets) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
     }
+    // Opaque ownership gate for download + export-manifest (same NOT_FOUND as a missing project).
+    await this.store.getProject(this.workspaceId, projectId);
     const expectedContentHash = parseExpectedContentHash(query);
     const request = {
       workspaceId: this.workspaceId,
@@ -1094,10 +1104,13 @@ export class StudioService {
   }
 
   async getJob(jobId: string) {
+    // Ownership is enforced inside RuntimeStore.getJob via the request ALS scope.
     return this.store.getJob(this.workspaceId, jobId);
   }
 
   async cancelJob(jobId: string, context: StudioContext) {
+    // Opaque ownership gate before mutation: another creator's job id looks like NOT_FOUND.
+    await this.store.getJob(this.workspaceId, jobId);
     return this.jobs.cancelJobIdempotent(
       this.scope(context, "POST", `/generation-jobs/${jobId}/cancel`, {}),
       { workspaceId: this.workspaceId, jobId, traceId: context.traceId },
@@ -1151,6 +1164,7 @@ export class StudioService {
   }
 
   async getWorkflow(workflowRunId: string) {
+    // Ownership is enforced inside RuntimeStore.getWorkflow via the request ALS scope.
     return this.store.getWorkflow(this.workspaceId, workflowRunId);
   }
 
@@ -1160,6 +1174,8 @@ export class StudioService {
   }
 
   async cancelWorkflow(workflowRunId: string, context: StudioContext) {
+    // Opaque ownership gate before mutation: another creator's run id looks like NOT_FOUND.
+    await this.store.getWorkflow(this.workspaceId, workflowRunId);
     return this.jobs.cancelWorkflowRunIdempotent(
       this.scope(context, "POST", `/workflow-runs/${workflowRunId}/cancel`, {}),
       { workspaceId: this.workspaceId, workflowRunId, traceId: context.traceId },

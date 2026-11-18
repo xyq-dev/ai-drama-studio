@@ -61,7 +61,7 @@ describe("episode composite export", () => {
       return record;
     };
     const studio = new StudioService(
-      {} as never, {} as never, {} as never, workspaceId, undefined,
+      {} as never, { getProject: async () => ({ id: projectId }) } as never, {} as never, workspaceId, undefined,
       { inspectEpisodeCompositeExport } as unknown as MediaAssetStore,
       false, null, false, false, false, root, true,
     );
@@ -106,7 +106,7 @@ describe("episode composite export", () => {
     await mkdir(join(root, "compose", workspaceId, projectId, record.jobId, record.attemptId), { recursive: true });
     await writeFile(join(root, record.objectKey), bytes);
     const studio = new StudioService(
-      {} as never, {} as never, {} as never, workspaceId, undefined,
+      {} as never, { getProject: async () => ({ id: projectId }) } as never, {} as never, workspaceId, undefined,
       { inspectEpisodeCompositeExport: async () => record } as unknown as MediaAssetStore,
       false, null, false, false, false, root, true,
     );

@@ -71,6 +71,24 @@ async function main(): Promise<void> {
     const workspace = result.rows[0];
     if (!workspace) throw new Error("Configured workspace could not be provisioned");
     if (workspace.status !== "ACTIVE") throw new Error("Configured workspace exists but is not ACTIVE");
+    // After creator_account_plan: bind the well-known legacy owner so operator SITE_AUTH 「我的作品」
+    // can create/list works in a workspace provisioned after the migration (seed only covers rows present at migrate).
+    const ownerReady = await pool.query(
+      `SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'creator_account'`,
+    ) as { rows: unknown[] };
+    if (ownerReady.rows.length > 0) {
+      const legacyId = "a0000000-0000-4000-8000-000000000001";
+      await pool.query(
+        `INSERT INTO creator_account (id, workspace_id, username, password_hash, status)
+         SELECT $1::uuid, $2::uuid, 'legacy-owner', 'legacy-not-a-password-hash', 'LEGACY'
+          WHERE NOT EXISTS (SELECT 1 FROM creator_account WHERE id = $1::uuid)
+            AND NOT EXISTS (
+              SELECT 1 FROM creator_account WHERE workspace_id = $2::uuid AND username = 'legacy-owner'
+            )`,
+        [legacyId, workspaceId],
+      );
+    }
     process.stdout.write(`Workspace ${workspace.id} is provisioned and ACTIVE.\n`);
   } finally {
     await closePostgresPool(pool);

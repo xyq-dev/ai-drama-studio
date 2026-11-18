@@ -76,7 +76,7 @@ export function LoginPage() {
       <div className={styles.brand}><span className={styles.mark} aria-hidden="true"><span /></span><span>红果创作<small>把故事，做成短剧</small></span></div>
       <section className={styles.card} aria-labelledby="login-title">
         <h1 id="login-title">登录红果创作</h1>
-        <p className={styles.intro}>登录一次，即可使用创作页面、作品和模型后台。</p>
+        <p className={styles.intro}>创作者登录后只看到自己的作品；管理员登录可进入模型后台与运维入口。</p>
         {notice ? <div className={styles.notice} role="status">{notice}</div> : null}
         <form onSubmit={(event) => void submit(event)} noValidate>
           <label className={styles.field}>账号
@@ -92,7 +92,7 @@ export function LoginPage() {
             {busy ? "正在登录…" : "登录"}
           </button>
         </form>
-        <p className={styles.footnote}>本页不会把密码保存在浏览器存储中。登录状态在一段时间不用后自动结束，退出后需要重新登录。</p>
+        <p className={styles.footnote}>本页不会把密码保存在浏览器存储中。登录状态在一段时间不用后自动结束，退出后需要重新登录。<a href="/register">创建创作者账号</a>（需服务端开启公开注册）</p>
       </section>
     </main>
   </div>;

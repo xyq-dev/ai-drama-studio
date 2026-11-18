@@ -53,6 +53,8 @@ describe("project library reads", () => {
     const pages = statements.filter((statement) => statement.sql.includes("LIMIT $6"));
     expect(pages[0]?.values).toEqual([WORKSPACE, "%都市\\%\\_%", CATEGORY, null, null, 21]);
     expect(pages[1]?.values).toEqual([WORKSPACE, "%都市\\%\\_%", CATEGORY, cursor.at, cursor.id, 21]);
+    const count = statements.find((statement) => statement.sql.includes("count(*) AS all_count"));
+    expect(count?.values).toEqual([WORKSPACE, "%都市\\%\\_%", CATEGORY]);
     expect(pages[0]?.sql).toContain("asset.workspace_id = p.workspace_id");
     expect(pages[0]?.sql).toContain("asset.review_status <> 'REJECTED'");
     expect(pages[0]?.sql).toContain("asset.width > 1 AND asset.height > 1");
@@ -80,6 +82,30 @@ describe("project library reads", () => {
     expect(statements.at(-1)?.sql).toBe("ROLLBACK");
     expect(statements.some(({ sql }) => sql.includes("FROM project p"))).toBe(false);
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("binds contiguous ownership params for count and list when owner_account_id is present", async () => {
+    const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const item = { ...row(), category_id: null, category_name: null, category_revision: 0, thumbnail_asset_id: null };
+    const { store, statements } = harness([
+      active, ready,
+      { rows: [{ present: true }] },
+      { rows: [{ all_count: "1", total: "1", unclassified_count: "1" }] },
+      { rows: [{ id: CATEGORY, name: "都市", count: "1" }] },
+      { rows: [item] },
+    ]);
+    const { runWithStoreCreatorAccess } = await import("./creator-access-context");
+    const page = await runWithStoreCreatorAccess(
+      { kind: "scoped", ownerAccountId: OWNER, actorId: `creator:${OWNER}` },
+      () => store.list(WORKSPACE, { sort: "created" }),
+    );
+    expect(page.total).toBe(1);
+    const count = statements.find((statement) => statement.sql.includes("count(*) AS all_count"));
+    expect(count?.sql).toContain("p.owner_account_id = $4::uuid");
+    expect(count?.values).toEqual([WORKSPACE, "%%", "all", OWNER]);
+    const list = statements.find((statement) => statement.sql.includes("LIMIT $6"));
+    expect(list?.sql).toContain("p.owner_account_id = $7::uuid");
+    expect(list?.values).toEqual([WORKSPACE, "%%", "all", null, null, 21, OWNER]);
   });
 
   it("rejects suspended workspaces and stale query cursors before listing", async () => {
