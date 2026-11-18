@@ -278,7 +278,7 @@ export class StudioRuntime implements OnModuleDestroy {
       ...(configurationPending ? { configurationPending } : {}),
       mediaImageProbe: async () => {
         const mediaEnv = env.REAL_MEDIA_ENV ?? {};
-        let configuration = null;
+        let configuration;
         try {
           const resolved = await realRuntime.configurationFor("image.generate");
           configuration = resolved && await mediaStore.configurationStillEnabled(resolved) ? resolved : null;
