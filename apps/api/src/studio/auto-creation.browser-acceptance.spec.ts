@@ -250,11 +250,11 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await startButton.click();
     await navigated;
     firstProject = /\/projects\/([0-9a-f-]{36})\/auto$/.exec(page.url())![1]!;
-    await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     expect(seen).toHaveLength(autoCreationNormalCalls(1));
     // Reload: the stored stages and results come back as they are.
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     const states = await page.locator("[data-testid=auto-stages] li").evaluateAll((items) => items.map((item) => `${item.getAttribute("data-stage")}=${item.getAttribute("data-state")}`));
     expect(states).toEqual(["sources=completed", "research=completed", "directions=completed", "bible=completed", "outline=completed", "episode:1=completed", "review:1=completed"]);
     expect(await page.getByTestId("auto-quality").textContent()).toContain("不是人工审核");
@@ -306,7 +306,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     const sendsBefore = seen.length;
     const runId = (await q<{ id: string }>("SELECT id FROM auto_creation_run WHERE project_id = $1", [firstProject]))[0]!.id;
     await page.goto(`${WEB}/projects/${firstProject}/auto`, { waitUntil: "domcontentloaded" });
-    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     // The run's own link opens the story review of the work.
     await page.getByRole("link", { name: "去作品中人工审核故事" }).click();
     await page.waitForURL(`${WEB}/projects/${firstProject}/create?step=story`, { timeout: 30_000 });
@@ -342,7 +342,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     // Back through the page's own link, not history or a typed address.
     await entry.getByRole("link", { name: "回到 AI 自动创作任务" }).click();
     await page.waitForURL(`${WEB}/projects/${firstProject}/auto`, { timeout: 30_000 });
-    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     const placed = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes(`/auto-runs/${runId}/scripts`), { timeout: 20_000 });
     await page.getByRole("button", { name: "写入分集剧本草稿" }).click();
     expect((await placed).status()).toBe(200);
@@ -412,7 +412,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
       await card.getByRole("button", { name: "开始 AI 创作", exact: true }).click();
       await opened;
       const projectId = /\/projects\/([0-9a-f-]{36})\/auto$/.exec(page.url())![1]!;
-      await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("剧本包已完成（机器质量检查通过）");
+      await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
       expect(writes.map((entry) => entry.path)).toEqual(["/api/v1/projects", `/api/v1/projects/${projectId}/auto-runs`]);
       expect(writes[1]?.body).toMatchObject({ idea: "", constraints: { genre: "玄幻修仙" }, episodeCount: 2, episodeSeconds: 60 });
 
@@ -477,7 +477,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await card.getByRole("button", { name: "AI 自动创作" }).click();
     await navigated;
     const projectId = /\/projects\/([0-9a-f-]{36})\/auto$/.exec(page.url())![1]!;
-    await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     expect(seen.length - before).toBe(autoCreationNormalCalls(1) + 2);
     expect(seen.slice(before).every((item) => item.user.includes("一个外卖骑手在午夜前讨回被扣的工资") || item.stage.startsWith("review"))).toBe(true);
     expect(seen.slice(before).every((item) => item.user.includes("禁止题材或元素：复仇"))).toBe(true);
@@ -523,10 +523,10 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await waitFor("the run to finish without the page", async () =>
       (await q<{ state: string }>("SELECT state FROM auto_creation_run WHERE project_id = $1", [projectId]))[0]?.state === "completed");
     await page.goto(`${WEB}/projects/${projectId}/auto`, { waitUntil: "domcontentloaded" });
-    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     expect(await page.getByTestId("auto-call-count").textContent()).toContain("已用 6 / 预算 6 次");
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     expect(seen.length - before).toBe(6);
     expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [projectId]))).toEqual([{ review_status: "DRAFT" }]);
     // Limited research is shown as such: facts, hypotheses and their unexecuted plans apart; no market validation claimed.
@@ -583,7 +583,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
       serverRecord: { executedWith: { answerContract: "limited" }, marketEvidence: { status: "unavailable" } } });
     const sentBeforeReload = seen.length;
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     expect((await jsonOf()).research.analysis).toEqual(firstJson.research.analysis);
     const [again] = await Promise.all([page.waitForEvent("download"), page.getByTestId("auto-download-md").click()]);
     await again.saveAs(`${packagePath}.again`);
@@ -628,7 +628,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await waitFor("the run to finish without the page", async () =>
       (await q<{ state: string }>("SELECT state FROM auto_creation_run WHERE project_id = $1", [projectId]))[0]?.state === "completed");
     await page.goto(`${WEB}/projects/${projectId}/auto`, { waitUntil: "domcontentloaded" });
-    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     expect(seen.length - before).toBe(6);
     expect(await page.getByTestId("auto-call-count").textContent()).toContain("已用 6 / 预算 6 次");
     expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [projectId]))).toEqual([{ review_status: "DRAFT" }]);
@@ -666,7 +666,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     // Read back after a reload: the same notices, nothing sent.
     const sent = seen.length;
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     expect(await page.getByTestId("auto-unverified").locator("li").allTextContents()).toEqual(listed);
     expect(seen.length).toBe(sent);
     const stored = (await q<{ output_json: { unverified: unknown[] } }>(

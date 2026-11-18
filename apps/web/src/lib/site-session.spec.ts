@@ -65,6 +65,23 @@ describe("CSRF and session handling for API requests", () => {
     expect(await response.json()).toMatchObject({ error: { code: "AUTH_SESSION_EXPIRED" } });
     expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fprojects%2Fp1%2Fcreate%3Fstep%3Dstory&reason=expired");
   });
+  it("retains saved auto-creation and work progress on AUTH_SESSION_EXPIRED (does not clear recovery data)", async () => {
+    window.sessionStorage.setItem("auto-creation:start", JSON.stringify({ version: 1, title: "夜班", projectKey: "pk", runKey: "rk", projectId: null, request: { idea: "钥匙" } }));
+    window.sessionStorage.setItem("auto-creation:resume:p1:r1", JSON.stringify({ version: 1, projectId: "p1", runId: "r1", key: "idem-1", confirmUncertainCallIds: ["c1"] }));
+    window.sessionStorage.setItem(WORKBENCH_DRAFT_PREFIX + "project-one", "unsaved-plan");
+    window.sessionStorage.setItem("ads.real-media.pending.v1:shot-1", JSON.stringify({ schema: "ads.real-media.pending.v1", key: "media-1" }));
+    const clearEvent = vi.fn();
+    window.addEventListener(WORKBENCH_DRAFTS_CLEARED_EVENT, clearEvent);
+    const send = withSession(async () => new Response(JSON.stringify({ error: { code: "AUTH_SESSION_EXPIRED" } }), { status: 401 }));
+    await send("/api/v1/projects/p1/auto-runs/r1/user-revise", { method: "POST", body: "{}" });
+    expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fprojects%2Fp1%2Fcreate%3Fstep%3Dstory&reason=expired");
+    expect(clearEvent).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem("auto-creation:start")).toContain("钥匙");
+    expect(window.sessionStorage.getItem("auto-creation:resume:p1:r1")).toContain("idem-1");
+    expect(window.sessionStorage.getItem(WORKBENCH_DRAFT_PREFIX + "project-one")).toBe("unsaved-plan");
+    expect(window.sessionStorage.getItem("ads.real-media.pending.v1:shot-1")).toContain("media-1");
+    window.removeEventListener(WORKBENCH_DRAFTS_CLEARED_EVENT, clearEvent);
+  });
   it("leaves other 401 answers to the caller", async () => {
     await withSession(async () => new Response(JSON.stringify({ error: { code: "TITLE_WRITING_FORBIDDEN" } }), { status: 401 }))("/api/v1/x");
     await withSession(async () => new Response("not json", { status: 401 }))("/api/v1/x");

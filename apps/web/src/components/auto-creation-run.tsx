@@ -23,6 +23,7 @@ import {
   formatAutoCreationCallRecord,
   formatAutoCreationReviseQuoteBillingNote,
 } from "@ai-drama/domain/auto-creation-cost-display";
+import { formatUnreviewedDraftNotPublishableNote } from "@ai-drama/domain/commercial-web-robustness";
 import { TitleWritingError, tokenRequired } from "../lib/title-writing-client";
 import {
   AUTO_REVIEW_DIMENSION_LABELS,
@@ -267,6 +268,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
                   : "尚未保存"}</li>
             <li data-testid="auto-video-status">视频成片：未开始。之后可以去生成配音、动态和成片。</li>
           </ul>
+          <p className={styles.helper} data-testid="auto-publish-gate">{formatUnreviewedDraftNotPublishableNote()}</p>
           {runError ? <p className={run.state === "completed" ? styles.warning : styles.error} role="status">{runError}</p> : null}
           {run.openIssues.length > 0 ? (
             <ul className={autoStyles.list} data-testid="auto-open-issues">

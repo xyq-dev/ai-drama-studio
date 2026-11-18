@@ -602,4 +602,49 @@ describe("automatic creation API", () => {
     expect(errorCode(refused.body)).toBe("AUTO_CREATION_USER_REVISE_TOO_MANY_EPISODES");
     expect((refused.body as { error: { message: string } }).error.message).toContain("超过本轮改稿上限");
   });
+
+  describe("phase 5 commercial robustness", () => {
+    it("empty uncertain confirmation never schedules a paid resend", async () => {
+      const { service, settle, run, seen, store } = setup();
+      const started = await service.start(P1, { revisionRounds: 0, callBudget: 7 }, TOKEN, CONTEXT("robust-uncertain"));
+      const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+      await settle();
+      expect((await run(runId)).state).toBe("completed");
+      // Simulate an uncertain prior call that may already have been billed: resume without matching IDs must not send.
+      const call = store.calls.find((item) => item.runId === runId)!;
+      const stage = store.stages.find((item) => item.runId === runId && item.stageKey === call.stageKey)!;
+      call.state = "unknown";
+      call.errorCode = "disconnected";
+      stage.state = "unknown";
+      stage.errorCode = "disconnected";
+      const stored = store.runs.find((item) => item.id === runId)!;
+      stored.state = "needs_attention";
+      stored.errorCode = "disconnected";
+      const before = seen.length;
+      const beforeCalls = (await run(runId)).callsUsed;
+      const unconfirmed = await service.resume(P1, runId, { confirmUncertainCallIds: [] }, TOKEN, CONTEXT("robust-resume-empty"));
+      expect(unconfirmed.status).toBe(409);
+      expect(errorCode(unconfirmed.body)).toBe("AUTO_CREATION_NEEDS_CONFIRMATION");
+      expect(seen).toHaveLength(before);
+      expect((await run(runId)).callsUsed).toBe(beforeCalls);
+      expect(store.resumes.filter((item) => item.runId === runId)).toHaveLength(0);
+    });
+
+    it("unconfirmed user revise stays a quote and leaves call count / model send unchanged", async () => {
+      const { service, settle, run, seen } = setup();
+      const started = await service.start(P1, { revisionRounds: 2, callBudget: 12 }, TOKEN, CONTEXT("robust-quote-only"));
+      const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+      await settle();
+      const done = await run(runId);
+      expect(done.state).toBe("completed");
+      const beforeCalls = done.callsUsed;
+      const beforeSeen = seen.length;
+      const quoted = await service.userRevise(P1, runId, { instruction: "改动机", confirm: false }, TOKEN, CONTEXT());
+      expect(quoted.status).toBe(200);
+      expect(quoted.body).toMatchObject({ quote: { callsNeeded: 2 } });
+      expect(seen).toHaveLength(beforeSeen);
+      expect((await run(runId)).callsUsed).toBe(beforeCalls);
+      expect((await run(runId)).revisionRoundsUsed).toBe(0);
+    });
+  });
 });

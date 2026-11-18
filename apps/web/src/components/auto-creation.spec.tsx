@@ -1416,4 +1416,113 @@ describe("AI 自动创作 run page", () => {
     expect(thirdConfirm.key).not.toBe(firstConfirm.key);
     expect(thirdConfirm.body).toMatchObject({ confirm: true, findingIds: ["R2"], instruction: "再改一次动机" });
   });
+
+  describe("phase 5 commercial robustness", () => {
+    it("machine-passed drafts keep human-review wording and never show an external publish affordance", async () => {
+      const done = run({
+        state: "completed", quality: "passed", errorCode: null, openIssues: [],
+        storySave: "saved", packageStatus: "ready",
+      });
+      vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: done }) : json(options())));
+      render(<AutoCreationRun projectId={P1} />);
+      await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("剧本包已完成（机器检查通过，仍需人工审核）"));
+      expect(screen.getByTestId("auto-quality").textContent).toContain("不是人工审核");
+      expect(screen.getByTestId("auto-human-review").textContent).toContain("请在作品中由人审核");
+      const gate = screen.getByTestId("auto-publish-gate");
+      expect(gate.textContent).toContain("不等于人工审核通过");
+      expect(gate.textContent).toContain("不提供一键发布到红果、抖音");
+      expect(gate.textContent).toContain("不能当作可发布成品");
+      // Negation copy may mention those platforms; the page must not offer a publish action.
+      expect(screen.queryByRole("button", { name: /一键发布|发布到红果|发布到抖音|自动外发|发布/ })).toBeNull();
+      expect(screen.queryByRole("link", { name: /一键发布|发布到红果|发布到抖音/ })).toBeNull();
+    });
+
+    it("expired-session continue retains the pending user-revise identity and does not auto-submit a paid confirm", async () => {
+      const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+      window.history.replaceState(null, "", `/projects/${P1}/auto`);
+      const posts: Array<{ url: string; body: unknown; key: string | null }> = [];
+      const passed = run({
+        state: "completed", quality: "passed", errorCode: null, revisionRoundsUsed: 0, callsUsed: 8, callCap: 12,
+        selectableFindings: [{ id: "R2", target: "outline", severity: "low", detail: "阻碍者动机应改为误以为争房产" }],
+      });
+      let expireOnce = true;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        if (input.endsWith("/auto-runs/latest") || /\/auto-runs\/[0-9a-f-]+$/i.test(input)) return json({ run: passed });
+        if (input.endsWith("/user-revise")) {
+          const body = JSON.parse(String(init?.body)) as { confirm: boolean };
+          const key = new Headers(init?.headers).get("Idempotency-Key");
+          posts.push({ url: input, body, key });
+          if (!body.confirm) {
+            return json({
+              run: passed,
+              quote: { callsNeeded: 2, roundsUsed: 0, roundsBudget: 2, roundsRemainingAfter: 1, callsUsed: 8, callCap: 12, callsRemainingAfter: 2, episodeTargets: [1], syncStory: true },
+            });
+          }
+          if (expireOnce) {
+            expireOnce = false;
+            return json({ error: { code: "AUTH_SESSION_EXPIRED", message: "登录已过期" } }, 401);
+          }
+          return json({ run: { ...passed, state: "running", revisionRoundsUsed: 1, quality: "pending" } });
+        }
+        return json(options());
+      }));
+      const first = render(<AutoCreationRun projectId={P1} />);
+      await screen.findByTestId("auto-user-revise");
+      fireEvent.click(screen.getByText(/R2/).closest("label")!.querySelector("input")!);
+      fireEvent.change(screen.getByTestId("auto-user-revise-instruction"), { target: { value: "并写清可见犹豫" } });
+      fireEvent.click(screen.getByTestId("auto-user-revise-preview"));
+      await screen.findByTestId("auto-user-revise-quote");
+      fireEvent.click(screen.getByTestId("auto-user-revise-confirm").querySelector("input")!);
+      fireEvent.click(screen.getByTestId("auto-user-revise-start"));
+      await waitFor(() => expect(assign).toHaveBeenCalledWith(`/login?returnTo=${encodeURIComponent(`/projects/${P1}/auto`)}&reason=expired`));
+      const confirmed = posts.filter((item) => (item.body as { confirm: boolean }).confirm);
+      expect(confirmed).toHaveLength(1);
+      expect(confirmed[0]!.key).toBeTruthy();
+      const stored = Object.keys(window.sessionStorage).map((key) => window.sessionStorage.getItem(key) ?? "").join("\n");
+      expect(stored).toContain(confirmed[0]!.key!);
+      expect(stored).toContain("并写清可见犹豫");
+      first.unmount();
+      // Re-login / refresh: pending identity restores; no automatic paid confirm POST.
+      const beforeRestore = posts.length;
+      render(<AutoCreationRun projectId={P1} />);
+      expect(await screen.findByTestId("auto-user-revise-pending")).toBeTruthy();
+      expect(posts.length).toBe(beforeRestore);
+      expect(posts.filter((item) => (item.body as { confirm: boolean }).confirm)).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: "重试上次改稿请求" }));
+      await waitFor(() => expect(posts.filter((item) => (item.body as { confirm: boolean }).confirm)).toHaveLength(2));
+      expect(posts.filter((item) => (item.body as { confirm: boolean }).confirm)[1]!.key).toBe(confirmed[0]!.key);
+      assign.mockRestore();
+    });
+
+    it("does not treat an unconfirmed revise click as billed or auto-start paid revise", async () => {
+      const posts: Array<{ body: unknown; key: string | null }> = [];
+      const passed = run({
+        state: "completed", quality: "passed", errorCode: null, revisionRoundsUsed: 0, callsUsed: 8, callCap: 12,
+        selectableFindings: [{ id: "R2", target: "outline", severity: "low", detail: "阻碍者动机应改为误以为争房产" }],
+      });
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        if (input.endsWith("/auto-runs/latest") || /\/auto-runs\/[0-9a-f-]+$/i.test(input)) return json({ run: passed });
+        if (input.endsWith("/user-revise")) {
+          const body = JSON.parse(String(init?.body)) as { confirm: boolean };
+          posts.push({ body, key: new Headers(init?.headers).get("Idempotency-Key") });
+          return json({
+            run: passed,
+            quote: { callsNeeded: 2, roundsUsed: 0, roundsBudget: 2, roundsRemainingAfter: 1, callsUsed: 8, callCap: 12, callsRemainingAfter: 2, episodeTargets: [1], syncStory: true },
+          });
+        }
+        return json(options());
+      }));
+      render(<AutoCreationRun projectId={P1} />);
+      await screen.findByTestId("auto-user-revise");
+      fireEvent.click(screen.getByText(/R2/).closest("label")!.querySelector("input")!);
+      fireEvent.click(screen.getByTestId("auto-user-revise-preview"));
+      await screen.findByTestId("auto-user-revise-quote");
+      expect((screen.getByTestId("auto-user-revise-start") as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getByTestId("auto-user-revise-start"));
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.body).toMatchObject({ confirm: false });
+      expect(posts[0]!.key).toBeFalsy();
+      expect(posts.every((item) => (item.body as { confirm: boolean }).confirm === false)).toBe(true);
+    });
+  });
 });

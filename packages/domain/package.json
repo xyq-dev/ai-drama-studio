@@ -28,6 +28,10 @@
     "./auto-creation-media-capability": {
       "types": "./dist/auto-creation-media-capability.d.ts",
       "default": "./dist/auto-creation-media-capability.js"
+    },
+    "./commercial-web-robustness": {
+      "types": "./dist/commercial-web-robustness.d.ts",
+      "default": "./dist/commercial-web-robustness.js"
     }
   },
   "dependencies": {

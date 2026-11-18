@@ -13,6 +13,7 @@ import {
   type AutoCreationStageView,
   type AutoViewingDurationReason,
 } from "@ai-drama/contracts";
+import { formatAutoCreationCompletedHeadline } from "@ai-drama/domain/commercial-web-robustness";
 import { withSession } from "./site-session";
 import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, operatorHeader } from "./title-writing-client";
 
@@ -205,7 +206,7 @@ export function autoStageStateText(state: string): string {
 
 /** What the run is doing now, from stored stage states only (no percentage, no timer). */
 export function autoHeadline(run: AutoCreationRunView): string {
-  if (run.state === "completed") return run.quality === "passed" ? "剧本包已完成（机器质量检查通过）" : "剧本包已完成（待完善）";
+  if (run.state === "completed") return formatAutoCreationCompletedHeadline(run.quality);
   if (run.state === "partial") return "部分完成，已停止";
   if (run.state === "needs_attention") return "需要处理，已停止";
   if (run.state === "canceled") return "已取消";
@@ -396,12 +397,23 @@ export function clearPendingResume(pending: PendingAutoResume): void {
   }
 }
 
+/** Login/session loss is not a definite refusal of the pending paid identity — keep it for re-login retry. */
+export function isAutoCreationAuthSessionLoss(error: unknown): boolean {
+  if (!(error instanceof TitleWritingError)) return false;
+  return error.status === 401
+    && (error.code === "AUTH_SESSION_EXPIRED" || error.code === "AUTH_REQUIRED");
+}
+
 /**
  * True when the server answered with a refusal it explains, so it did not apply this resume (a resume the server
- * accepted is answered with the run on every replay). A lost answer, a gateway error or an unexplained failure is not.
+ * accepted is answered with the run on every replay). A lost answer, auth expiry, a gateway error or an unexplained
+ * failure is not.
  */
 export function autoResumeRefused(error: unknown): boolean {
-  return error instanceof TitleWritingError && error.code !== "REQUEST_FAILED" && (error.status < 500 || error.code.startsWith("AUTO_CREATION_"));
+  if (!(error instanceof TitleWritingError) || error.code === "REQUEST_FAILED" || isAutoCreationAuthSessionLoss(error)) {
+    return false;
+  }
+  return error.status < 500 || error.code.startsWith("AUTO_CREATION_");
 }
 
 export function autoCanResume(run: AutoCreationRunView): boolean {
@@ -482,11 +494,13 @@ export function clearPendingUserRevise(pending: PendingAutoUserRevise): void {
 
 /**
  * True when the server answered with a refusal it explains, so it did not apply this user revise.
- * A lost answer, a gateway error or an unexplained failure is not a definite refuse.
+ * A lost answer, auth expiry, a gateway error or an unexplained failure is not a definite refuse.
  */
 export function autoUserReviseRefused(error: unknown): boolean {
-  return error instanceof TitleWritingError && error.code !== "REQUEST_FAILED"
-    && (error.status < 500 || error.code.startsWith("AUTO_CREATION_"));
+  if (!(error instanceof TitleWritingError) || error.code === "REQUEST_FAILED" || isAutoCreationAuthSessionLoss(error)) {
+    return false;
+  }
+  return error.status < 500 || error.code.startsWith("AUTO_CREATION_");
 }
 
 export function stageOf(run: AutoCreationRunView, stageKey: string): AutoCreationStageView | undefined {
