@@ -236,6 +236,15 @@ describe("automatic creation API", () => {
       }),
     }).service.options()).body as AutoCreationOptionsView;
     expect(wrongModel.media).toMatchObject({ realProviders: [], mockOnly: true });
+
+    const budgetTooLow = (await setup({
+      mediaImageProbe: async () => ({
+        imageProvider: "openai-media", mediaApiKeyPresent: true,
+        configuration: sunburstConfig({ unitPrice: "0.04", maximumOperationAmount: "0.01" }),
+      }),
+    }).service.options()).body as AutoCreationOptionsView;
+    expect(budgetTooLow.media).toMatchObject({ realProviders: [], mockOnly: true });
+    expect(budgetTooLow.media.missing.some((item) => item.includes("单次费用上限"))).toBe(true);
   });
 
   it("an empty body runs the whole default flow once; replaying the key returns the same run and sends nothing", async () => {

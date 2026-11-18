@@ -19,6 +19,41 @@ export const AUTO_CREATION_MEDIA_PHASE3_MISSING = [
 export const AUTO_CREATION_SCRIPT_BREAKDOWN_MISSING =
   "剧本拆解功能（服务端关闭，不会写入分镜生产数据）";
 
+const AMOUNT_SCALE = 100_000_000n;
+
+/** Browser-safe amount units (same scale as realMediaAmountUnits; no node:crypto import). */
+function amountUnits(value: string): bigint | null {
+  if (!/^(0|[1-9]\d{0,7})(\.\d{1,8})?$/.test(value)) return null;
+  const [whole = "0", fraction = ""] = value.split(".");
+  return BigInt(whole) * AMOUNT_SCALE + BigInt(fraction.padEnd(8, "0"));
+}
+
+/**
+ * Same quote readiness gate as RealMediaService.autoStoryboardConfiguration (budget + origin/region),
+ * after isAutoStoryboardImageConfiguration. Callers that also have providers should still require
+ * canonicalOpenAiImageBaseUrl(url) === url.
+ */
+export function passesAutoStoryboardImageRuntimeGate(
+  configuration: RealMediaConfiguration | null | undefined,
+): configuration is RealMediaConfiguration {
+  if (!isAutoStoryboardImageConfiguration(configuration)) return false;
+  try {
+    const url = String(configuration.parameters.baseUrl);
+    const parsed = new URL(url);
+    const limit = configuration.maximumOperationAmount ?? configuration.unitPrice;
+    const limitUnits = amountUnits(limit);
+    const priceUnits = amountUnits(configuration.unitPrice);
+    return parsed.origin === url
+      && parsed.protocol === "https:"
+      && parsed.hostname === configuration.region
+      && limitUnits !== null
+      && priceUnits !== null
+      && limitUnits >= priceUnits;
+  } catch {
+    return false;
+  }
+}
+
 export interface AutoStoryboardImageProbe {
   /** Process `REAL_MEDIA_IMAGE_PROVIDER` (undefined when unset). */
   imageProvider: string | undefined;
@@ -50,6 +85,8 @@ export function diagnoseAutoStoryboardImageGaps(probe: AutoStoryboardImageProbe)
     gaps.push(
       "OpenAI 生图未接通：缺少启用中的 gpt-image-2.5-sunburst 配置（需 quality=max、size=1024x1536、USD 单价快照）",
     );
+  } else if (!passesAutoStoryboardImageRuntimeGate(probe.configuration)) {
+    gaps.push("OpenAI 生图未接通：单次费用上限低于单价，或 baseUrl/region 与报价门槛不一致");
   }
   return gaps;
 }

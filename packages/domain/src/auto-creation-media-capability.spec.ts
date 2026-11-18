@@ -89,6 +89,23 @@ describe("auto-creation media capability (phase 2)", () => {
       mediaApiKeyPresent: true,
       configuration: sunburst({ unitPrice: "0" }),
     })).toBe(false);
+
+    // REAL_MEDIA_MAX_SINGLE_USD below unit price must not report connected (quote gate rejects it).
+    expect(isAutoStoryboardImageConnected({
+      imageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+      mediaApiKeyPresent: true,
+      configuration: sunburst({ unitPrice: "0.04", maximumOperationAmount: "0.01" }),
+    })).toBe(false);
+    expect(diagnoseAutoStoryboardImageGaps({
+      imageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+      mediaApiKeyPresent: true,
+      configuration: sunburst({ unitPrice: "0.04", maximumOperationAmount: "0.01" }),
+    }).some((item) => item.includes("单次费用上限"))).toBe(true);
+    expect(isAutoStoryboardImageConnected({
+      imageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+      mediaApiKeyPresent: true,
+      configuration: sunburst({ unitPrice: "0.04", maximumOperationAmount: "0.04" }),
+    })).toBe(true);
   });
 
   it("keeps start-page and keep≠review copy honest", () => {
