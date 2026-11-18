@@ -10,6 +10,10 @@ import {
   type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { formatAutoCreationStartBillingNote } from "@ai-drama/domain/auto-creation-cost-display";
+import {
+  AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+  formatAutoStoryboardImageConnectionNote,
+} from "@ai-drama/domain/auto-creation-media-capability";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { suggestTitle } from "../lib/beginner-start";
 import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, providerTarget, tokenRequired } from "../lib/title-writing-client";
@@ -345,7 +349,14 @@ export function AutoCreationStart() {
           onChange={(event) => setAutoStoryboardAfterScripts(event.target.checked)} />
         剧本写完后，自动为每集生成分镜头
       </label>
-      <p className={styles.helper}>默认只写故事和剧本。勾选后，等你审核故事、写入分集并备好镜头，再自动打开报价。确认费用后才出图。</p>
+      {options ? (
+        <p className={styles.helper} data-testid="auto-storyboard-image-status">
+          {formatAutoStoryboardImageConnectionNote(
+            options.media.realProviders.includes(AUTO_CREATION_OPENAI_IMAGE_PROVIDER) && !options.media.mockOnly,
+          )}
+        </p>
+      ) : null}
+      <p className={styles.helper}>默认只写故事和剧本。勾选后，等你审核故事、写入分集并备好镜头，再自动打开报价。确认费用后才出图；勾选本身不会跳过报价或直接出图。</p>
       <details className={styles.more}>
         <summary>高级设置（可不填，留空由 AI 决定；填写的内容是必须遵守的硬约束）</summary>
         <div className={styles.moreGrid}>

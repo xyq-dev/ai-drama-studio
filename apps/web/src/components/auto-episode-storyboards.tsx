@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { RealMediaQuote } from "@ai-drama/contracts";
+import { formatAutoStoryboardKeepIsNotReviewNote } from "@ai-drama/domain/auto-creation-media-capability";
 import {
   createAutoEpisodeStoryboardsClient,
   storyboardGate,
@@ -420,6 +421,7 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
       {view ? <p className={writing.helper}>{view.characterReferencesAvailable
         ? "建议先定好角色外形，出图时会带入人物设定文字。"
         : "定妆图暂不可用，将按人物设定文字保持一致。"}</p> : null}
+      {view ? <p className={writing.helper} data-testid="auto-storyboard-keep-note">{formatAutoStoryboardKeepIsNotReviewNote()}</p> : null}
       {view ? <p className={writing.helper}>实际费用尚未核实</p> : null}
       <div className={writing.actions}>
         {!children ? allAction : null}

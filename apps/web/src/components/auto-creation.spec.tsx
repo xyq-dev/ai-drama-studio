@@ -60,12 +60,28 @@ describe("AI 自动创作 start card", () => {
     await screen.findByTestId("auto-provider-target");
     const preference = screen.getByRole("checkbox", { name: "剧本写完后，自动为每集生成分镜头" }) as HTMLInputElement;
     expect(preference.checked).toBe(false);
+    expect(preference.disabled).toBe(false);
+    expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("还没有接通 OpenAI 生图");
     if (checked) fireEvent.click(preference);
     fireEvent.click(screen.getByRole("button", { name: "AI 自动创作" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto`));
     const writes = calls.filter(({ method }) => method === "POST");
     expect(writes.map(({ url }) => url)).toEqual(["/api/v1/projects", `/api/v1/projects/${P1}/auto-runs`]);
     expect(writes[1]?.body).toMatchObject({ autoStoryboardAfterScripts: checked });
+    // Checkbox only freezes the quote preference — no media quote/authorize/generate on start.
+    expect(writes.every(({ url }) => !url.includes("/real-media/") && !url.includes("/storyboards"))).toBe(true);
+  });
+
+  it("shows OpenAI image connected status next to the storyboard checkbox without enabling generation", async () => {
+    const calls = server(options({
+      media: { realProviders: ["openai-media"], mockOnly: false, missing: ["真实语音合成服务（当前只有演示素材）"] },
+    }));
+    render(<AutoCreationStart />);
+    await screen.findByTestId("auto-provider-target");
+    expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("OpenAI 生图已接通");
+    expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("确认费用后才出图");
+    expect((screen.getByRole("checkbox", { name: "剧本写完后，自动为每集生成分镜头" }) as HTMLInputElement).disabled).toBe(false);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
   });
 
   it("start page keeps call budget honest and does not collapse unpriced amount into 费用未知", async () => {

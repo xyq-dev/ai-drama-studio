@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { AUTO_CREATION_CHECKS_VERSION, AUTO_CREATION_PROMPT_VERSION, autoCreationHardCap, autoCreationNormalCalls, type AutoCreationOptionsView, type AutoCreationRunView, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
-import type { FetchedPage } from "@ai-drama/domain";
+import type { AutoStoryboardImageProbe, FetchedPage } from "@ai-drama/domain";
 import { AutoCreationEngine, InMemoryAutoCreationStore, hashAutoCreationInput, titleWritingProviderConfigs, type TitleWritingProviderEnv } from "@ai-drama/providers";
 import { autoFixtureTransport, type AutoFixtureExchange, type AutoFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { hashPassword } from "../auth/password-hash";
 import { SiteAuth } from "../auth/site-auth";
 import { AutoCreationController } from "./auto-creation.controller";
 import { AutoCreationService } from "./auto-creation.service";
+import type { RealMediaConfiguration } from "@ai-drama/contracts";
 
 /** The automatic creation API boundary against the in-process store and the model double (no network, no database). */
 const WS = "11111111-1111-4111-8111-111111111111";
@@ -32,6 +33,16 @@ interface Setup {
   /** The page reader the engine has (the runtime wires one exactly when fetchEnabled). */
   fetchPages?: (urls: readonly string[]) => Promise<FetchedPage[]>;
   seen?: AutoFixtureExchange[];
+  mediaImageProbe?: () => Promise<AutoStoryboardImageProbe>;
+}
+
+function sunburstConfig(overrides: Partial<RealMediaConfiguration> = {}): RealMediaConfiguration {
+  return {
+    id: "11111111-1111-4111-8111-111111111111", version: "v1", providerKey: "openai-media", capability: "image.generate",
+    model: "gpt-image-2.5-sunburst", region: "image.example.test", credentialRef: "env:openai-media", credentialVersion: "v1",
+    enabled: true, queryAllowed: true, priceVersion: "fixture-v1", currency: "USD", unitPrice: "0.04", unitType: "image",
+    parameters: { baseUrl: "https://image.example.test", quality: "max", size: "1024x1536" }, ...overrides,
+  };
 }
 
 function setup(options: Setup = {}) {
@@ -57,6 +68,7 @@ function setup(options: Setup = {}) {
     maxCallsPerDay, maxActiveRuns: 1,
     research: { fetchEnabled: options.fetchEnabled ?? false, allowedHosts: ["support.oceanengine.com"] },
     schedule: (work) => { pending.push(work); },
+    ...(options.mediaImageProbe ? { mediaImageProbe: options.mediaImageProbe } : {}),
   });
   const settle = async () => { while (pending.length > 0) await pending.shift()!(); };
   const run = async (runId: string) => ((await service.get(P1, runId)).body as { run: AutoCreationRunView }).run;
@@ -184,6 +196,46 @@ describe("automatic creation API", () => {
     expect(options.episodePlan).toMatchObject({ defaultEpisodes: 1, defaultSeconds: 60, maxEpisodes: 6 });
     expect(options.research).toMatchObject({ fetchEnabled: false, readableMarketSources: 0, expectedMode: "limited", visualAnalysis: false });
     expect(options.media).toMatchObject({ realProviders: [], mockOnly: true });
+    expect(options.media.missing.some((item) => item.includes("OpenAI 生图未接通") || item.includes("语音"))).toBe(true);
+  });
+
+  it("options report OpenAI image connected only for openai-media + enabled sunburst, never via writing OPENAI_API_KEY", async () => {
+    const disconnected = (await setup({
+      mediaImageProbe: async () => ({
+        imageProvider: undefined, mediaApiKeyPresent: false, configuration: null,
+      }),
+    }).service.options()).body as AutoCreationOptionsView;
+    expect(disconnected.media).toMatchObject({ realProviders: [], mockOnly: true });
+    expect(disconnected.media.missing.some((item) => item.includes("OPENAI_MEDIA_API_KEY"))).toBe(true);
+    expect(disconnected.media.missing.join("\n")).toContain("不是写作 OPENAI_API_KEY");
+    expect(JSON.stringify(disconnected.media)).not.toMatch(/sk-[a-z0-9-]+/i);
+
+    const writingKeyOnly = (await setup({
+      env: BOTH,
+      mediaImageProbe: async () => ({
+        // Writing key is present in env, but the probe must not treat it as media authorization.
+        imageProvider: "openai-media", mediaApiKeyPresent: false, configuration: null,
+      }),
+    }).service.options()).body as AutoCreationOptionsView;
+    expect(writingKeyOnly.media.realProviders).toEqual([]);
+    expect(writingKeyOnly.media.mockOnly).toBe(true);
+
+    const connected = (await setup({
+      mediaImageProbe: async () => ({
+        imageProvider: "openai-media", mediaApiKeyPresent: true, configuration: sunburstConfig(),
+      }),
+    }).service.options()).body as AutoCreationOptionsView;
+    expect(connected.media).toMatchObject({ realProviders: ["openai-media"], mockOnly: false });
+    expect(connected.media.missing.some((item) => item.includes("语音"))).toBe(true);
+    expect(connected.media.missing.some((item) => item.includes("视频"))).toBe(true);
+    expect(connected.media.missing.every((item) => !item.includes("OpenAI 生图未接通"))).toBe(true);
+
+    const wrongModel = (await setup({
+      mediaImageProbe: async () => ({
+        imageProvider: "openai-media", mediaApiKeyPresent: true, configuration: sunburstConfig({ model: "dall-e-3" }),
+      }),
+    }).service.options()).body as AutoCreationOptionsView;
+    expect(wrongModel.media).toMatchObject({ realProviders: [], mockOnly: true });
   });
 
   it("an empty body runs the whole default flow once; replaying the key returns the same run and sends nothing", async () => {
