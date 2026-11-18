@@ -142,7 +142,16 @@ BEGIN
      WHERE workspace_id = NEW.workspace_id AND username = 'legacy-owner'
      LIMIT 1;
     IF legacy_id IS NULL THEN
-      legacy_id := gen_random_uuid();
+      -- Prefer the well-known product legacy owner id when still unused, so operator SITE_AUTH
+      -- 「我的作品」 (bound to a0000000-0000-4000-8000-000000000001) matches acceptance and single-workspace deploys.
+      -- Later workspaces in the same database fall back to a fresh uuid.
+      IF NOT EXISTS (
+        SELECT 1 FROM creator_account WHERE id = 'a0000000-0000-4000-8000-000000000001'::uuid
+      ) THEN
+        legacy_id := 'a0000000-0000-4000-8000-000000000001'::uuid;
+      ELSE
+        legacy_id := gen_random_uuid();
+      END IF;
       INSERT INTO creator_account (id, workspace_id, username, password_hash, status)
       VALUES (legacy_id, NEW.workspace_id, 'legacy-owner', 'legacy-not-a-password-hash', 'LEGACY')
       ON CONFLICT (workspace_id, username) DO NOTHING;
