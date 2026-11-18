@@ -22,6 +22,8 @@ interface MiddlewareRequest {
   method: string;
   originalUrl: string;
   headers: RequestHeaders;
+  /** Express/Nest parsed query; used when originalUrl is rewritten without the search string. */
+  query?: Record<string, unknown>;
 }
 
 interface MiddlewareResponse {
@@ -40,9 +42,16 @@ export function isAnonymous(method: string, originalUrl: string): boolean {
   return ANONYMOUS.has(`${method.toUpperCase()} ${routeOf(originalUrl)}`);
 }
 
-function opsViewRequested(originalUrl: string): boolean {
-  const query = originalUrl.includes("?") ? originalUrl.slice(originalUrl.indexOf("?") + 1) : "";
-  return new URLSearchParams(query).get("view") === "ops";
+/** Operator ops view (`?view=ops`). Creators never get this even if the query is present. */
+export function opsViewRequested(request: Pick<MiddlewareRequest, "originalUrl" | "query">): boolean {
+  const search = request.originalUrl.includes("?")
+    ? request.originalUrl.slice(request.originalUrl.indexOf("?") + 1)
+    : "";
+  if (new URLSearchParams(search).get("view") === "ops") return true;
+  const view = request.query?.view;
+  if (typeof view === "string") return view === "ops";
+  if (Array.isArray(view) && typeof view[0] === "string") return view[0] === "ops";
+  return false;
 }
 
 @Injectable()
@@ -51,6 +60,7 @@ export class SiteAuthMiddleware implements NestMiddleware {
 
   use(request: MiddlewareRequest, response: MiddlewareResponse, next: () => void): void {
     if (this.state.kind === "disabled" || isAnonymous(request.method, request.originalUrl)) {
+      // Auth off (and anonymous probes): stores stay open so acceptance/legacy fixtures keep working.
       runWithCreatorAccess({ kind: "open" }, () => next());
       return;
     }
@@ -63,7 +73,7 @@ export class SiteAuthMiddleware implements NestMiddleware {
         this.state.auth.authorizeWrite(request.headers);
         session = this.state.auth.peek(request.headers);
       }
-      const opsView = session.role === "operator" && opsViewRequested(request.originalUrl);
+      const opsView = session.role === "operator" && opsViewRequested(request);
       const scope: CreatorAccessScope = {
         kind: "scoped",
         role: session.role,

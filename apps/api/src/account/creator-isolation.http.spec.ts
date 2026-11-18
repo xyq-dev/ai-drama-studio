@@ -78,6 +78,26 @@ describe("creator isolation access scope (phase 4)", () => {
     const probe = await fetch(`${base}/probe/mine`, { headers: { cookie } });
     expect(probe.status).toBe(200);
     expect(await probe.json()).toEqual({ ownerFilter: LEGACY_OWNER_ACCOUNT_ID, legacy: LEGACY_OWNER_ACCOUNT_ID });
+    // Operator ops view clears the ALS owner filter (acceptance fixtures use this across multi-workspace DBs).
+    const ops = await fetch(`${base}/probe/mine?view=ops`, { headers: { cookie } });
+    expect(ops.status).toBe(200);
+    expect(await ops.json()).toEqual({ ownerFilter: null, legacy: LEGACY_OWNER_ACCOUNT_ID });
+  });
+
+  it("site auth disabled opens ALS so fixtures are not owner-filtered", async () => {
+    class Routes {}
+    Module({ controllers: [ProbeRoutes] })(Routes);
+    const module = await Test.createTestingModule({
+      imports: [AuthModule.register({ NODE_ENV: "test" } as ApiEnv, { kind: "disabled" }), Routes],
+    }).compile();
+    app = module.createNestApplication({ logger: false });
+    app.setGlobalPrefix("api/v1");
+    app.useGlobalFilters(new SafeExceptionFilter());
+    await app.listen(0, "127.0.0.1");
+    base = `${await app.getUrl()}/api/v1`;
+    const probe = await fetch(`${base}/probe/mine`);
+    expect(probe.status).toBe(200);
+    expect(await probe.json()).toEqual({ ownerFilter: null, legacy: LEGACY_OWNER_ACCOUNT_ID });
   });
 
   it("two creator scopes do not share an owner filter", () => {
