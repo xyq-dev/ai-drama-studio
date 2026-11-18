@@ -23,6 +23,7 @@ import {
   formatAutoCreationCallRecord,
   formatAutoCreationReviseQuoteBillingNote,
 } from "@ai-drama/domain/auto-creation-cost-display";
+import { formatAutoCreationVideoStatusNote } from "@ai-drama/domain/auto-creation-media-capability";
 import { formatUnreviewedDraftNotPublishableNote } from "@ai-drama/domain/commercial-web-robustness";
 import { TitleWritingError, tokenRequired } from "../lib/title-writing-client";
 import {
@@ -47,6 +48,7 @@ import {
   autoUncertainIds,
   normalizeAutoOptions,
   stageOf,
+  type AutoCreationOptionsView,
   type AutoCreationRunView,
   type PendingAutoResume,
   type PendingAutoUserRevise,
@@ -77,6 +79,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   const [storyChanged, setStoryChanged] = useState(false);
   const [acceptStoryChanged, setAcceptStoryChanged] = useState(false);
   const [needsToken, setNeedsToken] = useState(false);
+  const [mediaOptions, setMediaOptions] = useState<AutoCreationOptionsView["media"] | null>(null);
   const [token, setToken] = useState("");
   const [selectedFindings, setSelectedFindings] = useState<string[]>([]);
   const [reviseInstruction, setReviseInstruction] = useState("");
@@ -133,7 +136,12 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
 
   useEffect(() => {
     void read();
-    void client.options().then((value) => setNeedsToken(tokenRequired(normalizeAutoOptions(value)))).catch(() => undefined);
+    void client.options().then((value) => {
+      const normalized = normalizeAutoOptions(value);
+      if (!normalized) return;
+      setNeedsToken(tokenRequired(normalized));
+      setMediaOptions(normalized.media);
+    }).catch(() => undefined);
   }, [client, read]);
 
   useEffect(() => {
@@ -266,7 +274,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
               : run.storySave === "saved" ? "故事已存为「AI 自动生成草稿」，请在作品中由人审核"
                 : run.storySave === "conflict" ? "作品已有故事，未覆盖"
                   : "尚未保存"}</li>
-            <li data-testid="auto-video-status">视频成片：未开始。之后可以去生成配音、动态和成片。</li>
+            <li data-testid="auto-video-status">{formatAutoCreationVideoStatusNote(mediaOptions)}</li>
           </ul>
           <p className={styles.helper} data-testid="auto-publish-gate">{formatUnreviewedDraftNotPublishableNote()}</p>
           {runError ? <p className={run.state === "completed" ? styles.warning : styles.error} role="status">{runError}</p> : null}

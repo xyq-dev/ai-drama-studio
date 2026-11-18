@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isAutoStoryboardImageConfiguration,type RealMediaCapability,type RealMediaConfiguration,type RealMediaSnapshot } from "@ai-drama/contracts";
 import { DomainError } from "./errors";
+import { isChineseVideoPrompt } from "./auto-creation-media-capability";
 
 const SCALE = 100_000_000n;
 export function realMediaAmountUnits(value: string): bigint {
@@ -58,15 +59,34 @@ export function assertRealMediaInput(input:Omit<RealMediaSnapshot,"budget">):voi
   }
   if(input.capability==="video.generate"&&input.characterReferenceGate==="strict")throw new DomainError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The fixed first-frame video profile cannot prove strict selected character references");
   if(input.capability==="image.generate"&&text.length>2000)throw new DomainError("VALIDATION_ERROR","Image prompt exceeds 2000 characters");
-  if(input.capability==="video.generate"&&(!input.sourceImage||text.length>800))throw new DomainError("VALIDATION_ERROR","Video requires a first frame and a prompt of at most 800 characters");
+  if(input.capability==="video.generate"){
+    if(!input.sourceImage||text.length>800)throw new DomainError("VALIDATION_ERROR","Video requires a first frame and a prompt of at most 800 characters");
+    if(!isChineseVideoPrompt(text))throw new DomainError("VALIDATION_ERROR","Video generation prompts must be Chinese");
+  }
   if(input.capability==="audio.music"&&text.length>4100)throw new DomainError("VALIDATION_ERROR","Music prompt exceeds 4100 characters");
   if(input.capability==="audio.tts"&&config.providerKey==="elevenlabs-tts"){
     throw new DomainError("REAL_MEDIA_TTS_PATH_UNSUPPORTED","ElevenLabs eleven_v4 scene dialogue is not submitted through the per-line website worker");
   }
   if(input.capability==="audio.tts"&&config.providerKey==="minimax-tts"){
-    throw new DomainError("REAL_MEDIA_TTS_PATH_UNSUPPORTED","MiniMax speech-2.8-hd is not submitted through the per-line website worker and does not fall back to ElevenLabs");
+    // Official website path: MiniMax speech-2.8-hd with minimaxSpeech. Never fall back to ElevenLabs or Bailian.
+    if(config.model!=="speech-2.8-hd"){
+      throw new DomainError("REAL_MEDIA_TTS_PATH_UNSUPPORTED","Official website speech accepts only MiniMax speech-2.8-hd");
+    }
+    const block=input.minimaxSpeech;
+    if(!block||block.schema!=="minimax-tts.speech.v1"||block.text!==text||!block.voiceId.trim()){
+      throw new DomainError("REAL_MEDIA_TTS_PATH_UNSUPPORTED","MiniMax speech-2.8-hd requires a minimaxSpeech block on the website path and does not fall back to ElevenLabs or Bailian");
+    }
+    if([...text].length>10_000)throw new DomainError("VALIDATION_ERROR","Speech supports at most 10000 characters for MiniMax speech-2.8-hd");
+    if(input.speech&&(input.speech.spokenText!==text||input.speech.emotion!=="neutral"||input.speech.speed!==1
+      ||input.speech.voice.voiceId!==block.voiceId||input.speech.voice.providerKey!=="minimax-tts"
+      ||input.speech.voice.model!=="speech-2.8-hd")){
+      throw new DomainError("VALIDATION_ERROR","MiniMax website speech requires neutral normal-speed delivery matching minimaxSpeech");
+    }
+    if(input.dialogue)throw new DomainError("VALIDATION_ERROR","MiniMax speech does not accept an ElevenLabs dialogue block");
+    return;
   }
   if(input.capability==="audio.tts"){
+    // Legacy Bailian per-line path. Official commercial voice is MiniMax only.
     const speech=input.speech;
     if([...text].length>600||!["Cherry","Ethan","Serena"].includes(String(speech?.voice.voiceId??config.parameters.voice??"Cherry"))
       ||(speech&&(speech.spokenText!==text||speech.emotion!=="neutral"||speech.speed!==1)))throw new DomainError("VALIDATION_ERROR","Speech supports at most 600 characters, a catalog voice and neutral normal-speed delivery");

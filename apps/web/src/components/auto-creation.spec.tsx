@@ -62,6 +62,9 @@ describe("AI 自动创作 start card", () => {
     expect(preference.checked).toBe(false);
     expect(preference.disabled).toBe(false);
     expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("还没有接通 OpenAI 生图");
+    expect(screen.getByTestId("auto-voice-status").textContent).toContain("还没有接通正式配音");
+    expect(screen.getByTestId("auto-finished-video-status").textContent).toContain("还没有接通真实视频与成片");
+    expect(screen.getByTestId("auto-media-delivery").textContent).not.toContain("配音、动态和成片不在本次任务内");
     if (checked) fireEvent.click(preference);
     fireEvent.click(screen.getByRole("button", { name: "AI 自动创作" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto`));
@@ -74,13 +77,31 @@ describe("AI 自动创作 start card", () => {
 
   it("shows OpenAI image connected status next to the storyboard checkbox without enabling generation", async () => {
     const calls = server(options({
-      media: { realProviders: ["openai-media"], mockOnly: false, missing: ["真实语音合成服务（当前只有演示素材）"] },
+      media: { realProviders: ["openai-media"], mockOnly: false, missing: ["正式配音未接通：缺少 MINIMAX_API_KEY（不得用 ELEVENLABS_TTS_API_KEY、写作 OPENAI_API_KEY 或百炼 TTS 替补）"] },
     }));
     render(<AutoCreationStart />);
     await screen.findByTestId("auto-provider-target");
     expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("OpenAI 生图已接通");
     expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("确认费用后才出图");
+    expect(screen.getByTestId("auto-voice-status").textContent).toContain("MINIMAX_API_KEY");
     expect((screen.getByRole("checkbox", { name: "剧本写完后，自动为每集生成分镜头" }) as HTMLInputElement).disabled).toBe(false);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
+  });
+
+  it("shows MiniMax voice and finished video connected without starting paid generation", async () => {
+    const calls = server(options({
+      media: {
+        realProviders: ["openai-media", "minimax-tts", "dashscope-media"],
+        mockOnly: false,
+        missing: ["剧本拆解功能（服务端关闭，不会写入分镜生产数据）"],
+      },
+    }));
+    render(<AutoCreationStart />);
+    await screen.findByTestId("auto-provider-target");
+    expect(screen.getByTestId("auto-voice-status").textContent).toContain("正式配音已接通");
+    expect(screen.getByTestId("auto-voice-status").textContent).toContain("确认费用后才生成");
+    expect(screen.getByTestId("auto-finished-video-status").textContent).toContain("真实视频与成片已接通");
+    expect(screen.getByTestId("auto-media-delivery").textContent).toContain("正式配音已接通");
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
   });
 
@@ -467,6 +488,7 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-quality").textContent).toContain("待完善");
     expect(screen.getByTestId("auto-quality").textContent).toContain("不是人工审核");
     expect(screen.getByTestId("auto-video-status").textContent).toContain("未开始");
+    expect(screen.getByTestId("auto-video-status").textContent).toMatch(/尚未接通|人工审核/);
     expect(screen.getByTestId("auto-open-issues").textContent).toContain("开场没有主动选择");
     expect(screen.getByTestId("auto-download-md").getAttribute("href")).toBe(`/api/v1/projects/${P1}/auto-runs/${RUN}/package?format=markdown`);
     expect(screen.queryByTestId("auto-story-prose")).toBeNull();

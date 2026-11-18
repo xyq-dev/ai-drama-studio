@@ -21,10 +21,17 @@ describe("real media single-operation estimates",()=>{
     expect(()=>estimateRealMedia({...configuration,providerKey:"elevenlabs-media",capability:"audio.tts",model:"music_v2"},"你好")).toThrow(/Music configuration cannot price speech/);
     expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"audio.tts",sourceText:"你好",sourceHash:"a".repeat(64),configuration:speech})).toThrow(/per-line website worker/);
   });
-  it("prices speech-2.8-hd once per character and keeps it off the website worker",()=>{
+  it("prices speech-2.8-hd once per character and accepts the website path only with minimaxSpeech",()=>{
     const speech={...configuration,providerKey:"minimax-tts",model:"speech-2.8-hd",region:"api.minimaxi.com",currency:"CNY" as const,unitPrice:"0.00008",credentialRef:"env:minimax-tts"};
     expect(estimateRealMedia(speech,"你好")).toBe("0.00016000");
     expect(()=>estimateRealMedia({...speech,model:"speech-02-hd"},"你好")).toThrow(/speech-2.8-hd/);
-    expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"audio.tts",sourceText:"你好",sourceHash:"a".repeat(64),configuration:speech})).toThrow(/does not fall back to ElevenLabs/);
+    expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"audio.tts",sourceText:"你好",sourceHash:"a".repeat(64),configuration:speech})).toThrow(/minimaxSpeech/);
+    expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"audio.tts",sourceText:"你好",sourceHash:"a".repeat(64),configuration:speech,minimaxSpeech:{schema:"minimax-tts.speech.v1",text:"你好",voiceId:"female-shaonv"}})).not.toThrow();
+  });
+  it("requires Chinese prompts for video.generate and does not invent a vendor fallback",()=>{
+    const video={...configuration,providerKey:"dashscope-media",capability:"video.generate" as const,model:"wan2.6-i2v-flash",unitType:"second" as const,parameters:{duration:5}};
+    const frame={assetId:"00000000-0000-4000-8000-000000000099",checksumSha256:"a".repeat(64)};
+    expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"video.generate",sourceText:"slow push in",sourceHash:"a".repeat(64),configuration:video,sourceImage:frame})).toThrow(/Chinese/);
+    expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"video.generate",sourceText:"镜头缓推，女主回眸。",sourceHash:"a".repeat(64),configuration:video,sourceImage:frame})).not.toThrow();
   });
 });

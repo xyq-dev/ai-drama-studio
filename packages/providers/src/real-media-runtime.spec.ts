@@ -90,12 +90,14 @@ describe("real media configuration and encrypted receipts", () => {
     const frozen = (await runtime.configurationFor("image.generate"))!;
     await expect(runtime.adapterFor({ ...frozen, credentialVersion: "unknown" }, "query")).rejects.toThrow("REAL_MEDIA_CREDENTIAL_VERSION_UNAVAILABLE");
   });
-  it("only advertises supported fixed-speed neutral preset voices", async () => {
+  it("only advertises supported fixed-speed neutral preset voices on the legacy Bailian catalog", async () => {
     const catalog = await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment(configured), true).speechCatalog();
     expect(catalog.available).toBe(true);
     expect(catalog.voices.map(v => v.voiceId)).toEqual(["Cherry", "Ethan", "Serena"]);
     expect(catalog.voices.every(v => v.capabilities.speedMin === 1 && v.capabilities.speedMax === 1
       && v.capabilities.emotions.join() === "neutral")).toBe(true);
+    const minimaxOnly = await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment(configured), true).minimaxSpeechCatalog();
+    expect(minimaxOnly.available).toBe(false);
   });
   it("authenticates receipts, hides signed URLs, and supports a retained old sealing key", () => {
     const old = createRealMediaReceiptCipher({ REAL_MEDIA_RECEIPT_KEY: previous, REAL_MEDIA_RECEIPT_KEY_VERSION: "v1" })!;
@@ -278,5 +280,15 @@ describe("independent minimax speech configuration", () => {
     expect(await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...minimax, MINIMAX_TTS_PRICE_CHARACTER: undefined }), true).minimaxTtsConfiguration()).toBeNull();
     expect(await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...minimax, MINIMAX_API_KEY: undefined }), true).configurationFor("audio.tts"))
       .toMatchObject({ providerKey: "dashscope-media" });
+  });
+  it("advertises MiniMax system voices on the official website catalog without borrowing Bailian", async () => {
+    const runtime = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment(minimax), true);
+    const catalog = await runtime.minimaxSpeechCatalog();
+    expect(catalog.available).toBe(true);
+    expect(catalog.voices.map((voice) => voice.voiceId)).toContain("female-shaonv");
+    expect(catalog.voices.every((voice) => voice.providerKey === "minimax-tts" && voice.model === "speech-2.8-hd")).toBe(true);
+    expect(catalog.catalogVersion.startsWith("minimax-voices.v1:")).toBe(true);
+    expect(await runtime.speechCatalog()).toMatchObject({ available: true });
+    expect((await runtime.speechCatalog()).voices[0]?.providerKey).toBe("dashscope-media");
   });
 });

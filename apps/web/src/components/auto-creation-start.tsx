@@ -11,7 +11,12 @@ import {
 } from "@ai-drama/contracts";
 import { formatAutoCreationStartBillingNote } from "@ai-drama/domain/auto-creation-cost-display";
 import {
+  AUTO_CREATION_MINIMAX_TTS_PROVIDER,
   AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+  AUTO_CREATION_VIDEO_PROVIDER,
+  formatAutoCreationMediaDeliveryNote,
+  formatAutoOfficialVideoConnectionNote,
+  formatAutoOfficialVoiceConnectionNote,
   formatAutoStoryboardImageConnectionNote,
 } from "@ai-drama/domain/auto-creation-media-capability";
 import { ApiError, StudioClient } from "../lib/studio-client";
@@ -350,11 +355,27 @@ export function AutoCreationStart() {
         剧本写完后，自动为每集生成分镜头
       </label>
       {options ? (
-        <p className={styles.helper} data-testid="auto-storyboard-image-status">
-          {formatAutoStoryboardImageConnectionNote(
-            options.media.realProviders.includes(AUTO_CREATION_OPENAI_IMAGE_PROVIDER) && !options.media.mockOnly,
-          )}
-        </p>
+        <>
+          <p className={styles.helper} data-testid="auto-storyboard-image-status">
+            {formatAutoStoryboardImageConnectionNote(
+              options.media.realProviders.includes(AUTO_CREATION_OPENAI_IMAGE_PROVIDER),
+            )}
+          </p>
+          <p className={styles.helper} data-testid="auto-voice-status">
+            {formatAutoOfficialVoiceConnectionNote(
+              options.media.realProviders.includes(AUTO_CREATION_MINIMAX_TTS_PROVIDER),
+              options.media.missing,
+            )}
+          </p>
+          <p className={styles.helper} data-testid="auto-finished-video-status">
+            {formatAutoOfficialVideoConnectionNote(
+              options.media.realProviders.includes(AUTO_CREATION_VIDEO_PROVIDER),
+              options.media.realProviders.includes(AUTO_CREATION_VIDEO_PROVIDER)
+                && !options.media.missing.some((item) => item.includes("成片合成") || item.includes("成片导出")),
+              options.media.missing,
+            )}
+          </p>
+        </>
       ) : null}
       <p className={styles.helper}>默认只写故事和剧本。勾选后，等你审核故事、写入分集并备好镜头，再自动打开报价。确认费用后才出图；勾选本身不会跳过报价或直接出图。</p>
       <details className={styles.more}>
@@ -417,7 +438,7 @@ export function AutoCreationStart() {
               {research?.fetchEnabled ? `，并读取公开页面（${research.allowedHosts.join("、")}）` : "；服务端未开启公开页面读取"}；没有视频画面分析能力，只分析文字。
               {research?.expectedMode === "limited" ? "预计为「AI 创作策划」：市场证据不可用，受众待验证；方法资料和你的资料仍可作为方法引用，不是实时市场验证。最终以开始后服务端保存的资料快照为准。" : null}</li>
             <li>每集时长是写作目标，不代表成片长度。完成后保存为「AI 自动生成草稿」，机器质量检查不等于人工审核，也不会自动发布。</li>
-            <li>本次先交付故事正文和分集剧本。分镜图另行报价确认，配音、动态和成片不在本次任务内。</li>
+            <li data-testid="auto-media-delivery">{formatAutoCreationMediaDeliveryNote(options.media)}</li>
           </ul>
         ) : null}
         {budgetProblem ? <p className={styles.warning} role="status">{budgetProblem}</p> : null}

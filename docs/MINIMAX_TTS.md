@@ -4,7 +4,7 @@ Ticket: `T-TTS-ENG-MM-01`。更新：2026-11-04。
 
 这是一条独立的国内 MiniMax 文本转语音路径，架构与 ElevenLabs `eleven_v4` 相同：先报价，再人工授权，再写收据。`UNKNOWN` 和尚未完成的 `INTENT` 不会自动重发。失败不会改走 ElevenLabs、百炼 `qwen3-tts-flash` 或任何其他 TTS。
 
-网站逐句 Worker 在发请求前拒绝 `minimax-tts`。`configurationFor("audio.tts")` 仍是百炼。`elevenLabsTtsConfiguration()` 仍只看 `ELEVENLABS_TTS_*`。入口是 `ServerRealMediaRuntime.minimaxTtsConfiguration()`，provider key 为 `minimax-tts`，模型字面量 `speech-2.8-hd`。
+网站正式配音主路径使用 MiniMax `speech-2.8-hd`（`minimaxSpeechCatalog` / speech quote→authorize→generate，快照带 `minimaxSpeech`）。`configurationFor("audio.tts")` 仍指向百炼，那是遗留路径，不得当作正式配音已接通，也不得在 MiniMax 失败时回退到百炼或 ElevenLabs。`elevenLabsTtsConfiguration()` 仍只看 `ELEVENLABS_TTS_*`。入口是 `ServerRealMediaRuntime.minimaxTtsConfiguration()`，provider key 为 `minimax-tts`，模型字面量 `speech-2.8-hd`。
 
 本文件描述的测试不发起真实付费请求。账号余额不足时接口返回 `base_resp.status_code` **1008**，适配器停止并说明需要充值。**2049** 表示 API key 无效或主机不对（国内默认 `https://api.minimaxi.com`）。这两种都不会重试，也不会换成别的供应商。
 

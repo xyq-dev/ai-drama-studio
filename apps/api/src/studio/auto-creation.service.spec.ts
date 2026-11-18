@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AUTO_CREATION_CHECKS_VERSION, AUTO_CREATION_PROMPT_VERSION, autoCreationHardCap, autoCreationNormalCalls, type AutoCreationOptionsView, type AutoCreationRunView, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
-import type { AutoStoryboardImageProbe, FetchedPage } from "@ai-drama/domain";
+import type { AutoOfficialVideoProbe, AutoOfficialVoiceProbe, AutoStoryboardImageProbe, FetchedPage } from "@ai-drama/domain";
 import { AutoCreationEngine, InMemoryAutoCreationStore, hashAutoCreationInput, titleWritingProviderConfigs, type TitleWritingProviderEnv } from "@ai-drama/providers";
 import { autoFixtureTransport, type AutoFixtureExchange, type AutoFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { hashPassword } from "../auth/password-hash";
@@ -34,6 +34,8 @@ interface Setup {
   fetchPages?: (urls: readonly string[]) => Promise<FetchedPage[]>;
   seen?: AutoFixtureExchange[];
   mediaImageProbe?: () => Promise<AutoStoryboardImageProbe>;
+  mediaVoiceProbe?: () => Promise<AutoOfficialVoiceProbe>;
+  mediaVideoProbe?: () => Promise<AutoOfficialVideoProbe>;
 }
 
 function sunburstConfig(overrides: Partial<RealMediaConfiguration> = {}): RealMediaConfiguration {
@@ -69,6 +71,8 @@ function setup(options: Setup = {}) {
     research: { fetchEnabled: options.fetchEnabled ?? false, allowedHosts: ["support.oceanengine.com"] },
     schedule: (work) => { pending.push(work); },
     ...(options.mediaImageProbe ? { mediaImageProbe: options.mediaImageProbe } : {}),
+    ...(options.mediaVoiceProbe ? { mediaVoiceProbe: options.mediaVoiceProbe } : {}),
+    ...(options.mediaVideoProbe ? { mediaVideoProbe: options.mediaVideoProbe } : {}),
   });
   const settle = async () => { while (pending.length > 0) await pending.shift()!(); };
   const run = async (runId: string) => ((await service.get(P1, runId)).body as { run: AutoCreationRunView }).run;
@@ -196,7 +200,7 @@ describe("automatic creation API", () => {
     expect(options.episodePlan).toMatchObject({ defaultEpisodes: 1, defaultSeconds: 60, maxEpisodes: 6 });
     expect(options.research).toMatchObject({ fetchEnabled: false, readableMarketSources: 0, expectedMode: "limited", visualAnalysis: false });
     expect(options.media).toMatchObject({ realProviders: [], mockOnly: true });
-    expect(options.media.missing.some((item) => item.includes("OpenAI 生图未接通") || item.includes("语音"))).toBe(true);
+    expect(options.media.missing.some((item) => item.includes("OpenAI 生图未接通") || item.includes("正式配音") || item.includes("真实视频"))).toBe(true);
   });
 
   it("options report OpenAI image connected only for openai-media + enabled sunburst, never via writing OPENAI_API_KEY", async () => {
@@ -226,8 +230,8 @@ describe("automatic creation API", () => {
       }),
     }).service.options()).body as AutoCreationOptionsView;
     expect(connected.media).toMatchObject({ realProviders: ["openai-media"], mockOnly: false });
-    expect(connected.media.missing.some((item) => item.includes("语音"))).toBe(true);
-    expect(connected.media.missing.some((item) => item.includes("视频"))).toBe(true);
+    expect(connected.media.missing.some((item) => item.includes("正式配音") || item.includes("语音"))).toBe(true);
+    expect(connected.media.missing.some((item) => item.includes("真实视频") || item.includes("成片"))).toBe(true);
     expect(connected.media.missing.every((item) => !item.includes("OpenAI 生图未接通"))).toBe(true);
 
     const wrongModel = (await setup({
@@ -245,6 +249,58 @@ describe("automatic creation API", () => {
     }).service.options()).body as AutoCreationOptionsView;
     expect(budgetTooLow.media).toMatchObject({ realProviders: [], mockOnly: true });
     expect(budgetTooLow.media.missing.some((item) => item.includes("单次费用上限"))).toBe(true);
+  });
+
+  it("options report MiniMax voice and wan2.6 video from probes, never via ElevenLabs/Bailian/writing keys", async () => {
+    const minimaxConfig = (): RealMediaConfiguration => ({
+      id: "22222222-2222-4222-8222-222222222222", version: "mm-v1", providerKey: "minimax-tts", capability: "audio.tts",
+      model: "speech-2.8-hd", region: "api.minimaxi.com", credentialRef: "env:minimax-tts", credentialVersion: "v1",
+      enabled: true, queryAllowed: true, priceVersion: "fixture-v1", currency: "CNY", unitPrice: "0.0002", unitType: "character",
+      maximumOperationAmount: "10", parameters: { baseUrl: "https://api.minimaxi.com", outputFormat: "wav", sampleRate: 44100 },
+    });
+    const videoConfig = (): RealMediaConfiguration => ({
+      id: "33333333-3333-4333-8333-333333333333", version: "video-v1", providerKey: "dashscope-media", capability: "video.generate",
+      model: "wan2.6-i2v-flash", region: "beijing", credentialRef: "env:dashscope-media", credentialVersion: "v1",
+      enabled: true, queryAllowed: true, priceVersion: "fixture-v1", currency: "CNY", unitPrice: "0.05", unitType: "second",
+      maximumOperationAmount: "10", parameters: { duration: 5 },
+    });
+
+    const voiceOnly = (await setup({
+      mediaVoiceProbe: async () => ({
+        minimaxApiKeyPresent: true, unitPricePresent: true, priceVersionPresent: true, baseUrlCompliant: true,
+        configuration: minimaxConfig(), webPathAcceptsMinimax: true,
+      }),
+    }).service.options()).body as AutoCreationOptionsView;
+    expect(voiceOnly.media.realProviders).toEqual(["minimax-tts"]);
+    expect(voiceOnly.media.mockOnly).toBe(false);
+    expect(voiceOnly.media.missing.some((item) => item.includes("正式配音未接通"))).toBe(false);
+    expect(voiceOnly.media.missing.some((item) => item.includes("真实视频") || item.includes("成片"))).toBe(true);
+
+    const rejectedPath = (await setup({
+      mediaVoiceProbe: async () => ({
+        minimaxApiKeyPresent: true, unitPricePresent: true, priceVersionPresent: true, baseUrlCompliant: true,
+        configuration: minimaxConfig(), webPathAcceptsMinimax: false,
+      }),
+    }).service.options()).body as AutoCreationOptionsView;
+    expect(rejectedPath.media.realProviders).toEqual([]);
+    expect(rejectedPath.media.missing.some((item) => item.includes("网页主路径仍拒绝 minimax-tts"))).toBe(true);
+
+    const all = (await setup({
+      mediaImageProbe: async () => ({ imageProvider: "openai-media", mediaApiKeyPresent: true, configuration: sunburstConfig() }),
+      mediaVoiceProbe: async () => ({
+        minimaxApiKeyPresent: true, unitPricePresent: true, priceVersionPresent: true, baseUrlCompliant: true,
+        configuration: minimaxConfig(), webPathAcceptsMinimax: true,
+      }),
+      mediaVideoProbe: async () => ({
+        dashscopeApiKeyPresent: true, unitPricePresent: true, priceVersionPresent: true, configuration: videoConfig(),
+        chinesePromptGateReady: true, shotComposeEnabled: true, episodeComposeEnabled: true,
+      }),
+    }).service.options()).body as AutoCreationOptionsView;
+    expect(all.media.realProviders).toEqual(["openai-media", "minimax-tts", "dashscope-media"]);
+    expect(all.media.mockOnly).toBe(false);
+    expect(all.media.missing).toEqual(["剧本拆解功能（服务端关闭，不会写入分镜生产数据）"]);
+    expect(JSON.stringify(all.media)).not.toMatch(/sk-|api[_-]?key\s*=/i);
+    expect(all.media.missing.every((item) => !item.includes("当前只有演示素材"))).toBe(true);
   });
 
   it("an empty body runs the whole default flow once; replaying the key returns the same run and sends nothing", async () => {

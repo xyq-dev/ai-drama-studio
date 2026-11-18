@@ -365,6 +365,10 @@ export class ServerRealMediaRuntime {
       submit: async () => { throw new Error("MEDIA_SUBMIT_DISABLED"); },
       inspect: (id: string) => adapter.inspect(id), resolveOutput: (output: MediaProviderOutput) => adapter.resolveOutput(output) });
   }
+  /**
+   * Legacy Bailian catalog for configurationFor("audio.tts").
+   * Official website voice is MiniMax — use minimaxSpeechCatalog() instead.
+   */
   async speechCatalog(): Promise<SpeechCapabilities> {
     const configuration = await this.configurationFor("audio.tts");
     if (!configuration) return { available: false, reasonCode: "SPEECH_PROVIDER_NOT_CONFIGURED", catalogVersion: "none", voices: [] };
@@ -376,5 +380,37 @@ export class ServerRealMediaRuntime {
         rightsRef: "https://help.aliyun.com/zh/model-studio/multimodal-timbre-list",
         capabilities: { emotions: ["neutral"], speedMin: 1, speedMax: 1, maxTextCharacters: 600 },
       })) };
+  }
+  /**
+   * Official website speech catalog: MiniMax speech-2.8-hd only.
+   * Does not fall through to Bailian qwen3-tts-flash or ElevenLabs.
+   */
+  async minimaxSpeechCatalog(): Promise<SpeechCapabilities> {
+    const configuration = await this.minimaxTtsConfiguration();
+    if (!configuration) return { available: false, reasonCode: "SPEECH_PROVIDER_NOT_CONFIGURED", catalogVersion: "none", voices: [] };
+    return {
+      available: true,
+      reasonCode: null,
+      catalogVersion: "minimax-voices.v1:" + configuration.version,
+      voices: [
+        ["female-shaonv", "少女"],
+        ["female-yujie", "御姐"],
+        ["female-chengshu", "成熟女声"],
+        ["male-qn-qingse", "青涩男声"],
+        ["male-qn-jingying", "精英男声"],
+      ].map(([voiceId, name]) => ({
+        catalogVoiceId: "minimax:" + voiceId,
+        name: name!,
+        providerConfigurationId: configuration.id,
+        providerConfigurationVersion: configuration.version,
+        providerKey: configuration.providerKey,
+        model: configuration.model,
+        modelVersion: configuration.version,
+        voiceId: voiceId!,
+        locale: "zh-CN",
+        rightsRef: "https://platform.minimaxi.com/",
+        capabilities: { emotions: ["neutral"], speedMin: 1, speedMax: 1, maxTextCharacters: 10_000 },
+      })),
+    };
   }
 }

@@ -31,6 +31,8 @@ import {
   encodeUserReviseDepends,
   planAutoUserRevise,
   resolveAutoCreationMediaOptions,
+  type AutoOfficialVideoProbe,
+  type AutoOfficialVoiceProbe,
   type AutoStoryboardImageProbe,
 } from "@ai-drama/domain";
 import {
@@ -69,9 +71,13 @@ export interface AutoCreationDependencies {
   /**
    * Honest OpenAI sunburst image probe for options.media.
    * Must not treat writing OPENAI_API_KEY as media authorization.
-   * When omitted, options report image + voice + video as disconnected.
+   * When omitted, options report image as disconnected.
    */
   mediaImageProbe?: () => Promise<AutoStoryboardImageProbe>;
+  /** Official MiniMax speech-2.8-hd probe. When omitted, voice stays disconnected. */
+  mediaVoiceProbe?: () => Promise<AutoOfficialVoiceProbe>;
+  /** Official wan2.6 video + local compose/export probe. When omitted, video/finished stay disconnected. */
+  mediaVideoProbe?: () => Promise<AutoOfficialVideoProbe>;
   clock?: () => Date;
   schedule?: (work: () => Promise<void>) => void;
 }
@@ -206,12 +212,24 @@ export class AutoCreationService {
     return { status: 200, body };
   }
 
-  /** Report OpenAI image from the live probe; voice/video stay disconnected until phase 3. */
+  /** Report OpenAI image, MiniMax voice, and video/compose from live probes — never hard-code phase-3 demo missing. */
   private async mediaOptions(): Promise<AutoCreationOptionsView["media"]> {
-    const probe: AutoStoryboardImageProbe = this.deps.mediaImageProbe
+    const image: AutoStoryboardImageProbe = this.deps.mediaImageProbe
       ? await this.deps.mediaImageProbe()
       : { imageProvider: undefined, mediaApiKeyPresent: false, configuration: null };
-    return resolveAutoCreationMediaOptions(probe);
+    const voice: AutoOfficialVoiceProbe = this.deps.mediaVoiceProbe
+      ? await this.deps.mediaVoiceProbe()
+      : {
+        minimaxApiKeyPresent: false, unitPricePresent: false, priceVersionPresent: false,
+        baseUrlCompliant: false, configuration: null, webPathAcceptsMinimax: false,
+      };
+    const video: AutoOfficialVideoProbe = this.deps.mediaVideoProbe
+      ? await this.deps.mediaVideoProbe()
+      : {
+        dashscopeApiKeyPresent: false, unitPricePresent: false, priceVersionPresent: false,
+        configuration: null, chinesePromptGateReady: false, shotComposeEnabled: false, episodeComposeEnabled: false,
+      };
+    return resolveAutoCreationMediaOptions({ image, voice, video });
   }
 
   private async gate(token: OperatorProof | string | undefined): Promise<AutoCreationResult | null> {

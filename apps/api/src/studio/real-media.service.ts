@@ -16,6 +16,8 @@ export interface RealMediaContentReader {
 export interface RealMediaServiceOptions {
   workspaceId:string;enabled:boolean;readEnabled?:boolean;store:RealMediaStore;jobs:JobPersistenceService;assets:MediaAssetStore;
   configurationFor(capability:RealMediaCapability,client?:MediaTransactionClient):Promise<RealMediaConfiguration|null>;
+  /** Official MiniMax speech-2.8-hd configuration. Independent of configurationFor("audio.tts") Bailian. */
+  minimaxTtsConfigurationFor?(client?:MediaTransactionClient):Promise<RealMediaConfiguration|null>;
   comfyUiConfigurationFor?(client?:MediaTransactionClient):Promise<RealMediaConfiguration|null>;
   comfyUiReadiness?():Promise<ComfyUiAvailability>;
   speechCatalog?(workspaceId:string,projectId:string):Promise<SpeechCapabilities>;
@@ -217,6 +219,7 @@ export class RealMediaService {
       if(snapshot.autoStoryboard&&!this.autoStoryboardMediaAccess())throw new PersistenceError("AUTO_STORYBOARD_OPENAI_UNAVAILABLE","OpenAI storyboard images are unavailable");
       if(snapshot.capability==="video.generate"&&this.options.characterReferenceGate==="strict")throw new PersistenceError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The first-frame video profile cannot prove strict selected character references");
       const current=snapshot.autoStoryboard?await this.autoStoryboardConfiguration(client)
+        :snapshot.configuration.providerKey==="minimax-tts"?await this.minimaxTtsConfiguration(client)
         :await this.configuration(snapshot.capability,client,snapshot.configuration.providerKey==="comfyui");
       if(realMediaInputHash(current)!==realMediaInputHash(snapshot.configuration))throw new PersistenceError("REAL_MEDIA_CONFIGURATION_CHANGED","Provider configuration changed; obtain a new quote");
       const source=snapshot.autoStoryboard?await this.prepareAutoStoryboardShot(client,projectId,shotRevisionId)
@@ -252,6 +255,13 @@ export class RealMediaService {
     if(!config?.enabled||config.capability!==capability)throw new PersistenceError("REAL_MEDIA_PROVIDER_DISABLED","This media provider is unavailable");
     return config;
   }
+  private async minimaxTtsConfiguration(client?:MediaTransactionClient){
+    const config=await this.options.minimaxTtsConfigurationFor?.(client);
+    if(!config?.enabled||config.capability!=="audio.tts"||config.providerKey!=="minimax-tts"||config.model!=="speech-2.8-hd"){
+      throw new PersistenceError("REAL_MEDIA_PROVIDER_DISABLED","Official MiniMax speech-2.8-hd is unavailable");
+    }
+    return config;
+  }
   speechPort():SpeechGenerationPort{
     return {
       capabilities:async(workspaceId,projectId)=>{
@@ -260,12 +270,19 @@ export class RealMediaService {
       },
       quote:async(input)=>{
         await this.ready();if(input.workspaceId!==this.options.workspaceId)throw new PersistenceError("NOT_FOUND","Workspace not found");
-        const config=await this.configuration("audio.tts");
-        if(input.voice.providerConfigurationId!==config.id||input.voice.providerConfigurationVersion!==config.version||input.voice.model!==config.model||input.emotion!=="neutral"||input.speed!==1||[...input.spokenText].length>600)throw new PersistenceError("SPEECH_VOICE_UNSUPPORTED","This voice supports at most 600 characters with neutral delivery at normal speed");
+        // Official website TTS is MiniMax only — never quote Bailian or ElevenLabs here.
+        const config=await this.minimaxTtsConfiguration();
+        const maxChars=input.voice.capabilities.maxTextCharacters??10_000;
+        if(input.voice.providerKey!=="minimax-tts"||input.voice.model!=="speech-2.8-hd"
+          ||input.voice.providerConfigurationId!==config.id||input.voice.providerConfigurationVersion!==config.version
+          ||input.emotion!=="neutral"||input.speed!==1||[...input.spokenText].length>maxChars){
+          throw new PersistenceError("SPEECH_VOICE_UNSUPPORTED","Official MiniMax speech-2.8-hd supports at most the catalog character limit with neutral delivery at normal speed");
+        }
         await this.options.store.transaction(client=>assertSpeechGenerationInputInTransaction(client,input));
         const quote=await this.options.store.createQuote({workspaceId:input.workspaceId,projectId:input.projectId,actorId:"server-owner",
           frozen:{schema:"real-media.v1",shotRevisionId:input.shotRevisionId,capability:"audio.tts",sourceText:input.spokenText,
-            sourceHash:createHash("sha256").update(input.spokenText).digest("hex"),configuration:config,speech:input}});
+            sourceHash:createHash("sha256").update(input.spokenText).digest("hex"),configuration:config,speech:input,
+            minimaxSpeech:{schema:"minimax-tts.speech.v1",text:input.spokenText,voiceId:input.voice.voiceId}}});
         return {...quote,inputHash:input.inputHash};
       },
       authorize:async(input)=>{
