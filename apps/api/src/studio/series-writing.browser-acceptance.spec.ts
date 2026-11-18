@@ -27,7 +27,7 @@ import {
   GUARDED_SINGLE_MIGRATIONS,
   PostgresSeriesWritingStore,
   SCRIPT_BREAKDOWN_MIGRATION,
-  SERIES_WRITING_MIGRATION,
+  SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION,
   TextChainService,
   WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
   WRITING_CANDIDATE_MIGRATION,
@@ -238,7 +238,7 @@ beforeAll(async () => {
     throw new Error(`Series writing browser acceptance refused: ${verified.reason}`);
   }
   expect((await runMigrations(pool, undefined, { before: SCRIPT_BREAKDOWN_MIGRATION })).applied).toEqual([...BASE_MIGRATIONS]);
-  for (const name of [WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]) {
+  for (const name of [WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION]) {
     expect((await runMigrations(pool, undefined, { only: { name, requires: GUARDED_SINGLE_MIGRATIONS[name]! } })).applied).toEqual([name]);
   }
   evidence.migrationsApplied = (await q<{ name: string }>("SELECT name FROM schema_migration ORDER BY name")).map((row) => row.name);

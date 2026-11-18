@@ -12,7 +12,13 @@ function viewport(wide: boolean) {
   }));
 }
 
-beforeEach(() => viewport(true));
+beforeEach(() => {
+  viewport(true);
+  // AccountControl reads the session on mount; keep shell specs offline.
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    enabled: true, authenticated: false, publicRegistrationEnabled: false,
+  }), { status: 200, headers: { "content-type": "application/json" } })));
+});
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 const destinations = [

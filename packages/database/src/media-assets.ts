@@ -1119,9 +1119,16 @@ async function inspectEpisodeCompositeExportWithClient(
     [input.episodeId, input.workspaceId, input.projectId],
   );
   if (!episode.rows[0]) throw new PersistenceError("NOT_FOUND", "Episode not found");
+  const ownerParams: unknown[] = [input.projectId, input.workspaceId];
+  let ownerSql = "";
+  const owner = storeOwnerAccountFilter();
+  if (owner && await projectOwnerColumnReady(client)) {
+    ownerParams.push(owner);
+    ownerSql = "AND owner_account_id = $3::uuid";
+  }
   const project = await client.query(
-    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
-    [input.projectId, input.workspaceId],
+    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2 ${ownerSql} FOR UPDATE`,
+    ownerParams,
   );
   if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");
   const pending = await client.query(

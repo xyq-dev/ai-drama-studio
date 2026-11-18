@@ -37,7 +37,7 @@ import {
   createPostgresPool,
   provisionMockAvProviders,
   runMigrations,
-  SERIES_WRITING_MIGRATION,
+  SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
@@ -480,7 +480,7 @@ beforeAll(async () => {
   for (const dir of [dirs.mock, dirs.composeWork, dirs.composeObjects, dirs.evidence]) if (dir) await mkdir(dir, { recursive: true });
   const applied = (await runMigrations(pool)).applied;
   expect(applied.slice(-6)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
-    AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]);
+    AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION]);
   evidence.database = { name: decision.databaseName, migrationsApplied: applied };
   // Acceptance data in the new database: the workspace row and the existing Mock video/speech provider provisioning.
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'r2-media-acceptance', 'ACTIVE')", [WORKSPACE]);

@@ -45,7 +45,7 @@ import {
   WRITING_PROVIDER_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
-  SERIES_WRITING_MIGRATION,
+  SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
@@ -376,7 +376,7 @@ beforeAll(async () => {
   // A new database through the normal chain: every released migration, the title writing one and the episode plan one.
   const migrated = await runMigrations(pool);
   expect(migrated.applied.slice(-8)).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION,
-    WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]);
+    WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION]);
   evidence.migrationsApplied = migrated.applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'title-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });

@@ -130,13 +130,28 @@ ALTER TABLE project
 CREATE INDEX project_owner_account_idx ON project (workspace_id, owner_account_id, created_at DESC);
 
 -- Raw inserts that omit owner_account_id (legacy tests / older writers) inherit the workspace legacy owner.
+-- Workspaces created after this migration also get a LEGACY owner on first project insert so tests and older
+-- writers keep working without stamping owner_account_id explicitly.
 CREATE FUNCTION project_default_owner_account() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  legacy_id uuid;
 BEGIN
   IF NEW.owner_account_id IS NULL THEN
-    SELECT id INTO NEW.owner_account_id
+    SELECT id INTO legacy_id
       FROM creator_account
      WHERE workspace_id = NEW.workspace_id AND username = 'legacy-owner'
      LIMIT 1;
+    IF legacy_id IS NULL THEN
+      legacy_id := gen_random_uuid();
+      INSERT INTO creator_account (id, workspace_id, username, password_hash, status)
+      VALUES (legacy_id, NEW.workspace_id, 'legacy-owner', 'legacy-not-a-password-hash', 'LEGACY')
+      ON CONFLICT (workspace_id, username) DO NOTHING;
+      SELECT id INTO legacy_id
+        FROM creator_account
+       WHERE workspace_id = NEW.workspace_id AND username = 'legacy-owner'
+       LIMIT 1;
+    END IF;
+    NEW.owner_account_id := legacy_id;
   END IF;
   IF NEW.owner_account_id IS NULL THEN
     RAISE EXCEPTION 'project_owner_account_required'

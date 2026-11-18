@@ -958,6 +958,8 @@ export class StudioService {
     if (!this.episodeComposeEnabled || !this.composeObjectDir || !this.mediaAssets) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
     }
+    // Opaque ownership gate for download + export-manifest (same NOT_FOUND as a missing project).
+    await this.store.getProject(this.workspaceId, projectId);
     const expectedContentHash = parseExpectedContentHash(query);
     const request = {
       workspaceId: this.workspaceId,

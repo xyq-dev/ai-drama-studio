@@ -20,6 +20,7 @@ function harness(answers: Answer[] = []) {
   const release = vi.fn();
   const query = async (sql: string, values: unknown[] = []): Promise<Answer> => {
     statements.push({ sql, values });
+    if (/^(BEGIN|COMMIT|ROLLBACK)/.test(sql)) return EMPTY;
     const answer = answers.shift();
     if (!answer) throw new Error(`Unexpected query: ${sql}`);
     return answer;
@@ -101,6 +102,27 @@ describe("creator ownership filters on non-project resources", () => {
     expect(statements.every((statement) => !statement.sql.includes("owner_account_id"))).toBe(true);
     expect(statements[0]?.values).toEqual([JOB, WORKSPACE]);
     expect(statements[1]?.values).toEqual([ASSET, WORKSPACE]);
+  });
+
+  it("scopes episode export project lock through owner_account_id when ALS is set", async () => {
+    const { assets, statements } = harness([
+      { rows: [{ episode_no: 1 }] },
+      { rows: [{ present: true }] },
+      EMPTY,
+    ]);
+    await expect(runWithStoreCreatorAccess(
+      { kind: "scoped", ownerAccountId: OWNER, actorId: `creator:${OWNER}` },
+      () => assets.inspectEpisodeCompositeExport({
+        workspaceId: WORKSPACE,
+        projectId: "55555555-5555-4555-8555-555555555555",
+        episodeId: "66666666-6666-4666-8666-666666666666",
+        assetId: ASSET,
+        expectedContentHash: "a".repeat(64),
+      }),
+    )).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const projectLock = statements.find((statement) => statement.sql.includes("FOR UPDATE") && statement.sql.includes("FROM project"));
+    expect(projectLock?.sql).toContain("owner_account_id = $3::uuid");
+    expect(projectLock?.values).toEqual(["55555555-5555-4555-8555-555555555555", WORKSPACE, OWNER]);
   });
 
   it("does not let a second creator id leak into another scope's binds", async () => {
