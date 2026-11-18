@@ -227,7 +227,8 @@ export class AutoCreationService {
       ? await this.deps.mediaVideoProbe()
       : {
         dashscopeApiKeyPresent: false, unitPricePresent: false, priceVersionPresent: false,
-        configuration: null, chinesePromptGateReady: false, shotComposeEnabled: false, episodeComposeEnabled: false,
+        configuration: null, chinesePromptGateReady: false, characterReferenceGate: "legacy",
+        shotComposeEnabled: false, episodeComposeEnabled: false,
       };
     return resolveAutoCreationMediaOptions({ image, voice, video });
   }

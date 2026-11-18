@@ -293,7 +293,8 @@ describe("automatic creation API", () => {
       }),
       mediaVideoProbe: async () => ({
         dashscopeApiKeyPresent: true, unitPricePresent: true, priceVersionPresent: true, configuration: videoConfig(),
-        chinesePromptGateReady: true, shotComposeEnabled: true, episodeComposeEnabled: true,
+        chinesePromptGateReady: true, characterReferenceGate: "legacy",
+        shotComposeEnabled: true, episodeComposeEnabled: true,
       }),
     }).service.options()).body as AutoCreationOptionsView;
     expect(all.media.realProviders).toEqual(["openai-media", "minimax-tts", "dashscope-media"]);

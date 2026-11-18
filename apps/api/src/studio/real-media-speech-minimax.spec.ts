@@ -19,7 +19,7 @@ const voice = {
   name: "少女", providerConfigurationId: minimax.id, providerConfigurationVersion: minimax.version,
   providerKey: "minimax-tts", model: "speech-2.8-hd", modelVersion: minimax.version, voiceId: "female-shaonv",
   locale: "zh-CN", rightsRef: "https://platform.minimaxi.com/",
-  capabilities: { emotions: ["neutral"], speedMin: 1, speedMax: 1, maxTextCharacters: 10_000 },
+  capabilities: { emotions: ["neutral"], speedMin: 1, speedMax: 1, maxTextCharacters: 2_000 },
 } as SpeechGenerationInput["voice"];
 
 const speech: SpeechGenerationInput = {

@@ -409,7 +409,8 @@ export class ServerRealMediaRuntime {
         voiceId: voiceId!,
         locale: "zh-CN",
         rightsRef: "https://platform.minimaxi.com/",
-        capabilities: { emotions: ["neutral"], speedMin: 1, speedMax: 1, maxTextCharacters: 10_000 },
+        // speechVoiceSchema caps maxTextCharacters at 2000; keep the catalog inside that contract.
+        capabilities: { emotions: ["neutral"], speedMin: 1, speedMax: 1, maxTextCharacters: 2_000 },
       })),
     };
   }

@@ -51,17 +51,39 @@ function dimensions(stream:{width?:number;height?:number}):{width:number;height:
   return {width:stream.width!,height:stream.height!};
 }
 const OSS=/^dashscope-result-[a-z0-9-]+\.oss-cn-[a-z0-9-]+\.aliyuncs\.com$/;
+const PNG_SIG=Buffer.from("89504e470d0a1a0a","hex");
+/** Wrap mono little-endian PCM16 as a WAV so the shared ffmpeg audio path can probe it. */
+function pcm16leMonoToWav(pcm:Buffer,sampleRate=44_100):Buffer{
+  const header=Buffer.alloc(44);
+  header.write("RIFF",0);header.writeUInt32LE(36+pcm.length,4);header.write("WAVE",8);
+  header.write("fmt ",12);header.writeUInt32LE(16,16);header.writeUInt16LE(1,20);header.writeUInt16LE(1,22);
+  header.writeUInt32LE(sampleRate,24);header.writeUInt32LE(sampleRate*2,28);header.writeUInt16LE(2,32);header.writeUInt16LE(16,34);
+  header.write("data",36);header.writeUInt32LE(pcm.length,40);
+  return Buffer.concat([header,pcm]);
+}
 /** Provider results are read without model credentials. Redirects, private DNS targets and oversized bodies fail. */
 export async function downloadRealMediaResult(raw:string,maxBytes:number):Promise<Buffer>{
   if(raw.startsWith("data:")){
     const music=/^data:audio\/mpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(raw);
     const image=/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(raw);
-    const match=music??image;
-    const cap=music?4*1024*1024:8*1024*1024;
+    // MiniMax speech-2.8-hd receipts use rate=44100 (wav default, or L16 pcm).
+    const minimaxWav=/^data:audio\/wav;rate=44100;base64,([A-Za-z0-9+/]+={0,2})$/.exec(raw);
+    const minimaxPcm=/^data:audio\/L16;rate=44100;base64,([A-Za-z0-9+/]+={0,2})$/.exec(raw);
+    const match=music??image??minimaxWav??minimaxPcm;
+    const cap=music||minimaxWav||minimaxPcm?20*1024*1024:8*1024*1024;
     if(!match||match[1]!.length>Math.ceil(cap/3)*4)throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid binary media receipt");
     const bytes=Buffer.from(match[1]!,"base64");
     if(!bytes.length||bytes.length>Math.min(maxBytes,cap)||bytes.toString("base64")!==match[1])throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid binary media receipt");
-    if(image&&!bytes.subarray(0,8).equals(Buffer.from("89504e470d0a1a0a","hex")))throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid image receipt");
+    if(image&&!bytes.subarray(0,8).equals(PNG_SIG))throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid image receipt");
+    if(minimaxWav&&(bytes.length<44||bytes.subarray(0,4).toString("ascii")!=="RIFF"||bytes.subarray(8,12).toString("ascii")!=="WAVE")){
+      throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid MiniMax wav receipt");
+    }
+    if(minimaxPcm){
+      if(bytes.length%2!==0)throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid MiniMax pcm receipt");
+      const wav=pcm16leMonoToWav(bytes);
+      if(wav.length>Math.min(maxBytes,cap))throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid MiniMax pcm receipt");
+      return wav;
+    }
     return bytes;
   }
   let url:URL;try{url=new URL(raw);}catch{throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid provider output reference");}

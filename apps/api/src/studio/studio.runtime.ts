@@ -333,6 +333,7 @@ export class StudioRuntime implements OnModuleDestroy {
           priceVersionPresent: Boolean(mediaEnv.REAL_MEDIA_PRICE_VERSION),
           configuration,
           chinesePromptGateReady: true,
+          characterReferenceGate: env.M3_CHARACTER_REFERENCE_GATE,
           shotComposeEnabled: localComposeEnabled && (mockAvEnabled || realComposeAllowed),
           episodeComposeEnabled,
         };

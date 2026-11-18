@@ -45,6 +45,20 @@ describe("durable real media objects",()=>{
     }
     await expect(downloadRealMediaResult(`data:audio/mpeg;base64,${bytes.toString("base64")}`,3)).rejects.toThrow();
   });
+  it("accepts MiniMax speech-2.8-hd wav/L16 data receipts with rate=44100 and rejects bare wav data URIs",async()=>{
+    const wav=Buffer.alloc(44+4);wav.write("RIFF",0);wav.writeUInt32LE(36+4,4);wav.write("WAVE",8);
+    wav.write("fmt ",12);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);
+    wav.writeUInt32LE(44100,24);wav.writeUInt32LE(88200,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);
+    wav.write("data",36);wav.writeUInt32LE(4,40);
+    expect(await downloadRealMediaResult(`data:audio/wav;rate=44100;base64,${wav.toString("base64")}`,1000)).toEqual(wav);
+    const pcm=Buffer.alloc(4);pcm.writeInt16LE(100,0);pcm.writeInt16LE(-100,2);
+    const wrapped=await downloadRealMediaResult(`data:audio/L16;rate=44100;base64,${pcm.toString("base64")}`,1000);
+    expect(wrapped.subarray(0,4).toString("ascii")).toBe("RIFF");
+    expect(wrapped.subarray(8,12).toString("ascii")).toBe("WAVE");
+    expect(wrapped.subarray(44)).toEqual(pcm);
+    await expect(downloadRealMediaResult("data:audio/wav;base64,YQ==",100)).rejects.toThrow();
+    await expect(downloadRealMediaResult(`data:audio/wav;rate=44100;base64,${Buffer.from("not-wav").toString("base64")}`,1000)).rejects.toThrow();
+  });
   it("accepts a bounded PNG data receipt and rejects other image payloads", async () => {
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
     expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");

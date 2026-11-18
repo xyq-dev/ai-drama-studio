@@ -287,6 +287,7 @@ describe("independent minimax speech configuration", () => {
     expect(catalog.available).toBe(true);
     expect(catalog.voices.map((voice) => voice.voiceId)).toContain("female-shaonv");
     expect(catalog.voices.every((voice) => voice.providerKey === "minimax-tts" && voice.model === "speech-2.8-hd")).toBe(true);
+    expect(catalog.voices.every((voice) => (voice.capabilities.maxTextCharacters ?? 0) <= 2000)).toBe(true);
     expect(catalog.catalogVersion.startsWith("minimax-voices.v1:")).toBe(true);
     expect(await runtime.speechCatalog()).toMatchObject({ available: true });
     expect((await runtime.speechCatalog()).voices[0]?.providerKey).toBe("dashscope-media");

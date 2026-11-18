@@ -62,7 +62,11 @@ export function passesAutoStoryboardImageRuntimeGate(
   }
 }
 
-/** Budget / unit-price gate shared by MiniMax TTS and DashScope video quotes. */
+/**
+ * Budget / unit-price gate shared by MiniMax TTS and DashScope video quotes.
+ * For `unitType=second` (video), compare the cap against unitPrice × configured duration —
+ * the same estimate RealMediaStore.createQuote uses — not the bare per-second price.
+ */
 export function passesOfficialMediaPriceGate(
   configuration: RealMediaConfiguration | null | undefined,
 ): configuration is RealMediaConfiguration {
@@ -70,7 +74,13 @@ export function passesOfficialMediaPriceGate(
   const limit = configuration.maximumOperationAmount ?? configuration.unitPrice;
   const limitUnits = amountUnits(limit);
   const priceUnits = amountUnits(configuration.unitPrice);
-  return priceUnits !== null && priceUnits > 0n && limitUnits !== null && limitUnits >= priceUnits;
+  if (priceUnits === null || priceUnits <= 0n || limitUnits === null) return false;
+  if (configuration.unitType === "second") {
+    const duration = Number(configuration.parameters.duration ?? 5);
+    if (!Number.isInteger(duration) || duration < 1 || duration > 100_000) return false;
+    return limitUnits >= priceUnits * BigInt(duration);
+  }
+  return limitUnits >= priceUnits;
 }
 
 export interface AutoStoryboardImageProbe {
@@ -116,6 +126,11 @@ export interface AutoOfficialVideoProbe {
   configuration: RealMediaConfiguration | null;
   /** Code enforces Chinese video prompts before quote/submit. */
   chinesePromptGateReady: boolean;
+  /**
+   * Process `M3_CHARACTER_REFERENCE_GATE`. Strict mode rejects video.generate in RealMediaService
+   * and the worker; must not advertise video as connected.
+   */
+  characterReferenceGate: "legacy" | "strict";
   /** Local shot compose path is switched on (same conditions as /providers/capabilities). */
   shotComposeEnabled: boolean;
   /** Local episode compose / export path is switched on. */
@@ -204,6 +219,9 @@ export function diagnoseAutoOfficialVideoGaps(probe: AutoOfficialVideoProbe): st
   if (!probe.chinesePromptGateReady) {
     gaps.push("真实视频生成未接通：视频生成提示词尚未强制要求中文");
   }
+  if (probe.characterReferenceGate === "strict") {
+    gaps.push("真实视频生成未接通：M3_CHARACTER_REFERENCE_GATE=strict（固定首帧视频路径无法证明严格角色参考，报价与生成一律拒绝）");
+  }
   const config = probe.configuration;
   if (
     !config
@@ -214,7 +232,7 @@ export function diagnoseAutoOfficialVideoGaps(probe: AutoOfficialVideoProbe): st
   ) {
     gaps.push("真实视频生成未接通：缺少启用中的 wan2.6-i2v-flash（provider dashscope-media）配置");
   } else if (!passesOfficialMediaPriceGate(config)) {
-    gaps.push("真实视频生成未接通：单次费用上限低于单价，或单价快照无法核实");
+    gaps.push("真实视频生成未接通：单次费用上限低于整段时长估价（单价×秒数），或单价快照无法核实");
   }
   if (!probe.shotComposeEnabled) {
     gaps.push("成片合成未接通：镜头本地合成未开启（填写配置并部署前不能真实合成）");
@@ -271,6 +289,7 @@ export function resolveAutoCreationMediaOptions(
         priceVersionPresent: false,
         configuration: null,
         chinesePromptGateReady: false,
+        characterReferenceGate: "legacy",
         shotComposeEnabled: false,
         episodeComposeEnabled: false,
       },

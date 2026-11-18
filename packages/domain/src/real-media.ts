@@ -76,7 +76,7 @@ export function assertRealMediaInput(input:Omit<RealMediaSnapshot,"budget">):voi
     if(!block||block.schema!=="minimax-tts.speech.v1"||block.text!==text||!block.voiceId.trim()){
       throw new DomainError("REAL_MEDIA_TTS_PATH_UNSUPPORTED","MiniMax speech-2.8-hd requires a minimaxSpeech block on the website path and does not fall back to ElevenLabs or Bailian");
     }
-    if([...text].length>10_000)throw new DomainError("VALIDATION_ERROR","Speech supports at most 10000 characters for MiniMax speech-2.8-hd");
+    if([...text].length>2_000)throw new DomainError("VALIDATION_ERROR","Speech supports at most 2000 characters for MiniMax speech-2.8-hd on the website path");
     if(input.speech&&(input.speech.spokenText!==text||input.speech.emotion!=="neutral"||input.speech.speed!==1
       ||input.speech.voice.voiceId!==block.voiceId||input.speech.voice.providerKey!=="minimax-tts"
       ||input.speech.voice.model!=="speech-2.8-hd")){

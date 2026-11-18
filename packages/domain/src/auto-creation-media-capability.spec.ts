@@ -106,6 +106,7 @@ function videoProbe(overrides: Partial<AutoOfficialVideoProbe> = {}): AutoOffici
     priceVersionPresent: true,
     configuration: wanVideo(),
     chinesePromptGateReady: true,
+    characterReferenceGate: "legacy",
     shotComposeEnabled: true,
     episodeComposeEnabled: true,
     ...overrides,
@@ -218,6 +219,15 @@ describe("auto-creation media capability (phase 3 voice + video)", () => {
       .toContain("镜头本地合成");
     expect(diagnoseAutoOfficialVideoGaps(videoProbe({ episodeComposeEnabled: false })).join("\n"))
       .toContain("整集本地合成/导出");
+    // Cap must cover the full clip (unitPrice × duration), not only the per-second unit price.
+    expect(diagnoseAutoOfficialVideoGaps(videoProbe({
+      configuration: wanVideo({ unitPrice: "1", maximumOperationAmount: "2", parameters: { duration: 5 } }),
+    })).join("\n")).toContain("整段时长估价");
+    expect(isAutoOfficialVideoConnected(videoProbe({
+      configuration: wanVideo({ unitPrice: "1", maximumOperationAmount: "5", parameters: { duration: 5 } }),
+    }))).toBe(true);
+    expect(diagnoseAutoOfficialVideoGaps(videoProbe({ characterReferenceGate: "strict" })).join("\n"))
+      .toContain("M3_CHARACTER_REFERENCE_GATE=strict");
 
     const media = resolveAutoCreationMediaOptions({
       image: {

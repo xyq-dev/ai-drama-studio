@@ -272,7 +272,7 @@ export class RealMediaService {
         await this.ready();if(input.workspaceId!==this.options.workspaceId)throw new PersistenceError("NOT_FOUND","Workspace not found");
         // Official website TTS is MiniMax only — never quote Bailian or ElevenLabs here.
         const config=await this.minimaxTtsConfiguration();
-        const maxChars=input.voice.capabilities.maxTextCharacters??10_000;
+        const maxChars=input.voice.capabilities.maxTextCharacters??2_000;
         if(input.voice.providerKey!=="minimax-tts"||input.voice.model!=="speech-2.8-hd"
           ||input.voice.providerConfigurationId!==config.id||input.voice.providerConfigurationVersion!==config.version
           ||input.emotion!=="neutral"||input.speed!==1||[...input.spokenText].length>maxChars){
