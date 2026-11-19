@@ -26,8 +26,23 @@ describe("project library request boundary", () => {
     expect(store.assignCategory).toHaveBeenCalledWith(WORKSPACE, PROJECT, { categoryId: null, expectedRevision: 2 });
   });
 
+  it("accepts view=ops (middleware-consumed) and does not forward it to the store", async () => {
+    const { service, store } = setup();
+    await service.list({ view: "ops", q: "都市", sort: "updated" });
+    expect(store.list).toHaveBeenCalledWith(WORKSPACE, { q: "都市", sort: "updated" });
+    expect(store.list.mock.calls[0]?.[1]).not.toHaveProperty("view");
+  });
+
+  it("accepts view=ops alone without changing the store query shape", async () => {
+    const { service, store } = setup();
+    await service.list({ view: "ops" });
+    expect(store.list).toHaveBeenCalledWith(WORKSPACE, {});
+    expect(store.list.mock.calls[0]?.[1]).not.toHaveProperty("view");
+  });
+
   it.each([{ workspaceId: "browser" }, { q: ["one", "two"] }, { sort: "status" }, { cursor: "x".repeat(2049) },
-    { limit: "2000" }, { q: "x".repeat(201) }])("rejects unsafe or unsupported queries %j", (query) => {
+    { limit: "2000" }, { q: "x".repeat(201) }, { view: "all" }, { view: "mine" }, { view: ["ops"] },
+    { view: "ops", workspaceId: "browser" }])("rejects unsafe or unsupported queries %j", (query) => {
     const { service, store } = setup();
     expect(() => service.list(query)).toThrow();
     expect(store.list).not.toHaveBeenCalled();

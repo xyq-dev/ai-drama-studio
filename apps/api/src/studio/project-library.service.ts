@@ -7,6 +7,8 @@ const querySchema = z.object({
   category: z.string().max(36).optional(),
   sort: z.enum(["updated", "created"]).optional(),
   cursor: z.string().max(2048).optional(),
+  // `view=ops` is consumed by site-auth middleware (operator open list); ignore it here.
+  view: z.literal("ops").optional(),
 }).strict();
 const categorySchema = z.object({ id: z.string().regex(UUID), name: z.string().trim().min(1).max(40) }).strict();
 const assignmentSchema = z.object({ categoryId: z.string().regex(UUID).nullable(),
@@ -20,7 +22,8 @@ export class ProjectLibraryService {
   list(query: unknown) {
     const parsed = querySchema.safeParse(query);
     if (!parsed.success) throw new PersistenceError("VALIDATION_ERROR", "作品查询参数无效。");
-    return this.store.list(this.workspaceId, parsed.data as ProjectLibraryQuery);
+    const { view: _view, ...filters } = parsed.data;
+    return this.store.list(this.workspaceId, filters as ProjectLibraryQuery);
   }
 
   createCategory(body: unknown) {
