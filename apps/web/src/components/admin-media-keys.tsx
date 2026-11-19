@@ -9,7 +9,7 @@ import {
   type MediaKeySlot,
 } from "@ai-drama/contracts";
 import { AdminApiError, createAdminMediaKeysClient } from "../lib/admin-media-keys-client";
-import { goToLogin, loginUrl, logout as siteLogout, readSession, type SiteSession } from "../lib/site-session";
+import { goToLogin, loginUrl, readSession, type SiteSession } from "../lib/site-session";
 import styles from "./admin-models.module.css";
 
 type AuthState = "checking" | "guest" | "unavailable" | "signedin";
@@ -177,25 +177,6 @@ export function AdminMediaKeys() {
       if (epoch !== generation.current) return;
       if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已过期，请重新验证。");
       else setError(messageFor(caught));
-    } finally {
-      finish(epoch);
-    }
-  }
-
-  async function logout() {
-    if (!session) return;
-    const epoch = begin("logout");
-    if (epoch === null) return;
-    forgetSecrets();
-    try {
-      await siteLogout();
-      if (epoch === generation.current) {
-        endSession("已退出登录。");
-        window.location.assign(loginUrl("/admin/media-keys", "signed-out"));
-      }
-    } catch {
-      if (epoch !== generation.current) return;
-      setError("退出尚未确认，请重试退出。输入的密钥已清空。");
     } finally {
       finish(epoch);
     }

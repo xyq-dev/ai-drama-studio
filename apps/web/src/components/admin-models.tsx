@@ -7,7 +7,7 @@ import {
 } from "@ai-drama/contracts";
 import { AdminApiError, createAdminModelsClient } from "../lib/admin-models-client";
 import { ModelPicker, modelDraftFor, modelProblem, orderedModels, type ModelDraft } from "./admin-model-picker";
-import { goToLogin, loginUrl, logout as siteLogout, readSession, type SiteSession } from "../lib/site-session";
+import { goToLogin, loginUrl, readSession, type SiteSession } from "../lib/site-session";
 import styles from "./admin-models.module.css";
 
 /** The three active providers, each with its one fixed official endpoint. Qwen is retired and has no entry. */
@@ -248,20 +248,6 @@ export function AdminModels() {
       Math.min(2_147_483_647, Math.max(250, Date.parse(session.expiresAt ?? "") - Date.now())));
     return () => window.clearTimeout(timer);
   }, [session]);
-
-  async function logout() {
-    if (!session) return;
-    const epoch = begin("logout");
-    if (epoch === null) return;
-    forgetSecrets();
-    try {
-      await siteLogout();
-      if (epoch === generation.current) { endSession("已退出登录。"); window.location.assign(loginUrl("/admin/models", "signed-out")); }
-    } catch {
-      if (epoch !== generation.current) return;
-      setError("退出尚未确认，请重试退出。输入的密钥已清空。");
-    } finally { finish(epoch); }
-  }
 
   async function reload() {
     const epoch = begin("read");
