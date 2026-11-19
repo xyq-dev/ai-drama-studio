@@ -21,7 +21,7 @@ function client(answer: (sql: string, values: unknown[]) => unknown[]) {
 }
 function sourceAnswers(sql: string): unknown[] | undefined {
   if (sql.startsWith("SELECT project_id FROM shot_revision")) return [{ project_id: input.projectId }];
-  if (sql.startsWith("SELECT id FROM project") || sql.startsWith("SELECT 1 FROM project")) return [{ id: input.projectId }];
+  if (sql.startsWith("SELECT id FROM project") || sql.startsWith("SELECT 1 FROM project") || sql.includes("FROM project p WHERE") || sql.includes("FROM project proj WHERE")) return [{ id: input.projectId }];
   if (sql.includes("information_schema.columns")) return [];
   if (sql.includes("FROM stale_recalculation")) return [];
   if (sql.includes("AS usable, sr.id")) return [{ dialogue: "林夏：你来了。", usable: true, scene_revision_id: uid("6") }];

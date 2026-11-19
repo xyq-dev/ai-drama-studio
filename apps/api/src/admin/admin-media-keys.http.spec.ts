@@ -29,6 +29,8 @@ const VIEW: AdminMediaKeysView = {
       status: "empty",
       managed: false,
       source: "none",
+      priceConfigured: false,
+      serviceState: "unconfigured",
     },
   ],
   validation: "local_only",

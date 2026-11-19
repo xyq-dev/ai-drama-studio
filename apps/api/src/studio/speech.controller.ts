@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Param, Post, Put, Query, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { createTraceId, type StudioContext } from "./studio.service";
 import type { SpeechResult, SpeechService } from "./speech.service";
 
@@ -74,6 +74,8 @@ export class SpeechController {
   }
   @Post("speech-plans/:revisionId/mix-preflight")
   mix(@Param("revisionId", UUID_PIPE) id: string, @Body() body: unknown, @Res({ passthrough: true }) res: Response) { return this.send(res, this.speech.mixPreflight(id, body)); }
-  private context(idempotencyKey?: string, trace?: string): StudioContext { return { actorId: "server-owner", traceId: createTraceId(trace), idempotencyKey }; }
+  private context(idempotencyKey?: string, trace?: string): StudioContext {
+    return { actorId: storeActorId(), traceId: createTraceId(trace), idempotencyKey };
+  }
   private async send(res: Response, work: Promise<SpeechResult>): Promise<unknown> { res.setHeader("Cache-Control", "private, no-store"); const result = await work; res.status(result.status); return result.body; }
 }

@@ -138,7 +138,9 @@ describe("speech panel", () => {
       return fixture(input, init);
     });
     render(createElement(SpeechPanel, { projectId: PROJECT, shotRevisionId: SHOT, client, characters: CHARACTERS }));
-    expect(await screen.findByText(/配音服务尚未开启/)).toBeTruthy();
+    expect(await screen.findByText("配音服务暂未启用，请联系管理员。")).toBeTruthy();
+    expect(screen.getByText(/这是服务尚未配置，不是这次任务失败/)).toBeTruthy();
+    expect(screen.queryByText(/单次生成失败，可以重试/)).toBeNull();
     expect(screen.getByRole("button", { name: "生成本句：先查看费用" }).hasAttribute("disabled")).toBe(true);
     expect(screen.queryByText("生成完成，请试听后选用")).toBeNull();
     expect(requests.some((url) => url.endsWith("/generate"))).toBe(false);
@@ -178,8 +180,9 @@ describe("speech panel", () => {
       ? json({ available: false, reasonCode: "SPEECH_STORAGE_UNAVAILABLE", catalogVersion: "catalog-v1", voices: [VOICE_DATA] })
       : json({ error: { code: "SPEECH_STORAGE_UNAVAILABLE", message: "配音存储尚未启用，未创建生成任务。" } }, 503));
     render(createElement(SpeechPanel, { projectId: PROJECT, shotRevisionId: SHOT, client, characters: CHARACTERS }));
-    expect(await screen.findByText(/配音存储尚未启用/)).toBeTruthy();
-    expect(screen.getByText(/SPEECH_STORAGE_UNAVAILABLE/)).toBeTruthy();
+    expect(await screen.findByText("配音服务暂未启用，请联系管理员。")).toBeTruthy();
+    expect(screen.getAllByText(/SPEECH_STORAGE_UNAVAILABLE/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/配音存储尚未启用/).length).toBeGreaterThan(0);
     fireEvent.change(screen.getByLabelText("林夏的声音"), { target: { value: "warm" } });
     expect(screen.getAllByRole("button", { name: "保存角色声音" })[0]?.hasAttribute("disabled")).toBe(true);
   });

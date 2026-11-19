@@ -1,5 +1,5 @@
 import { Body, Controller, Headers, Inject, Param, Post, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { createTraceId } from "./studio.service";
 import type { VoiceComposeService } from "./voice-compose.service";
 
@@ -18,7 +18,7 @@ export class VoiceComposeController {
   async render(@Param("revisionId", { transform: voiceComposeRouteId }) id: string, @Body() body: unknown, @Res({ passthrough: true }) res: Response,
     @Headers("idempotency-key") idempotencyKey?: string, @Headers("x-trace-id") trace?: string): Promise<unknown> {
     res.setHeader("Cache-Control", "private, no-store");
-    const result = await this.voice.render(id, body, { actorId: "server-owner", traceId: createTraceId(trace), idempotencyKey });
+    const result = await this.voice.render(id, body, { actorId: storeActorId(), traceId: createTraceId(trace), idempotencyKey });
     res.status(result.status);
     return result.body;
   }

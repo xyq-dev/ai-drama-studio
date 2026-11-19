@@ -47,7 +47,7 @@ describe("ViMax planning HTTP session and send boundary", () => {
     expect((await fetch(`${url}${BASE}/requests/${ID}/cancel`, { method: "POST", headers, body: "{}" })).status).toBe(403);
     expect(start).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled();
     const r = await fetch(`${url}${BASE}/requests`, { method: "POST", headers: { ...headers, "x-csrf-token": csrf }, body: "{}" });
-    expect(r.status).toBe(202); expect(start).toHaveBeenCalledWith(P, E, {}, { session: true, token: undefined },
+    expect(r.status).toBe(202); expect(start).toHaveBeenCalledWith(P, E, {}, { session: true, role: "operator", token: undefined },
       { actorId: "server-owner", traceId: "planning-trace", idempotencyKey: "original-key" });
   });
   it("rejects malformed scope and oversized body before the service", async () => {

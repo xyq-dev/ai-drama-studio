@@ -63,7 +63,7 @@ import {
   type SeriesWritingEngine,
   type WritingProviderConfig,
 } from "@ai-drama/providers";
-import { asProof, operatorAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
+import { asProof, platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import type { StudioContext } from "./studio.service";
 import type { RuntimeStore } from "@ai-drama/database";
 
@@ -210,7 +210,7 @@ export class SeriesWritingService {
 
   private async gate(token: OperatorProof | string | undefined): Promise<SeriesWritingResult | null> {
     if (!this.deps.enabled) return failure(404, "SERIES_WRITING_DISABLED");
-    if (!operatorAllowed(this.deps, token)) return failure(403, "SERIES_WRITING_FORBIDDEN");
+    if (!platformCreationAllowed(this.deps, token)) return failure(403, "SERIES_WRITING_FORBIDDEN");
     if (!await this.deps.store.storageReady()) return failure(503, "SERIES_WRITING_STORAGE_UNAVAILABLE");
     return null;
   }

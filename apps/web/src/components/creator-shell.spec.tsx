@@ -21,13 +21,12 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+/** Phase-1 creator nav: 我的作品 only in LINKS; categories/new/trash come via workspaceNavigation. */
 const destinations = [
   ["/studio", "我的作品"],
-  ["/preview", "界面示例"], ["/status", "服务状态"],
-  ["/settings/storage", "设置"],
 ] as const;
 
-it.each(destinations)("keeps the same destinations and marks the current page at %s", (path, label) => {
+it.each(destinations)("keeps creator destinations and marks the current page at %s", (path, label) => {
   render(<CreatorShell activePath={path}><main>内容</main></CreatorShell>);
   const nav = screen.getByRole("navigation", { name: "主导航" });
   expect(within(nav).getAllByRole("link").map((link) => [link.getAttribute("href"), link.textContent])).toEqual(destinations);
@@ -35,6 +34,9 @@ it.each(destinations)("keeps the same destinations and marks the current page at
   expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
   expect(document.querySelectorAll('[data-ui="hongguo"]')).toHaveLength(1);
   expect(screen.queryByText("开发预览")).toBeNull();
+  expect(within(nav).queryByRole("link", { name: "界面示例" })).toBeNull();
+  expect(within(nav).queryByRole("link", { name: "服务状态" })).toBeNull();
+  expect(within(nav).queryByRole("link", { name: "设置" })).toBeNull();
 });
 
 it("uses the identical navigation and content frame for guided creation", () => {
@@ -71,10 +73,11 @@ it("uses one mobile navigation instance, traps focus and returns focus after cho
   const dialog = screen.getByRole("dialog", { name: "导航" });
   expect(document.querySelectorAll("#category-entry")).toHaveLength(1);
   expect(screen.getAllByRole("navigation", { name: "主导航" })).toHaveLength(1);
-  const close = within(dialog).getByRole("button", { name: "关闭导航" });
+  const close = within(dialog).getByRole("button", { name: "关闭菜单" });
   expect(document.activeElement).toBe(close);
   fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-  expect(document.activeElement).toBe(within(dialog).getByRole("link", { name: "设置" }));
+  // Last focusable in the drawer is the category control passed via workspaceNavigation.
+  expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "悬疑推理" }));
   fireEvent.keyDown(window, { key: "Tab" });
   expect(document.activeElement).toBe(close);
   fireEvent.click(within(dialog).getByRole("button", { name: "悬疑推理" }));

@@ -49,7 +49,7 @@ import {
   type AutoCreationEngine,
   type WritingProviderConfig,
 } from "@ai-drama/providers";
-import { asProof, operatorAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
+import { asProof, platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import type { StudioContext } from "./studio.service";
 import { PROVIDER_MIGRATION_GAP } from "./title-writing.service";
 
@@ -245,7 +245,7 @@ export class AutoCreationService {
 
   private async gate(token: OperatorProof | string | undefined): Promise<AutoCreationResult | null> {
     if (!this.deps.enabled) return failure(404, "AUTO_CREATION_DISABLED");
-    if (!operatorAllowed(this.deps, token)) return failure(403, "AUTO_CREATION_FORBIDDEN");
+    if (!platformCreationAllowed(this.deps, token)) return failure(403, "AUTO_CREATION_FORBIDDEN");
     if (!await this.deps.store.storageReady()) return failure(503, "AUTO_CREATION_STORAGE_UNAVAILABLE");
     return null;
   }

@@ -7,6 +7,7 @@ import {
 } from "@ai-drama/database";
 import type { ApiEnv } from "../config/env";
 import { AccountController } from "../account/account.controller";
+import { AdminCreatorsController } from "../admin/admin-creators.controller";
 import { AuthController } from "./auth.controller";
 import { AUTH_POOL, AUTH_WORKSPACE_ID, CREATOR_ACCOUNT_STORE, CREATOR_PLAN_LEDGER_STORE } from "./auth.tokens";
 import { SITE_AUTH, type SiteAuthState } from "./site-auth";
@@ -38,7 +39,7 @@ export class AuthModule implements NestModule {
     for (const warning of siteAuthWarnings(env, resolved)) Logger.warn(warning, "SiteAuth");
     return {
       module: AuthModule,
-      controllers: [AuthController, AccountController],
+      controllers: [AuthController, AccountController, AdminCreatorsController],
       providers: [
         { provide: SITE_AUTH, useValue: resolved },
         { provide: CREATOR_ACCOUNT_STORE, useValue: creators },

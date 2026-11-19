@@ -29,7 +29,7 @@ import {
   type WritingProviderConfig,
 } from "@ai-drama/providers";
 import type { StudioContext } from "./studio.service";
-import { operatorAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
+import { platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import { PROVIDER_MIGRATION_GAP } from "./title-writing.service";
 
 export interface ScriptBreakdownDependencies {
@@ -177,7 +177,7 @@ export class ScriptBreakdownService {
   /** Switch, token, then storage: every refusal happens before any reservation or provider send. */
   private async gate(token: OperatorProof | string | undefined): Promise<ScriptBreakdownResult | null> {
     if (!this.active()) return failure(404, "TITLE_WRITING_DISABLED");
-    if (!operatorAllowed(this.deps, token)) return failure(403, "TITLE_WRITING_FORBIDDEN");
+    if (!platformCreationAllowed(this.deps, token)) return failure(403, "TITLE_WRITING_FORBIDDEN");
     if (!await this.deps.store.storageReady()) return failure(503, "TITLE_WRITING_STORAGE_UNAVAILABLE");
     if (!await this.deps.store.breakdownStorageReady()) return failure(503, "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE");
     return null;

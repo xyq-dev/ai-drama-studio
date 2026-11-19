@@ -6,7 +6,7 @@ import {
 import { PersistenceError } from "@ai-drama/database";
 import { hashVimaxPlanningRequest } from "@ai-drama/domain";
 import { vimaxPlanningView, type WritingProviderConfig } from "@ai-drama/providers";
-import { operatorAllowed, type OperatorPolicy, type OperatorProof } from "./operator-access";
+import { platformCreationAllowed, type OperatorPolicy, type OperatorProof } from "./operator-access";
 import type { StudioContext } from "./studio.service";
 
 export interface VimaxPlanningDependencies extends OperatorPolicy {
@@ -85,7 +85,7 @@ export class VimaxPlanningService {
   }
   async start(projectId: string, episodeId: string, body: unknown, proof: OperatorProof | string | undefined, context: StudioContext): Promise<VimaxPlanningResult> {
     if (!this.active()) return failure("VIMAX_PLANNING_DISABLED");
-    if (!operatorAllowed(this.deps, proof)) return failure("VIMAX_PLANNING_FORBIDDEN");
+    if (!platformCreationAllowed(this.deps, proof)) return failure("VIMAX_PLANNING_FORBIDDEN");
     if (!keyValid(context.idempotencyKey)) return failure("VALIDATION_ERROR", { field: "Idempotency-Key" });
     let bytes: number;
     try { bytes = Buffer.byteLength(JSON.stringify(body) ?? ""); } catch { return failure("VALIDATION_ERROR"); }
@@ -127,7 +127,7 @@ export class VimaxPlanningService {
       items: (await this.deps.store.list(this.deps.workspaceId, projectId, episodeId, actorId, 20)).map(vimaxPlanningView) } }));
   }
   async cancel(projectId: string, episodeId: string, actorId: string, requestId: string, proof: OperatorProof | string | undefined): Promise<VimaxPlanningResult> {
-    if (!operatorAllowed(this.deps, proof)) return failure("VIMAX_PLANNING_FORBIDDEN");
+    if (!platformCreationAllowed(this.deps, proof)) return failure("VIMAX_PLANNING_FORBIDDEN");
     return this.access(async () => {
       const record = await this.deps.store.cancel(this.deps.workspaceId, projectId, episodeId, actorId, requestId, this.now().toISOString());
       if (record?.state === "submitted") return failure("VIMAX_PLANNING_ALREADY_SUBMITTED", { requestId: record.id });

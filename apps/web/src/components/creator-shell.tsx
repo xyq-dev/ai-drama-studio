@@ -5,20 +5,20 @@ import { useModalKeyboard } from "../lib/modal-keyboard";
 import { AccountControl } from "./account-control";
 import styles from "./creator-shell.module.css";
 
+/**
+ * Creator navigation (phase 1): 我的作品 (+ categories via workspaceNavigation), 新建分类, 回收站.
+ * No 界面示例 / 服务状态 / 设置 / admin entry points.
+ */
 const LINKS = [
-  { href: "/studio", label: "我的作品", icon: "works" },
-  { href: "/preview", label: "界面示例", icon: "preview" },
-  { href: "/status", label: "服务状态", icon: "status" },
-  { href: "/settings/storage", label: "设置", icon: "settings" },
+  { href: "/studio", label: "我的作品", icon: "works" as const },
 ] as const;
 
-function NavIcon({ icon }: { icon: (typeof LINKS)[number]["icon"] }) {
-  const file = icon === "works" || icon === "preview" ? "nav-icon" : `icon-${icon}`;
-  return <img src={`/design/tailadmin-v2/${file}.svg`} width={20} height={20} alt="" />;
+function NavIcon({ icon }: { icon: "works" }) {
+  return <img src={`/design/tailadmin-v2/nav-icon.svg`} width={20} height={20} alt="" data-icon={icon} />;
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
-  return <a className={`${styles.brand} ${compact ? styles.compactBrand : ""}`} href="/">
+  return <a className={`${styles.brand} ${compact ? styles.compactBrand : ""}`} href="/studio">
     <span className={styles.brandMark} aria-hidden="true"><img src="/design/tailadmin-v2/icon-works.svg" width={24} height={24} alt="" /></span>
     <span>红果创作<small>HONGGUO STUDIO</small></span>
   </a>;
@@ -42,7 +42,8 @@ export function CreatorShell({ children, activePath, workspaceNavigation, header
   const sidebarId = useId();
   const drawerOpen = open && !wide;
   const sidebarHidden = wide ? collapsed : !open;
-  const currentSection = LINKS.find((link) => link.href === activePath)?.label ?? (activePath === "/create" ? "开始创作" : activePath === "/help" ? "创作指南" : "创作中心");
+  const currentSection = LINKS.find((link) => link.href === activePath)?.label
+    ?? (activePath === "/create" ? "开始创作" : activePath === "/help" ? "创作指南" : activePath === "/studio/trash" ? "回收站" : "创作中心");
   useModalKeyboard(drawerOpen, panel, () => setOpen(false));
 
   useEffect(() => {
@@ -70,12 +71,12 @@ export function CreatorShell({ children, activePath, workspaceNavigation, header
   const navigation = <nav aria-label="主导航" className={styles.navigation} onClick={(event) => {
     if (drawerOpen && event.target instanceof Element && event.target.closest("a[href], button:not([disabled])")) setOpen(false);
   }}><ul>
-    {LINKS.map((link) => <li key={link.href} className={link.icon === "preview" ? styles.more : undefined}>
-      {link.icon === "works" || link.icon === "preview" ? <span className={styles.navSection} aria-hidden="true">{link.icon === "works" ? "创作工作区" : "更多"}</span> : null}
+    {LINKS.map((link) => <li key={link.href}>
+      <span className={styles.navSection} aria-hidden="true">创作工作区</span>
       <a className={styles.navLink} href={link.href} aria-current={activePath === link.href ? "page" : undefined}>
         <NavIcon icon={link.icon} />{link.label}
       </a>
-      {link.icon === "works" ? workspaceNavigation : null}
+      {workspaceNavigation}
     </li>)}
   </ul></nav>;
 
@@ -84,9 +85,9 @@ export function CreatorShell({ children, activePath, workspaceNavigation, header
     {drawerOpen ? <div className={styles.backdrop} aria-hidden="true" onClick={() => setOpen(false)} /> : null}
     <aside ref={panel} id={sidebarId} className={`${styles.sidebar} ${drawerOpen ? styles.drawer : ""}`}
       hidden={sidebarHidden} role={drawerOpen ? "dialog" : undefined} aria-modal={drawerOpen ? true : undefined} aria-label={drawerOpen ? "导航" : undefined}>
-      {drawerOpen ? <button className={styles.close} type="button" onClick={() => setOpen(false)}>关闭导航 <span aria-hidden="true">×</span></button> : null}
+      {drawerOpen ? <button className={styles.close} type="button" onClick={() => setOpen(false)}>关闭菜单 <span aria-hidden="true">×</span></button> : null}
       <Brand />{navigation}
-      <p className={styles.footer}><span>把故事，做成短剧</span>每个好故事，都值得被看见。</p>
+      <p className={styles.footer}><span>把故事，做成短剧</span>每个好故事，都值得慢慢见。</p>
       {drawerOpen ? <AccountControl variant="drawer" /> : null}
     </aside>
     <div className={styles.page}>

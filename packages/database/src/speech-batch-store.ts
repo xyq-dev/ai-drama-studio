@@ -5,6 +5,7 @@ import { SPEECH_BATCH_MAX_OPERATIONS, SPEECH_BATCH_MAX_SNAPSHOT_BYTES, SPEECH_BA
   type SpeechBatchDispatchRef, type SpeechBatchFrozen, type SpeechBatchFrozenOperation, type SpeechBatchInventory,
   type SpeechBatchPreflightRequest, type SpeechBatchView, type SpeechGenerationInput } from "@ai-drama/contracts";
 import { assertSpeechBatchConfirmation, speechBatchBudgets, speechExactHash, speechLineInputHash } from "@ai-drama/domain";
+import { ownedProjectBind } from "./creator-access-context";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { speechBatchInventoryInTransaction } from "./speech-store";
 
@@ -55,7 +56,12 @@ function validateFrozen(frozen: SpeechBatchFrozen, workspaceId: string, projectI
     || Date.parse(frozen.expiresAt) !== Math.min(...frozen.operations.map((operation) => Date.parse(operation.quote.expiresAt)))) fail("SPEECH_BATCH_INVALID", "Frozen budgets and expiry must match the exact operations");
 }
 async function lockProject(client: PoolClient, workspaceId: string, projectId: string): Promise<void> {
-  if (!(await client.query("SELECT id FROM project WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL FOR UPDATE", [projectId, workspaceId])).rows[0]) fail("NOT_FOUND", "Project not found");
+  const owner = await ownedProjectBind(client, undefined, 3, "p");
+  const found = await client.query(
+    `SELECT p.id FROM project p WHERE p.id=$1 AND p.workspace_id=$2 AND p.archived_at IS NULL ${owner.sql} FOR UPDATE`,
+    [projectId, workspaceId, ...owner.params],
+  );
+  if (!found.rows[0]) fail("NOT_FOUND", "Project not found");
 }
 async function lockBatch(client: PoolClient, workspaceId: string, batchId: string): Promise<Row> {
   const initial = (await client.query<Row>("SELECT project_id FROM speech_batch_command WHERE id=$1 AND workspace_id=$2", [batchId, workspaceId])).rows[0];

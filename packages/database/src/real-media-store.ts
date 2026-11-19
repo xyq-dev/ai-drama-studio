@@ -3,6 +3,7 @@ import type { PoolClient, QueryResultRow } from "pg";
 import type { RealMediaConfiguration, RealMediaQuote, RealMediaSnapshot } from "@ai-drama/contracts";
 import { assertRealMediaInput,estimateRealMedia, realMediaAmountUnits, realMediaInputHash } from "@ai-drama/domain";
 import { assertAutoStoryboardSource, assertNoBusyAutoStoryboardShot, requireAutoStoryboardSelection } from "./auto-episode-storyboard-media";
+import { ownedProjectBind } from "./creator-access-context";
 import { PersistenceError, type DatabasePool, type CreatedWorkflowJob } from "./job-service";
 
 export type FrozenRealMediaInput = Omit<RealMediaSnapshot, "budget">;
@@ -85,7 +86,11 @@ export class RealMediaStore {
   async costExposure(workspaceId:string,projectId:string):Promise<{actualCost:"unknown";unknownSubmissionCount:number;currencies:Array<{currency:string;reservedEstimatedAmount:string;reservedMaximumAmount:string}>}>{
     await this.requireReady();
     return this.connection(async client=>{
-      const found=await client.query("SELECT id FROM project WHERE id=$1 AND workspace_id=$2",[projectId,workspaceId]);
+      const owner=await ownedProjectBind(client,undefined,3,"p");
+      const found=await client.query(
+        `SELECT p.id FROM project p WHERE p.id=$1 AND p.workspace_id=$2 ${owner.sql}`,
+        [projectId,workspaceId,...owner.params],
+      );
       if(!found.rows[0])throw new PersistenceError("NOT_FOUND","Project not found");
       const result=await client.query(`SELECT s.currency,SUM(s.estimated_amount)::text AS amount,SUM(a.maximum_amount)::text AS maximum
         FROM real_media_submission s JOIN real_media_authorization a ON a.job_id=s.generation_job_id
@@ -409,7 +414,11 @@ function sortedIds(ids:readonly string[]):string[]{
 }
 function sameIds(left:readonly string[],right:readonly string[]):boolean{return JSON.stringify(sortedIds(left))===JSON.stringify(sortedIds(right));}
 async function lockProject(client:PoolClient,workspaceId:string,projectId:string):Promise<void>{
-  const result=await client.query("SELECT id FROM project WHERE id=$1 AND workspace_id=$2 FOR UPDATE",[projectId,workspaceId]);
+  const owner=await ownedProjectBind(client,undefined,3,"p");
+  const result=await client.query(
+    `SELECT p.id FROM project p WHERE p.id=$1 AND p.workspace_id=$2 ${owner.sql} FOR UPDATE`,
+    [projectId,workspaceId,...owner.params],
+  );
   if(!result.rows[0])throw new PersistenceError("NOT_FOUND","Project not found");
 }
 async function uncertainJobs(client:PoolClient,workspaceId:string,projectId:string,frozen:FrozenRealMediaInput,excludeJobId?:string):Promise<string[]>{

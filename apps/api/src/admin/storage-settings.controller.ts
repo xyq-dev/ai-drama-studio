@@ -22,7 +22,11 @@ export class StorageSettingsController {
     @Optional() @Inject(SITE_AUTH) private readonly site: SiteAuthState | null = null) {}
   @Get()
   view(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: Response) {
-    return this.send(response, () => { const { auth, backend } = this.configured(); auth.session(headers); return backend.view(); });
+    return this.send(response, () => {
+      const { auth, backend } = this.configured();
+      this.requireOperator(headers, auth);
+      return backend.view();
+    });
   }
   @Put("draft")
   save(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: Response) {
@@ -52,7 +56,13 @@ export class StorageSettingsController {
     if (!this.backend || this.site?.kind !== "enabled") throw new StorageSettingsError(503, "STORAGE_SETTINGS_UNAVAILABLE");
     return { auth: this.site.auth, backend: this.backend };
   }
+  /** Creators get the same opaque 401 as unsigned callers — no storage config leakage. */
+  private requireOperator(headers: RequestHeaders, auth: SiteAuth): void {
+    const session = auth.session(headers);
+    if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+  }
   private write(auth: SiteAuth, headers: RequestHeaders): void {
+    this.requireOperator(headers, auth);
     auth.authorizeWrite(headers);
     const contentType = headers["content-type"];
     if (typeof contentType !== "string" || contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") throw new SiteAuthError(415, "AUTH_CONTENT_TYPE_REJECTED");

@@ -39,6 +39,42 @@ describe("storage settings authenticated HTTP boundary", () => {
     expect(backend.view).not.toHaveBeenCalled(); await app!.close(); await start(true);
     expect((await request("/admin/storage")).status).toBe(503); expect(backend.view).not.toHaveBeenCalled();
   });
+  it("rejects a creator session with opaque 401 and does not leak storage config", async () => {
+    const creatorHash = await hashPassword("synthetic-creator-password-B2", { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 });
+    backend = { view: vi.fn(async () => VIEW), save: vi.fn(async () => VIEW), test: vi.fn(async () => VIEW), activate: vi.fn(async () => VIEW) };
+    const auth = new SiteAuth(
+      { username: "admin", passwordHash: HASH, publicOrigin: ORIGIN },
+      {
+        creators: {
+          findActiveByUsername: async (username) => username === "creator-a"
+            ? { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", username: "creator-a", passwordHash: creatorHash }
+            : null,
+        },
+      },
+    );
+    const module = await Test.createTestingModule({
+      imports: [AuthModule.register({ NODE_ENV: "test" } as ApiEnv, { kind: "enabled", auth })],
+      controllers: [StorageSettingsController],
+      providers: [{ provide: STORAGE_SETTINGS_SERVICE, useValue: backend }],
+    }).compile();
+    await app?.close();
+    app = module.createNestApplication({ logger: false });
+    app.use("/api/v1/admin", (_request: unknown, response: AdminHeaderResponse, next: () => void) => { setAdminResponseHeaders(response); next(); });
+    app.setGlobalPrefix("api/v1"); app.useGlobalFilters(new SafeExceptionFilter()); await app.listen(0, "127.0.0.1"); base = `${await app.getUrl()}/api/v1`;
+    const login = await request("/auth/login", {
+      method: "POST",
+      headers: { origin: ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ username: "creator-a", password: "synthetic-creator-password-B2" }),
+    });
+    expect(login.status).toBe(200);
+    const session = await login.json() as { role: string; csrfToken: string };
+    expect(session.role).toBe("creator");
+    const cookie = login.headers.getSetCookie().map((value) => value.split(";", 1)[0]).join("; ");
+    const response = await request("/admin/storage", { headers: { cookie, accept: "application/json" } });
+    expect(response.status).toBe(401);
+    expect(await response.text()).not.toContain("synthetic-bucket");
+    expect(backend.view).not.toHaveBeenCalled();
+  });
   it("enforces origin, CSRF, JSON and explicit probe consent before calling storage", async () => {
     await start(); const headers = await login();
     for (const changed of [{ ...headers, origin: "https://evil.example" }, { ...headers, "x-csrf-token": "wrong" }, { ...headers, "content-type": "text/plain" }]) {

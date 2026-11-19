@@ -31,7 +31,7 @@ function server(handler?: (call: Call) => Response | Promise<Response> | undefin
 }
 const csrfOf = (call: Call) => new Headers(call.init.headers).get("X-CSRF-Token");
 async function ready() {
-  await screen.findByRole("heading", { name: "模型配置" }); await screen.findByRole("button", { name: "校验并保存配置" });
+  await screen.findByRole("heading", { name: "文本模型" }); await screen.findByRole("button", { name: "校验并保存配置" });
   fireEvent.click(screen.getByRole("button", { name: /Claude Anthropic Messages API/ }));
   await screen.findByRole("region", { name: "Claude设置" });
 }
@@ -190,7 +190,7 @@ describe("administrator model settings behind the site login", () => {
     await screen.findByRole("link", { name: /前往登录/ });
     expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fadmin%2Fmodels&reason=expired");
     expect(screen.queryByLabelText(/^新的 API Key/)).toBeNull();
-    expect(screen.queryByRole("heading", { name: "模型配置" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "文本模型" })).toBeNull();
     expect(document.body.textContent).not.toContain(KEY);
   });
   it("freezes supplier switching and double submission while saving", async () => {
@@ -219,30 +219,13 @@ describe("administrator model settings behind the site login", () => {
     expect(screen.queryByText(/Claude配置已保存/)).toBeNull();
     expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
-  it("logs out of the whole site with the session CSRF token and goes to the login page", async () => {
-    const calls = server();
-    render(<AdminModels />); await ready(); fireEvent.click(screen.getByRole("button", { name: "退出" }));
-    await screen.findByText("已退出登录。");
-    const out = calls.find((call) => call.url === "/api/v1/auth/logout")!;
-    expect(out.method).toBe("POST");
-    expect(csrfOf(out)).toBe(CSRF);
-    expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fadmin%2Fmodels&reason=signed-out");
-    expect(screen.queryByRole("heading", { name: "模型配置" })).toBeNull();
-  });
-  it("does not claim logout succeeded if its receipt is lost", async () => {
-    server((call) => call.url.endsWith("/auth/logout") ? Promise.reject(new Error("network")) : undefined);
-    render(<AdminModels />); await ready(); chooseSecret("填写 / 替换"); fireEvent.change(keyInput(), { target: { value: KEY } });
-    fireEvent.click(screen.getByRole("button", { name: "退出" })); await screen.findByText(/退出尚未确认/);
-    expect(screen.getByRole("heading", { name: "模型配置" })).toBeTruthy(); expect(screen.queryByLabelText(/^新的 API Key/)).toBeNull();
-    expect(assign).not.toHaveBeenCalled();
-  });
   it("discards a late successful save from an unmounted session", async () => {
     const pending = deferred<Response>(); server((call) => call.method === "PUT" ? pending.promise : undefined);
     const mount = render(<AdminModels />); await ready(); save(); mount.unmount();
     server((call) => call.url.endsWith("/auth/session") ? json({ error: { code: "AUTH_REQUIRED" } }, 401) : undefined);
     render(<AdminModels />); await screen.findByRole("link", { name: /前往登录/ });
     await act(async () => pending.resolve(json(modelView({ savedRevision: 9 }))));
-    expect(screen.queryByRole("heading", { name: "模型配置" })).toBeNull(); expect(screen.queryByText("v9")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "文本模型" })).toBeNull(); expect(screen.queryByText("v9")).toBeNull();
   });
   it("rejects invalid custom model IDs locally without sending a PUT", async () => {
     const calls = server(); render(<AdminModels />); await ready(); addCustom("https://proxy/invalid");
@@ -494,7 +477,7 @@ describe("DeepSeek quick setup: only the API key", () => {
   it("lists exactly DeepSeek, Claude and OpenAI, and will not make DeepSeek the default before it has a key", async () => {
     const calls = server((call) => call.url.endsWith("/auth/session") ? json(session()) : json(withDeepseek(false)));
     render(<AdminModels />);
-    await screen.findByRole("heading", { name: "模型配置" });
+    await screen.findByRole("heading", { name: "文本模型" });
     const rail = within(screen.getByRole("complementary", { name: "模型供应商" }));
     expect(rail.getAllByRole("button").map((button) => button.querySelector("strong")?.textContent)).toEqual(["DeepSeek", "Claude", "OpenAI"]);
     expect(document.body.textContent).not.toMatch(/千问/);
@@ -525,7 +508,7 @@ describe("the default provider after a provider save in the advanced settings", 
     calls.filter((call) => call.method === "PUT" && call.url.endsWith("/limits"));
 
   async function openDeepseek() {
-    await screen.findByRole("heading", { name: "模型配置" });
+    await screen.findByRole("heading", { name: "文本模型" });
     fireEvent.click(screen.getByRole("button", { name: /^DeepSeek DeepSeek Chat Completions API/ }));
     await screen.findByRole("region", { name: "DeepSeek设置" });
   }
@@ -861,7 +844,7 @@ describe("session expiry check on the model console (S4)", () => {
     chooseSecret("填写 / 替换"); fireEvent.change(keyInput(), { target: { value: KEY } });
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fadmin%2Fmodels&reason=expired"), { timeout: 3000 });
     expect(passiveCalls(calls)).toHaveLength(1);
-    expect(screen.queryByRole("heading", { name: "模型配置" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "文本模型" })).toBeNull();
     expect(screen.queryByLabelText(/^新的 API Key/)).toBeNull();
     expect(document.body.textContent).not.toContain(KEY);
   });
@@ -879,7 +862,7 @@ describe("session expiry check on the model console (S4)", () => {
       await waitFor(() => expect(passiveCalls(calls)).toHaveLength(1), { timeout: 3000 });
       await act(async () => { await Promise.resolve(); });
       expect(assign).not.toHaveBeenCalled();
-      expect(screen.getByRole("heading", { name: "模型配置" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "文本模型" })).toBeTruthy();
       expect(checkedModels()).toEqual(["Claude Haiku 5.5", "account-claude-model"]);
       cleanup();
     }

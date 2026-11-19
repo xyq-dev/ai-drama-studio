@@ -14,4 +14,10 @@
 
 | ViMax / `HKUDS/ViMax` | E1 离线评估器借用固定版本角色、分镜、机位接口的字段形状；本地严格映射另行实现 | 已核验 commit `fd4b72e7731be6e5f88486206d25ea59849b0285` 的 MIT LICENSE，原文及归属见 `third_party/vimax/`（2026-10-30） | 仅按 MIT 保留声明复用接口，不推断模型或素材授权 | 不安装或执行 Python 流水线，不复制 agent 提示、素材和模型 | 真实供应商、权重、参考图和媒体权利分别核验；当前仅合成样本。 |
 
+| TailAdmin free Next.js admin dashboard / `TailAdmin/free-nextjs-admin-dashboard` | 创作者壳与 `/admin` 管理壳参考其免费版侧栏+内容布局；用红果 token（`#C94438`、280px 侧栏、72px 顶栏）自研组件重绘。**未导入 Pro、未复制演示大屏/充值/会员/空数据演示路由进生产导航** | 上游仓库根目录 LICENSE 为 MIT（核验日期 2026-11-19；以该免费仓库当前默认分支 LICENSE 原文为准）。本地保留说明见 `apps/web/public/design/tailadmin-v2/README.md`；许可证原文副本见 `third_party/tailadmin-free/LICENSE` | 按 MIT 保留版权与许可声明后可参考布局；不把上游业务页面或 Pro 代码带进生产 | 不复制上游页面路由或演示数据；仅参考布局并用自有 React 组件实现 | 若升级参考版本，重新核验该 tag/commit 的 LICENSE。 |
+
+## TailAdmin free — MIT LICENSE 原文（2026-11-19 核验副本）
+
+见 `third_party/tailadmin-free/LICENSE`。上游：https://github.com/TailAdmin/free-nextjs-admin-dashboard
+
 来源线索只用于后续取证：Huobao README（https://github.com/chatfire-AI/huobao-drama），MoneyPrinterTurbo README（https://github.com/harry0703/MoneyPrinterTurbo），NarratoAI README（https://github.com/linyqh/NarratoAI），Wan2.2（https://github.com/Wan-Video/Wan2.2），FFmpeg 法律页（https://ffmpeg.org/legal.html）。本轮没有读取或验证这些外部页面；链接不是许可证证据。在没有精确版本、LICENSE 文本、模型权重和实际构建证据前，任何“待核验”都不是授权。

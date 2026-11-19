@@ -9,7 +9,8 @@ import { SpeechBatchService } from "./speech-batch.service";
 export interface SpeechServiceDependencies { workspaceId: string; store: SpeechPersistence; generation: SpeechGenerationPort | null; batchStore?: SpeechBatchPersistence }
 export interface SpeechResult { status: number; body: unknown }
 const ERRORS: Record<string, { status: number; message: string }> = {
-  SPEECH_DISABLED: { status: 409, message: "配音服务尚未开启，可先保存台词和选声草稿。" },
+  SPEECH_DISABLED: { status: 409, message: "配音服务暂未启用，请联系管理员。这是服务尚未配置，不是这次任务失败，配置完成前请不要反复点击生成配音。" },
+  SPEECH_PROVIDER_NOT_CONFIGURED: { status: 409, message: "配音服务暂未启用，请联系管理员。这是服务尚未配置，不是这次任务失败，配置完成前请不要反复点击生成配音。" },
   SPEECH_BATCH_STORAGE_UNAVAILABLE: { status: 503, message: "单集批量配音存储尚未启用，未创建任务。" },
   SPEECH_BATCH_STORAGE_CORRUPT: { status: 503, message: "批次记录未通过完整性检查，请先核查原任务。" },
   SPEECH_BATCH_SOURCE_CHANGED: { status: 409, message: "本集台词计划或选声已变化，请核对原批次与当前清单，未自动重做。" },

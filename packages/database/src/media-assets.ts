@@ -37,7 +37,7 @@ import {
 } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import type { SpeechMixManifest } from "@ai-drama/contracts";
-import { projectOwnerColumnReady, storeOwnerAccountFilter } from "./creator-access-context";
+import { ownedProjectBind, projectOwnerColumnReady, storeOwnerAccountFilter } from "./creator-access-context";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
 import { assertFrozenReferencesUsable, frozenCharacterReferences } from "./character-reference-store";
@@ -659,7 +659,12 @@ export class MediaAssetStore {
     );
     const projectId = located.rows[0]?.project_id;
     if (!projectId) throw new PersistenceError("NOT_FOUND", "Asset not found");
-    await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, input.workspaceId]);
+    const owner = await ownedProjectBind(client, undefined, 3, "p");
+    const locked = await client.query(
+      `SELECT p.id FROM project p WHERE p.id = $1 AND p.workspace_id = $2 ${owner.sql} FOR UPDATE`,
+      [projectId, input.workspaceId, ...owner.params],
+    );
+    if (!locked.rows[0]) throw new PersistenceError("NOT_FOUND", "Asset not found");
     const asset = await client.query<QueryResultRow>(
       `SELECT id, project_id, kind, status, review_status, row_version, checksum_sha256, source_kind,
               source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
@@ -1530,10 +1535,11 @@ async function assertUsableShotWithClient(
   lockRows: boolean,
   gate: "preview" | "approved" = "approved",
 ): Promise<void> {
+  const owner = await ownedProjectBind(client, undefined, 3, "p");
   const project = await client.query(
-    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2
+    `SELECT p.id FROM project p WHERE p.id = $1 AND p.workspace_id = $2 ${owner.sql}
       ${lockRows ? "FOR UPDATE" : ""}`,
-    [projectId, workspaceId],
+    [projectId, workspaceId, ...owner.params],
   );
   if (!project.rows[0]) {
     throw new PersistenceError("NOT_FOUND", "Project not found");
@@ -2212,9 +2218,10 @@ async function preflightEpisodeComposeWithClient(
     [episodeId, workspaceId, projectId],
   );
   if (!episode.rows[0]) throw new PersistenceError("NOT_FOUND", "Episode not found");
+  const owner = await ownedProjectBind(client, undefined, 3, "p");
   const project = await client.query(
-    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
-    [projectId, workspaceId],
+    `SELECT p.id FROM project p WHERE p.id = $1 AND p.workspace_id = $2 ${owner.sql} FOR UPDATE`,
+    [projectId, workspaceId, ...owner.params],
   );
   if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");
   const pending = await client.query(

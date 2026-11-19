@@ -5,16 +5,14 @@ import { csrfToken, loginUrl, logout, readSession } from "../lib/site-session";
 import styles from "./account-control.module.css";
 
 /**
- * The site-wide logout, shown in the shared header and the mobile drawer while a session exists (its readable CSRF
- * cookie is present; the session itself is HttpOnly and checked by the server on every request). Logging out revokes
- * the server session; every protected page and API then needs the login again. Shows nothing without a session, e.g.
- * when the site login is switched off. No session request is made until a CSRF cookie is present (signed-out chrome
- * and offline preview trees stay API-silent).
+ * Site-wide account chrome for the creator shell. Operators may see「进入管理控制台」;
+ * creators must not see that entry or a 「管」 badge.
  */
 export function AccountControl({ variant }: { variant: "header" | "drawer" }) {
   const [signedIn, setSignedIn] = useState(false);
   const [label, setLabel] = useState("账号");
   const [mark, setMark] = useState("创");
+  const [isOperator, setIsOperator] = useState(false);
   const [state, setState] = useState<"idle" | "busy" | "failed">("idle");
 
   useEffect(() => {
@@ -26,7 +24,9 @@ export function AccountControl({ variant }: { variant: "header" | "drawer" }) {
       if (!session.authenticated) return;
       const name = session.username?.trim() || (session.role === "operator" ? "管理员" : "创作者");
       setLabel(name);
-      setMark(session.role === "operator" ? "管" : Array.from(name)[0] || "创");
+      setIsOperator(session.role === "operator");
+      // Creators never show a 「管」 badge. Operators use the username initial in the creator shell.
+      setMark(Array.from(name)[0] || (session.role === "operator" ? "管" : "创"));
     }).catch(() => undefined);
   }, []);
 
@@ -45,6 +45,7 @@ export function AccountControl({ variant }: { variant: "header" | "drawer" }) {
 
   return <div className={`${styles.account} ${variant === "drawer" ? styles.drawer : ""}`}>
     <span className={styles.user}><span className={styles.avatar} aria-hidden="true">{mark}</span>{label}</span>
+    {isOperator ? <a className={styles.logout} href="/admin/models" style={{ textDecoration: "none" }}>进入管理控制台</a> : null}
     <a className={styles.logout} href="/account" style={{ textDecoration: "none" }}>用量计划</a>
     <button type="button" className={styles.logout} onClick={() => void signOut()} disabled={state === "busy"}>
       {state === "busy" ? "正在退出…" : "退出登录"}

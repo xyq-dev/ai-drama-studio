@@ -16,7 +16,7 @@ import {
   type WritingCandidateExecutor,
   type WritingProviderConfig,
 } from "@ai-drama/providers";
-import { operatorAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
+import { platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import type { StudioContext } from "./studio.service";
 
 export interface WritingCandidateDependencies {
@@ -157,7 +157,7 @@ export class WritingCandidateService {
   /** Switch, operator, then storage: every refusal happens before anything is written, reserved or sent. */
   private async gate(proof: OperatorProof | string | undefined): Promise<WritingCandidateResult | null> {
     if (!this.active()) return failure(404, "WRITING_CANDIDATE_DISABLED");
-    if (!operatorAllowed(this.deps, proof)) return failure(403, "WRITING_CANDIDATE_FORBIDDEN");
+    if (!platformCreationAllowed(this.deps, proof)) return failure(403, "WRITING_CANDIDATE_FORBIDDEN");
     if (!await this.deps.store.storageReady()) return failure(503, "WRITING_CANDIDATE_STORAGE_UNAVAILABLE");
     return null;
   }
