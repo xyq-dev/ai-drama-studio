@@ -38,6 +38,7 @@ import { writingWorkspaceIdle } from "./writing-activation";
 import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
+import { AdminMediaKeysService } from "../admin/admin-media-keys.service";
 import {
   PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
   UploadSessionStore,
@@ -70,6 +71,8 @@ export class StudioRuntime implements OnModuleDestroy {
     store: RuntimeStore,
     titleWriting: TitleWritingService | null = null,
     readonly adminModels: AdminModelsService | null = null,
+    /** Media-key console (sibling vault); same MODEL_ADMIN_* bootstrap as writing models. */
+    readonly adminMediaKeys: AdminMediaKeysService | null = null,
     /** Whether the model console routes are open (MODEL_ADMIN_ENABLED); access itself needs the site login. */
     readonly adminConsoleEnabled = false,
     /** Script breakdown: same switch, token, providers, quota and engine as title writing. */
@@ -148,7 +151,18 @@ export class StudioRuntime implements OnModuleDestroy {
     const siteLoginValid = siteAuthFromEnv(env).kind === "enabled";
     const realAccessAllowed=realMediaAccessAllowed({nodeEnv:env.NODE_ENV,siteAuthConfigured:siteLoginValid,
       allowProduction:env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION==="true"});
-    const realRuntime = new ServerRealMediaRuntime(workspaceId, env.REAL_MEDIA_ENV ?? {},realAccessAllowed);
+    const processMediaEnv = env.REAL_MEDIA_ENV ?? {};
+    const realRuntime = new ServerRealMediaRuntime(workspaceId, processMediaEnv, realAccessAllowed);
+    // Media keys share MODEL_ADMIN path/master; open before probes so a saved vault key is already effective.
+    let adminMediaKeys: AdminMediaKeysService | null = null;
+    if (admin) {
+      try {
+        adminMediaKeys = await AdminMediaKeysService.open(admin, processMediaEnv, realRuntime);
+      } catch (error) {
+        await closePostgresPool(pool);
+        throw error;
+      }
+    }
     const checkComfyUi = async (): Promise<ComfyUiAdminCheck> => {
       const health = await realRuntime.probeComfyUi();
       return {
@@ -283,7 +297,8 @@ export class StudioRuntime implements OnModuleDestroy {
       research: { fetchEnabled: env.AUTO_CREATION_RESEARCH_FETCH, allowedHosts },
       ...(configurationPending ? { configurationPending } : {}),
       mediaImageProbe: async () => {
-        const mediaEnv = env.REAL_MEDIA_ENV ?? {};
+        // Hot-reloaded admin media keys live in the runtime env — never only the process snapshot.
+        const mediaEnv = realRuntime.mediaEnvironment();
         const resolve = async (providerKey: "openai-media" | "dashscope-media") => {
           try {
             const resolved = await realRuntime.configurationForImageProvider(providerKey);
@@ -319,7 +334,7 @@ export class StudioRuntime implements OnModuleDestroy {
         };
       },
       mediaVoiceProbe: async () => {
-        const mediaEnv = env.REAL_MEDIA_ENV ?? {};
+        const mediaEnv = realRuntime.mediaEnvironment();
         let configuration;
         try {
           const resolved = await realRuntime.minimaxTtsConfiguration();
@@ -345,7 +360,7 @@ export class StudioRuntime implements OnModuleDestroy {
         };
       },
       mediaVideoProbe: async () => {
-        const mediaEnv = env.REAL_MEDIA_ENV ?? {};
+        const mediaEnv = realRuntime.mediaEnvironment();
         let configuration;
         try {
           const resolved = await realRuntime.configurationFor("video.generate");
@@ -463,7 +478,7 @@ export class StudioRuntime implements OnModuleDestroy {
         }),
         new CharacterReferenceStore(pool),
         env.M3_CHARACTER_REFERENCE_GATE, realComposeAllowed && localComposeEnabled, !nonProduction), store, titleWriting,
-      adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
+      adminModels, adminMediaKeys, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),
       vimaxPlanning, realMedia, speech, voiceCompose, () => objectStore.destroy(), storageSettings, checkComfyUi,

@@ -195,6 +195,31 @@ export class ServerRealMediaRuntime {
       this.#credentials.set("minimax-tts:" + previousVersion, environment.MINIMAX_PREVIOUS_API_KEY!);
     }
   }
+  /**
+   * Hot-reload the three admin-managed media API key slots into this process.
+   * Does not change prices, receipt cipher, enabled flags, or other env. Never logs the values.
+   */
+  reloadMediaApiKeys(environment: Pick<RealMediaEnvironment, "OPENAI_MEDIA_API_KEY" | "DASHSCOPE_MEDIA_API_KEY" | "MINIMAX_API_KEY"
+    | "OPENAI_MEDIA_CREDENTIAL_VERSION" | "DASHSCOPE_MEDIA_CREDENTIAL_VERSION" | "MINIMAX_TTS_CREDENTIAL_VERSION">): void {
+    for (const slot of ["OPENAI_MEDIA_API_KEY", "DASHSCOPE_MEDIA_API_KEY", "MINIMAX_API_KEY"] as const) {
+      if (environment[slot] === undefined) delete this.#environment[slot];
+      else this.#environment[slot] = environment[slot];
+    }
+    const openaiVersion = environment.OPENAI_MEDIA_CREDENTIAL_VERSION ?? this.#environment.OPENAI_MEDIA_CREDENTIAL_VERSION ?? "v1";
+    const dashVersion = environment.DASHSCOPE_MEDIA_CREDENTIAL_VERSION ?? this.#environment.DASHSCOPE_MEDIA_CREDENTIAL_VERSION ?? "v1";
+    const minimaxVersion = environment.MINIMAX_TTS_CREDENTIAL_VERSION ?? this.#environment.MINIMAX_TTS_CREDENTIAL_VERSION ?? "v1";
+    for (const [provider, version, value] of [
+      ["openai-media", openaiVersion, this.#environment.OPENAI_MEDIA_API_KEY],
+      ["dashscope-media", dashVersion, this.#environment.DASHSCOPE_MEDIA_API_KEY],
+      ["minimax-tts", minimaxVersion, this.#environment.MINIMAX_API_KEY],
+    ] as const) {
+      const key = provider + ":" + version;
+      if (validKey(value)) this.#credentials.set(key, value!);
+      else this.#credentials.delete(key);
+    }
+  }
+  /** Process-private snapshot of current media env (includes hot-reloaded keys). Never return over HTTP. */
+  mediaEnvironment(): RealMediaEnvironment { return { ...this.#environment }; }
   comfyUiConfiguration(): RealMediaConfiguration | null {
     const environment = this.#environment;
     const price = environment.COMFYUI_PRICE_IMAGE_ESTIMATE;

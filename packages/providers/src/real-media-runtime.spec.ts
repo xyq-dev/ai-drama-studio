@@ -204,6 +204,20 @@ describe("explicit openai sunburst image configuration", () => {
     expect(() => loadRealMediaEnvironment({ ...sunburst, OPENAI_BASE_URL: "http://image.example.test" })).toThrow("OPENAI_BASE_URL");
     expect(() => loadRealMediaEnvironment({ ...sunburst, OPENAI_BASE_URL: "" })).toThrow("OPENAI_BASE_URL");
   });
+  it("hot-reloads admin-managed media API keys without exposing them in configuration snapshots", async () => {
+    const runtime = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({
+      ...configured, OPENAI_MEDIA_API_KEY: undefined, OPENAI_MEDIA_PRICE_IMAGE: "0.04",
+      OPENAI_BASE_URL: "https://image.example.test", REAL_MEDIA_IMAGE_PROVIDER: "openai-media",
+    }), true);
+    expect(await runtime.configurationForImageProvider("openai-media")).toBeNull();
+    runtime.reloadMediaApiKeys({ OPENAI_MEDIA_API_KEY: "synthetic-hot-reload-openai-media-key" });
+    const image = await runtime.configurationForImageProvider("openai-media");
+    expect(image).toMatchObject({ providerKey: "openai-media", credentialRef: "env:openai-media" });
+    expect(JSON.stringify(image)).not.toContain("synthetic-hot-reload-openai-media-key");
+    runtime.reloadMediaApiKeys({ OPENAI_MEDIA_API_KEY: undefined });
+    expect(await runtime.configurationForImageProvider("openai-media")).toBeNull();
+    expect(runtime.mediaEnvironment().OPENAI_MEDIA_API_KEY).toBeUndefined();
+  });
   it("ignores file-only image provider, base URL and media key", () => {
     const env = loadRealMediaEnvironment(configured, { REAL_MEDIA_IMAGE_PROVIDER: "openai-media", OPENAI_BASE_URL: "https://file.example.test",
       OPENAI_API_BASE: "https://file.example.test", OPENAI_MEDIA_API_KEY: "file-only-openai-media-key" });

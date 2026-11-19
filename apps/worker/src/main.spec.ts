@@ -7,7 +7,8 @@ vi.mock("./runtime/start-runtime",()=>({startQueueRuntime:bootstrap.startRuntime
 vi.mock("./app.module",()=>({AppModule:{register:()=>({})}}));
 vi.mock("@nestjs/core",()=>({NestFactory:{create:bootstrap.createApp}}));
 vi.mock("@nestjs/common",async importOriginal=>({...await importOriginal<typeof import("@nestjs/common")>(),Logger:class{log(){} }}));
-vi.mock("@ai-drama/providers",()=>({ServerRealMediaRuntime:class{readonly receiptCipher={};}}));
+vi.mock("@ai-drama/providers",()=>({ServerRealMediaRuntime:class{readonly receiptCipher={};},applyManagedMediaKeys:(_env:unknown)=>_env}));
+vi.mock("./runtime/media-key-reload",()=>({openWorkerMediaKeyVault:async()=>null,refreshWorkerMediaKeys:async()=>undefined}));
 
 const beforeSignals=new Map<string,Set<unknown>>();
 beforeEach(()=>{vi.resetModules();vi.clearAllMocks();for(const signal of ["SIGTERM","SIGINT"])beforeSignals.set(signal,new Set(process.listeners(signal)));});
