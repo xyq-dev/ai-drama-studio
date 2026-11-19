@@ -30,7 +30,8 @@ import { MockMediaRecovery } from "./mock-media-recovery";
 import { CharacterReferenceRecovery, runMockCharacterReferenceJob } from "./mock-character-reference";
 import { describeRecoveryError, isProcessStopping, runRecoveryModules } from "./recovery-modules";
 import { RealMediaStore, PostgresVoiceComposeStore } from "@ai-drama/database";
-import { MediaS3Client, ManagedStorageRouter, type ServerRealMediaRuntime, type MediaS3Configuration } from "@ai-drama/providers";
+import { MediaS3Client, ManagedStorageRouter, type MediaKeyVault, type RealMediaEnvironment, type ServerRealMediaRuntime, type MediaS3Configuration } from "@ai-drama/providers";
+import { refreshWorkerMediaKeys } from "./media-key-reload";
 import { VOICE_COMPOSE_JOB_SCHEMA, type VoiceComposeJobSnapshot } from "@ai-drama/domain";
 import { runRealMediaJob, RealMediaRecovery, type RealMediaWorkerDependencies } from "./real-media-job";
 import { S3RealMediaObjects } from "./real-media-objects";
@@ -116,6 +117,9 @@ export async function startQueueRuntime(options: {
   storageWorkspaceId?: string;
   voiceComposeEnabled?: boolean;
   voiceComposeFontPath?: string;
+  /** Shared media-key vault (sibling of models.enc). Re-read before each submit so UI saves take effect. */
+  mediaKeyVault?: MediaKeyVault;
+  processMediaEnv?: RealMediaEnvironment;
 }): Promise<RuntimeHandle> {
   const nodeEnv=options.nodeEnv??process.env.NODE_ENV??"development";
   const storageOptions = storageSettingsOptions(options.storageSettingsEnvironment ?? {});
@@ -159,7 +163,11 @@ export async function startQueueRuntime(options: {
   const realObjects = realClient ? new S3RealMediaObjects(realClient) : null;
   const realDependencies: RealMediaWorkerDependencies | null = realObjects && options.realMediaRuntime && options.composeWorkDir
     ? { jobs, assets, store: realStore, objects: realObjects,characterReferenceGate:options.characterReferenceGate,
-      adapterFor: (configuration, mode) => options.realMediaRuntime!.adapterFor(configuration, mode),
+      adapterFor: async (configuration, mode) => {
+        // Hot-reload admin-saved keys from the shared vault before every submit/query.
+        await refreshWorkerMediaKeys(options.mediaKeyVault ?? null, options.processMediaEnv ?? {}, options.realMediaRuntime!);
+        return options.realMediaRuntime!.adapterFor(configuration, mode);
+      },
       materialize: createRealMediaMaterializer({ workDir: options.composeWorkDir }),
       preflightLocal: () => preflightRealMediaTools({ workDir: options.composeWorkDir! }),
       preflightComfyUi: async () => {

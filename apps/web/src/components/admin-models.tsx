@@ -455,7 +455,9 @@ export function AdminModels() {
     <a href="#admin-content" className={styles.skip}>跳到正文</a>
     <header className={styles.header}>
       <Link className={styles.brand} href="/studio"><span className={styles.brandMark} aria-hidden="true">红</span><span>红果创作<span className={styles.brandSub}>管理员控制台</span></span></Link>
-      <div className={styles.headerActions}><Link href="/studio" className={styles.backLink}>返回创作中心 <span aria-hidden="true">↗</span></Link>
+      <div className={styles.headerActions}>
+        <Link href="/admin/media-keys" className={styles.backLink}>媒体密钥 <span aria-hidden="true">↗</span></Link>
+        <Link href="/studio" className={styles.backLink}>返回创作中心 <span aria-hidden="true">↗</span></Link>
         {auth === "signedin" && <button type="button" className={styles.secondary} onClick={() => void logout()} disabled={!!busy}>{busy === "logout" ? "正在退出…" : "退出"}</button>}</div>
     </header>
     <main id="admin-content" className={styles.main}>

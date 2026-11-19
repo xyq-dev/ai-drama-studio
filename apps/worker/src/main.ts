@@ -9,8 +9,9 @@ import { findRepoRoot, readEnvFile } from "./config/env-file";
 import { SafeExceptionFilter } from "./http/safe-exception.filter";
 import { startQueueRuntime } from "./runtime/start-runtime";
 import { WORKER_BOOT_LOGS } from "./version";
-import { ServerRealMediaRuntime } from "@ai-drama/providers";
+import { applyManagedMediaKeys, ServerRealMediaRuntime } from "@ai-drama/providers";
 import { workerComposePolicy } from "./runtime/media-runtime-policy";
+import { openWorkerMediaKeyVault } from "./runtime/media-key-reload";
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger("Worker");
@@ -25,8 +26,13 @@ async function bootstrap(): Promise<void> {
   const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : undefined;
   const realAccessAllowed=realMediaAccessAllowed({nodeEnv:env.NODE_ENV,siteAuthConfigured:env.REAL_MEDIA_SITE_AUTH_CONFIGURED,
     allowProduction:env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION==="true"});
+  // Same encrypted sibling file as the API; unmanaged slots still fall back to process env.
+  const mediaKeyVault = await openWorkerMediaKeyVault(process.env);
+  const processMediaEnv = env.REAL_MEDIA_ENV ?? {};
+  const managedMedia = mediaKeyVault ? (await mediaKeyVault.read()).saved : null;
+  const effectiveMediaEnv = applyManagedMediaKeys(processMediaEnv, managedMedia);
   const realRuntime = env.REAL_MEDIA_WORKSPACE_ID && env.REAL_MEDIA_ENV
-    ? new ServerRealMediaRuntime(env.REAL_MEDIA_WORKSPACE_ID, env.REAL_MEDIA_ENV,
+    ? new ServerRealMediaRuntime(env.REAL_MEDIA_WORKSPACE_ID, effectiveMediaEnv,
       realAccessAllowed) : undefined;
   const composePolicy=workerComposePolicy({production:env.NODE_ENV==="production",localEnabled:env.M4_LOCAL_COMPOSE_ENABLED,
     episodeEnabled:env.M4_LOCAL_EPISODE_COMPOSE_ENABLED,mockDirectoryReady:directoryReady,workDirectoryReady:Boolean(composeWorkDir),
@@ -62,6 +68,7 @@ async function bootstrap(): Promise<void> {
     ...(env.REAL_MEDIA_WORKSPACE_ID ? { storageWorkspaceId: env.REAL_MEDIA_WORKSPACE_ID } : {}),
     voiceComposeEnabled: realComposeAllowed,
     ...(env.M4_VOICE_COMPOSE_FONT_PATH ? { voiceComposeFontPath: env.M4_VOICE_COMPOSE_FONT_PATH } : {}),
+    ...(mediaKeyVault && realRuntime ? { mediaKeyVault, processMediaEnv } : {}),
   });
   const app = await NestFactory.create(AppModule.register(env, runtime.status), {
     logger: ["error", "warn", "log"],

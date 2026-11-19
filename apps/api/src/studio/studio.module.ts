@@ -14,6 +14,7 @@ import {
   WRITING_CANDIDATE_SERVICE, VIMAX_PREVIEW_SERVICE, VIMAX_CANDIDATE_SERVICE, PRODUCTION_STATE_READONLY_SERVICE,
 } from "./tokens";
 import { ADMIN_COMFYUI_CHECK, ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
+import { ADMIN_MEDIA_KEYS_SERVICE, AdminMediaKeysController } from "../admin/admin-media-keys.controller";
 import { VIMAX_PLANNING_SERVICE, VimaxPlanningController } from "./vimax-planning.controller";
 import { REAL_MEDIA_SERVICE, RealMediaController } from "./real-media.controller";
 import { SPEECH_SERVICE, SpeechController } from "./speech.controller";
@@ -37,7 +38,7 @@ export class StudioModule {
       module: StudioModule,
       controllers: [
         StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
-        AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
+        AdminModelsController, AdminMediaKeysController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
         ProjectLibraryController, StorageSettingsController, ScriptWorkbenchController, ProductionStateReadonlyController,
         ShortSequelController, ShortSequelAiController, AssetUploadController,
@@ -110,6 +111,12 @@ export class StudioModule {
           inject: [STUDIO_RUNTIME],
           // The console routes exist only while MODEL_ADMIN_ENABLED=true; the runtime keeps using managed settings either way.
           useFactory: (runtime: StudioRuntime) => (runtime.adminConsoleEnabled ? runtime.adminModels : null),
+        },
+        {
+          provide: ADMIN_MEDIA_KEYS_SERVICE,
+          inject: [STUDIO_RUNTIME],
+          // Same console gate as writing models; vault still loads when path/master are set even if the UI is closed.
+          useFactory: (runtime: StudioRuntime) => (runtime.adminConsoleEnabled ? runtime.adminMediaKeys : null),
         },
       ],
     };
