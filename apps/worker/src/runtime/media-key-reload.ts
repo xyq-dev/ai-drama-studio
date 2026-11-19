@@ -16,8 +16,12 @@ export function mediaKeyVaultBootstrap(processEnv: Record<string, string | undef
 } | null {
   const path = processEnv.MODEL_ADMIN_CONFIG_PATH;
   const key = processEnv.MODEL_ADMIN_MASTER_KEY;
-  if (!path && !key) return null;
-  if (!path || !key || !/^[a-fA-F0-9]{64}$/.test(key)) return null;
+  // Both absent: vault intentionally unused (process-env media keys only).
+  if (path === undefined && key === undefined) return null;
+  // Partial or malformed config must fail closed — never silently ignore and keep stale env keys.
+  if (!path || !key || !/^[a-fA-F0-9]{64}$/.test(key)) {
+    throw new Error("MODEL_ADMIN_MEDIA_KEY_VAULT_MISCONFIGURED");
+  }
   return { path: mediaKeyVaultPath(path), masterKey: Buffer.from(key, "hex") };
 }
 

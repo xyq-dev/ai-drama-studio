@@ -151,8 +151,9 @@ export function AdminMediaKeys() {
     void checkSession();
     return () => {
       generation.current += 1;
+      busyRef.current = "";
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only session bootstrap
+    // The initial authentication request owns this mount; actions start their own guarded requests.
   }, []);
 
   async function reload() {
@@ -176,15 +177,21 @@ export function AdminMediaKeys() {
   }
 
   async function logout() {
+    if (!session) return;
     const epoch = begin("logout");
     if (epoch === null) return;
+    forgetSecrets();
     try {
       await siteLogout();
-    } finally {
       if (epoch === generation.current) {
         endSession("已退出登录。");
         window.location.assign(loginUrl("/admin/media-keys", "signed-out"));
       }
+    } catch {
+      if (epoch !== generation.current) return;
+      setError("退出尚未确认，请重试退出。输入的密钥已清空。");
+    } finally {
+      finish(epoch);
     }
   }
 
