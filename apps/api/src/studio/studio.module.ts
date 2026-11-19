@@ -28,6 +28,7 @@ import { ProductionStateReadonlyController } from "./production-state-readonly.c
 import { ProductionStateReadonlyService } from "./production-state-readonly.service";
 import { SHORT_SEQUEL_STORE, SHORT_SEQUEL_WORKSPACE, ShortSequelController } from "./short-sequel.controller";
 import { SHORT_SEQUEL_AI_SERVICE, ShortSequelAiController } from "./short-sequel-ai.controller";
+import { ASSET_UPLOAD_SERVICE, AssetUploadController } from "./asset-upload.controller";
 
 @Module({})
 export class StudioModule {
@@ -39,7 +40,7 @@ export class StudioModule {
         AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
         ProjectLibraryController, StorageSettingsController, ScriptWorkbenchController, ProductionStateReadonlyController,
-        ShortSequelController, ShortSequelAiController,
+        ShortSequelController, ShortSequelAiController, AssetUploadController,
       ],
       providers: [
         { provide: PRODUCTION_STATE_READONLY_SERVICE, useFactory: () => new ProductionStateReadonlyService(env.PRODUCTION_STATE_ROOT) },
@@ -54,6 +55,7 @@ export class StudioModule {
         { provide: REAL_MEDIA_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.realMedia },
         { provide: SPEECH_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.speech },
         { provide: VOICE_COMPOSE_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.voiceCompose },
+        { provide: ASSET_UPLOAD_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.assetUpload },
         {
           provide: STUDIO_RUNTIME,
           useFactory: () => StudioRuntime.open(env),

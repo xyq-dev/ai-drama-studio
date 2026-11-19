@@ -38,13 +38,17 @@ import { writingWorkspaceIdle } from "./writing-activation";
 import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
-import { PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore } from "@ai-drama/database";
+import {
+  PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
+  UploadSessionStore,
+} from "@ai-drama/database";
 import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject, canonicalMiniMaxTtsBaseUrl } from "@ai-drama/providers";
 import { StorageSettingsService } from "../admin/storage-settings.service";
 import { VimaxPlanningService } from "./vimax-planning.service";
 import { RealMediaService } from "./real-media.service";
 import { SpeechService } from "./speech.service";
 import { VoiceComposeService } from "./voice-compose.service";
+import { AssetUploadService } from "./asset-upload.service";
 
 /** Title writing recovery pass. Only expired leases are fenced, so a live run is never touched. */
 const TITLE_WRITING_MAINTENANCE_MS = 15_000;
@@ -88,6 +92,8 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly storageSettings: StorageSettingsService | null = null,
     readonly checkComfyUi: (() => Promise<ComfyUiAdminCheck>) | null = null,
     readonly shortSequelAi: ShortSequelAiService | null = null,
+    /** Image uploads for storyboard/source; uses object storage without image-provider keys. */
+    readonly assetUpload: AssetUploadService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -278,18 +284,38 @@ export class StudioRuntime implements OnModuleDestroy {
       ...(configurationPending ? { configurationPending } : {}),
       mediaImageProbe: async () => {
         const mediaEnv = env.REAL_MEDIA_ENV ?? {};
-        let configuration;
-        try {
-          const resolved = await realRuntime.configurationFor("image.generate");
-          configuration = resolved && await mediaStore.configurationStillEnabled(resolved) ? resolved : null;
-        } catch {
-          configuration = null;
-        }
+        const resolve = async (providerKey: "openai-media" | "dashscope-media") => {
+          try {
+            const resolved = await realRuntime.configurationForImageProvider(providerKey);
+            return resolved && await mediaStore.configurationStillEnabled(resolved) ? resolved : null;
+          } catch {
+            return null;
+          }
+        };
+        const openaiConfiguration = await resolve("openai-media");
+        const dashscopeConfiguration = await resolve("dashscope-media");
         return {
+          processImageProvider: mediaEnv.REAL_MEDIA_IMAGE_PROVIDER,
+          // Legacy fields kept for older readers — OpenAI only.
           imageProvider: mediaEnv.REAL_MEDIA_IMAGE_PROVIDER,
-          // Writing OPENAI_API_KEY is intentionally ignored — only the media key counts.
           mediaApiKeyPresent: Boolean(mediaEnv.OPENAI_MEDIA_API_KEY),
-          configuration,
+          configuration: openaiConfiguration,
+          openai: {
+            providerKey: "openai-media" as const,
+            // Writing OPENAI_API_KEY is intentionally ignored — only the media key counts.
+            mediaApiKeyPresent: Boolean(mediaEnv.OPENAI_MEDIA_API_KEY),
+            unitPricePresent: Boolean(mediaEnv.OPENAI_MEDIA_PRICE_IMAGE),
+            priceVersionPresent: Boolean(mediaEnv.REAL_MEDIA_PRICE_VERSION),
+            configuration: openaiConfiguration,
+          },
+          dashscope: {
+            providerKey: "dashscope-media" as const,
+            // Image media key only — never Bailian TTS or writing keys.
+            mediaApiKeyPresent: Boolean(mediaEnv.DASHSCOPE_MEDIA_API_KEY),
+            unitPricePresent: Boolean(mediaEnv.DASHSCOPE_MEDIA_PRICE_IMAGE),
+            priceVersionPresent: Boolean(mediaEnv.REAL_MEDIA_PRICE_VERSION),
+            configuration: dashscopeConfiguration,
+          },
         };
       },
       mediaVoiceProbe: async () => {
@@ -379,11 +405,23 @@ export class StudioRuntime implements OnModuleDestroy {
         transport: createFetchTransport() }), maxCallsPerDay, maxActiveRuns });
 
     const mediaAssets = new MediaAssetStore(pool);
-    const mediaClient = realRuntime.receiptCipher ? (storageAuthority
-      ? new ManagedStorageRouter(storageAuthority, storageOptions) : new MediaS3Client(legacyStorage)) : null;
+    // Object store is independent of image-provider keys / receipt cipher so uploads work without openai/dashscope.
+    const objectStore = storageAuthority
+      ? new ManagedStorageRouter(storageAuthority, storageOptions)
+      : new MediaS3Client(legacyStorage);
+    const mediaClient = realRuntime.receiptCipher ? objectStore : null;
+    const assetUpload = new AssetUploadService({
+      workspaceId,
+      store: new UploadSessionStore(pool),
+      objects: objectStore,
+    });
     const realMedia = new RealMediaService({ workspaceId, enabled: realRuntime.enabled, readEnabled:realAccessAllowed, characterReferenceGate:env.M3_CHARACTER_REFERENCE_GATE, store: mediaStore, jobs, assets: mediaAssets,
       configurationFor: async (capability, client) => {
         const configuration = await realRuntime.configurationFor(capability);
+        return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
+      },
+      configurationForImageProvider: async (providerKey, client) => {
+        const configuration = await realRuntime.configurationForImageProvider(providerKey);
         return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
       },
       comfyUiConfigurationFor: async client => {
@@ -422,8 +460,8 @@ export class StudioRuntime implements OnModuleDestroy {
       adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),
-      vimaxPlanning, realMedia, speech, voiceCompose, mediaClient ? () => mediaClient.destroy() : null, storageSettings, checkComfyUi,
-      shortSequelAi);
+      vimaxPlanning, realMedia, speech, voiceCompose, () => objectStore.destroy(), storageSettings, checkComfyUi,
+      shortSequelAi, assetUpload);
   }
 
   async onModuleDestroy(): Promise<void> {
