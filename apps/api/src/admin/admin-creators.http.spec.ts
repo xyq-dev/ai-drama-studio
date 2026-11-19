@@ -3,7 +3,6 @@ import { Test } from "@nestjs/testing";
 import type { INestApplication } from "@nestjs/common";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PersistenceError } from "@ai-drama/database";
-import type { ApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
 import { hashPassword } from "../auth/password-hash";
 import { SITE_AUTH, SiteAuth } from "../auth/site-auth";

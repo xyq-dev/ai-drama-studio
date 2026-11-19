@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { useModalKeyboard } from "../lib/modal-keyboard";
-import { csrfToken, loginUrl, logout } from "../lib/site-session";
+import { loginUrl, logout } from "../lib/site-session";
 import styles from "./admin-shell.module.css";
 
 /** Phase-1 admin sidebar only. No Pro demo routes, recharge, membership, or storage nav. */
@@ -144,11 +144,10 @@ export function AdminShell({ children }: { children: ReactNode }) {
           </div>
           <div className={styles.topbarActions}>
             <a className={styles.secondary} href="/studio">返回创作中心</a>
-            {csrfToken() ? (
-              <button type="button" className={styles.secondary} onClick={() => void signOut()} disabled={busy}>
-                {busy ? "正在退出…" : "退出"}
-              </button>
-            ) : null}
+            {/* Always render 退出 so SSR markup matches the client (do not gate on document.cookie / csrfToken). */}
+            <button type="button" className={styles.secondary} onClick={() => void signOut()} disabled={busy}>
+              {busy ? "正在退出…" : "退出"}
+            </button>
             <span className={styles.sessionBadge}>
               <span className={styles.sessionDot} aria-hidden="true" />
               <span>管理员会话有效</span>

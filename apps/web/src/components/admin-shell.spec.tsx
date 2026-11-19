@@ -14,6 +14,8 @@ function viewport(wide: boolean) {
   }));
 }
 
+type FetchCall = [input: string, init?: RequestInit];
+
 let AdminShell: typeof import("./admin-shell")["AdminShell"];
 let assign: ReturnType<typeof vi.fn<(url: string | URL) => void>>;
 
@@ -24,8 +26,8 @@ beforeEach(async () => {
   assign = vi.fn<(url: string | URL) => void>();
   vi.spyOn(window.location, "assign").mockImplementation(assign);
   ({ AdminShell } = await import("./admin-shell"));
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-    if (String(url).endsWith("/auth/logout")) {
+  vi.stubGlobal("fetch", vi.fn(async (_input: string, _init?: RequestInit) => {
+    if (String(_input).endsWith("/auth/logout")) {
       return new Response(null, { status: 204 });
     }
     return new Response(JSON.stringify({
@@ -40,7 +42,7 @@ afterEach(() => {
   document.cookie = "ads_csrf=; Max-Age=0; Path=/";
 });
 
-it("shows only phase-1 admin sidebar items", () => {
+it("shows only phase-1 admin sidebar items and the confirmed top-bar actions", () => {
   render(<AdminShell><main>正文</main></AdminShell>);
   const nav = screen.getByRole("navigation", { name: "管理菜单" });
   expect(within(nav).getAllByRole("link").map((link) => [link.getAttribute("href"), link.textContent])).toEqual([
@@ -67,8 +69,8 @@ it("opens a mobile drawer below 1024px with 44px touch targets", () => {
 });
 
 it("signs out from the top bar with the session CSRF token and returns to login", async () => {
-  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
-    if (String(url).endsWith("/auth/logout")) return new Response(null, { status: 204 });
+  const fetchMock = vi.fn(async (input: string, _init?: RequestInit) => {
+    if (String(input).endsWith("/auth/logout")) return new Response(null, { status: 204 });
     return new Response(JSON.stringify({ enabled: true, authenticated: true, role: "operator" }), {
       status: 200, headers: { "content-type": "application/json" },
     });
@@ -77,14 +79,15 @@ it("signs out from the top bar with the session CSRF token and returns to login"
   render(<AdminShell><main>正文</main></AdminShell>);
   fireEvent.click(screen.getByRole("button", { name: "退出" }));
   await vi.waitFor(() => expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fadmin%2Fmodels&reason=signed-out"));
-  const out = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/auth/logout"));
+  const calls = fetchMock.mock.calls as FetchCall[];
+  const out = calls.find((call) => String(call[0]).endsWith("/auth/logout"));
   expect(out?.[1]?.method).toBe("POST");
   expect(new Headers(out?.[1]?.headers).get("X-CSRF-Token")).toBe(CSRF);
 });
 
 it("does not navigate away when the logout receipt is lost", async () => {
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-    if (String(url).endsWith("/auth/logout")) return Promise.reject(new Error("network"));
+  vi.stubGlobal("fetch", vi.fn(async (input: string, _init?: RequestInit) => {
+    if (String(input).endsWith("/auth/logout")) return Promise.reject(new Error("network"));
     return new Response(JSON.stringify({ enabled: true, authenticated: true, role: "operator" }), {
       status: 200, headers: { "content-type": "application/json" },
     });
