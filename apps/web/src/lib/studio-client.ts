@@ -57,6 +57,9 @@ export class StudioClient {
     body: ArrayBuffer | Uint8Array,
     headers: { contentType: string; contentSha256: string },
   ): Promise<T> {
+    const view = body instanceof Uint8Array ? body : new Uint8Array(body);
+    const copy = new Uint8Array(view.byteLength);
+    copy.set(view);
     const response = await this.request(`${this.prefix}${path}`, {
       method: "PUT",
       headers: {
@@ -64,7 +67,8 @@ export class StudioClient {
         "Content-Type": headers.contentType,
         "X-Content-SHA256": headers.contentSha256,
       },
-      body: body instanceof Uint8Array ? body : new Uint8Array(body),
+      // Fresh ArrayBuffer-backed Blob avoids SharedArrayBuffer BodyInit typing friction.
+      body: new Blob([copy.buffer], { type: headers.contentType }),
     });
     return parseBody<T>(response);
   }

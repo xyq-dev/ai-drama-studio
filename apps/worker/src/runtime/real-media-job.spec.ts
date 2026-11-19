@@ -19,16 +19,17 @@ function deps(){
   return {values,submit,inspect,dependencies:values as unknown as RealMediaWorkerDependencies};
 }
 describe("real media receipt recovery",()=>{
-  it("stops an automatic storyboard with a fallback provider before intent or adapter use",async()=>{
+  it("stops an automatic storyboard with an incomplete image profile before intent or adapter use",async()=>{
     const d=deps(),e=execution();
+    // dashscope-media without the frozen qwen-image-3.0 profile must not submit.
     e.inputSnapshot={...e.inputSnapshot,capability:"image.generate",autoStoryboard:{runId:"run",shotId:"shot"},
-      configuration:{...e.inputSnapshot.configuration,capability:"image.generate",unitType:"image",providerKey:"dashscope-media"}};
+      configuration:{...e.inputSnapshot.configuration,capability:"image.generate",unitType:"image",providerKey:"dashscope-media",model:"not-qwen"}};
     e.inputHash=realMediaInputHash(e.inputSnapshot);
     await runRealMediaJob(e,d.dependencies);
     expect(d.values.adapterFor).not.toHaveBeenCalled();
     expect(d.values.store.beginSubmission).not.toHaveBeenCalled();
     expect(d.submit).not.toHaveBeenCalled();
-    expect(d.values.jobs.failJob).toHaveBeenCalledWith(expect.objectContaining({retryable:false,errorCode:"AUTO_STORYBOARD_OPENAI_UNAVAILABLE"}));
+    expect(d.values.jobs.failJob).toHaveBeenCalledWith(expect.objectContaining({retryable:false,errorCode:"AUTO_STORYBOARD_IMAGE_UNAVAILABLE"}));
   });
   it("cannot bypass a newly enabled strict reference gate with an older first-frame quote",async()=>{
     const d=deps();const e=execution();e.inputSnapshot.capability="video.generate";e.inputSnapshot.configuration.capability="video.generate";

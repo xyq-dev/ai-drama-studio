@@ -28,6 +28,9 @@ function setup(){
     comfyuiShot:vi.fn(async(_project:string,_shot:string,_signal?:AbortSignal):Promise<ComfyUiShot>=>({references:[],jobs:[],selectedAssetId:null})),
     adoptComfyUiImage:vi.fn(async(_project:string,_shot:string,_asset:string,_previous:string|null,_key:string)=>{}),
     cancelComfyUiJob:vi.fn(async(_job:string,_key:string)=>{}),
+    createUploadSession:vi.fn(async()=>{throw new Error("upload unused in this suite");}),
+    putUploadObject:vi.fn(async()=>{throw new Error("upload unused in this suite");}),
+    completeUploadSession:vi.fn(async()=>{throw new Error("upload unused in this suite");}),
   };
   const changed=vi.fn(),props={projectId:P,shotRevisionId:S,dialogue:"林夏：这不是我。",usable:true,refreshEpoch:0,client:api,onChanged:changed};
   return {api,props,items,changed,storageKey:realMediaPendingKey(P,S)};

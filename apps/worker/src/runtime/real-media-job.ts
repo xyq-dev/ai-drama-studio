@@ -105,7 +105,7 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
 }
 function localSubmissionErrorCode(error:unknown,comfyUi:boolean):string {
   if(!(error instanceof PersistenceError)&&!(error instanceof DomainError))return "REAL_MEDIA_SUBMIT_BLOCKED";
-  if(["AUTO_STORYBOARD_OPENAI_UNAVAILABLE","AUTO_STORYBOARD_SELECTION_UNAVAILABLE","AUTO_STORYBOARD_SOURCE_NOT_READY","AUTO_STORYBOARD_SHOT_BUSY"].includes(error.code))return error.code;
+  if(["AUTO_STORYBOARD_OPENAI_UNAVAILABLE","AUTO_STORYBOARD_IMAGE_UNAVAILABLE","AUTO_STORYBOARD_SELECTION_UNAVAILABLE","AUTO_STORYBOARD_SOURCE_NOT_READY","AUTO_STORYBOARD_SHOT_BUSY"].includes(error.code))return error.code;
   if(error.code==="REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED")return error.code;
   if(comfyUi&&["REAL_MEDIA_SOURCE_INVALID","REAL_MEDIA_INPUT_CHANGED","REVIEW_REQUIRED","STALE_RECALCULATION_PENDING",
     "COMFYUI_DEPENDENCIES_MISSING","COMFYUI_UNAVAILABLE"].includes(error.code))return error.code;
