@@ -65,6 +65,8 @@ export interface RealMediaAccepted { jobId: string; workflowRunId: string }
 export interface RealMediaAsset {
   id: string; kind: "IMAGE" | "VIDEO" | "AUDIO" | "MUSIC"; status: string; sourceShotRevisionId: string;
   checksumSha256: string; durationMs: number | null; storageProvider: "s3"; sourceGenerationJobId?: string | null;
+  /** Present for list payloads; used to offer PNG uploads as video first frames. */
+  mimeType?: string;
 }
 export type ComfyUiStatus = ComfyUiAvailability["status"];
 export type ComfyUiWorkflow = ComfyUiWorkflowOption;
@@ -137,8 +139,15 @@ export function createRealMediaClient(studio = new StudioClient()) {
           || !["IMAGE", "VIDEO", "AUDIO", "MUSIC"].includes(String(v.kind)) || typeof v.status !== "string"
           || (v.sourceGenerationJobId != null && (typeof v.sourceGenerationJobId !== "string" || !UUID.test(v.sourceGenerationJobId)))
           || !/^[a-f0-9]{64}$/.test(String(v.checksumSha256))
-          || (v.durationMs !== null && (!Number.isSafeInteger(v.durationMs) || Number(v.durationMs) <= 0))) return invalid();
-        return v as unknown as RealMediaAsset;
+          || (v.durationMs !== null && (!Number.isSafeInteger(v.durationMs) || Number(v.durationMs) <= 0))
+          || (v.mimeType !== undefined && typeof v.mimeType !== "string")) return invalid();
+        return {
+          id: String(v.id), kind: v.kind as RealMediaAsset["kind"], status: String(v.status),
+          sourceShotRevisionId: String(v.sourceShotRevisionId), checksumSha256: String(v.checksumSha256),
+          durationMs: v.durationMs == null ? null : Number(v.durationMs), storageProvider: "s3" as const,
+          ...(v.sourceGenerationJobId == null ? {} : { sourceGenerationJobId: String(v.sourceGenerationJobId) }),
+          ...(typeof v.mimeType === "string" ? { mimeType: v.mimeType } : {}),
+        };
       });
       return { items, nextCursor: typeof value.nextCursor === "string" ? value.nextCursor : null };
     },

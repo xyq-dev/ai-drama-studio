@@ -62,9 +62,17 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
         else if((snapshot.capability==="audio.tts"?source.dialogue??"":source.promptText.trim())!==snapshot.sourceText)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Source changed before sending");
         if(comfyUi&&snapshot.sourceImage)await assertComfyUiReference(execution,client);
         else if(snapshot.sourceImage){
-          const found=await client.query(`SELECT a.id FROM asset a JOIN generation_job j ON j.id=a.source_generation_job_id
+          const found=await client.query(`SELECT a.id FROM asset a
             WHERE a.id=$1 AND a.workspace_id=$2 AND a.project_id=$3 AND a.source_shot_revision_id=$4 AND a.status='ACTIVE'
-              AND a.kind='IMAGE' AND a.checksum_sha256=$5 AND j.state='SUCCEEDED' FOR SHARE OF a,j`,
+              AND a.kind='IMAGE' AND a.checksum_sha256=$5 AND a.mime_type='image/png'
+              AND (
+                (a.source_kind='UPLOAD' AND a.source_generation_job_id IS NULL)
+                OR EXISTS (
+                  SELECT 1 FROM generation_job j
+                   WHERE j.id=a.source_generation_job_id AND j.state='SUCCEEDED'
+                )
+              )
+            FOR SHARE OF a`,
           [snapshot.sourceImage.assetId,execution.workspaceId,execution.projectId,execution.shotRevisionId,snapshot.sourceImage.checksumSha256]);
           if(!found.rows[0])throw new PersistenceError("REAL_MEDIA_SOURCE_INVALID","First frame changed before sending");
         }

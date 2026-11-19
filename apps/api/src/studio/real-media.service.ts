@@ -154,10 +154,19 @@ export class RealMediaService {
           {workspaceId:this.options.workspaceId,projectId},comfyui.referenceAssetId);
       }else if(parsed.data.capability==="video.generate"){
         if(!parsed.data.sourceImageAssetId)throw new PersistenceError("REAL_MEDIA_SOURCE_REQUIRED","Select a generated first frame");
-        const result=await client.query(`SELECT asset.* FROM asset JOIN generation_job job ON job.id=asset.source_generation_job_id
+        // Generated first frames join a succeeded real-media job; UploadSession assets use source_kind=UPLOAD (no job).
+        const result=await client.query(`SELECT asset.* FROM asset
           WHERE asset.id=$1 AND asset.workspace_id=$2 AND asset.project_id=$3 AND asset.source_shot_revision_id=$4
           AND asset.kind='IMAGE' AND asset.status='ACTIVE' AND asset.storage_provider='s3' AND asset.mime_type='image/png'
-          AND job.state='SUCCEEDED' AND job.input_snapshot->>'schema'='real-media.v1' FOR SHARE OF asset,job`,[parsed.data.sourceImageAssetId,this.options.workspaceId,projectId,shotRevisionId]);
+          AND (
+            (asset.source_kind='UPLOAD' AND asset.source_generation_job_id IS NULL)
+            OR EXISTS (
+              SELECT 1 FROM generation_job job
+               WHERE job.id=asset.source_generation_job_id AND job.state='SUCCEEDED'
+                 AND job.input_snapshot->>'schema'='real-media.v1'
+            )
+          )
+          FOR SHARE OF asset`,[parsed.data.sourceImageAssetId,this.options.workspaceId,projectId,shotRevisionId]);
         if(!result.rows[0])throw new PersistenceError("REAL_MEDIA_SOURCE_INVALID","First frame is not available for this shot");
         input.sourceImage={assetId:parsed.data.sourceImageAssetId,checksumSha256:String(result.rows[0].checksum_sha256)};
       }else if(parsed.data.sourceImageAssetId)throw new PersistenceError("VALIDATION_ERROR","This operation does not accept a first frame");

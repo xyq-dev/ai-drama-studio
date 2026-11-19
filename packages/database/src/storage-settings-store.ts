@@ -22,7 +22,10 @@ const failure = () => new StorageSettingsError(503, "STORAGE_SETTINGS_UNAVAILABL
 const conflict = () => new StorageSettingsError(409, "STORAGE_SETTINGS_CONFLICT");
 export const STORAGE_TEST_TTL_MS = 15 * 60 * 1000;
 const UUID = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
-const KEY = new RegExp(`^real-media/(${UUID})/(${UUID})/(${UUID})/(${UUID})/[a-f0-9]{64}\\.(png|mp4|wav|vtt)$`);
+/** Provider outputs: real-media/{workspace}/{project}/{job}/{attempt}/{sha}.{ext} */
+const REAL_MEDIA_KEY = new RegExp(`^real-media/(${UUID})/(${UUID})/(${UUID})/(${UUID})/[a-f0-9]{64}\\.(png|mp4|wav|vtt)$`);
+/** UploadSession objects: uploads/{workspace}/{project}/{session}/{sha}.{ext} */
+const UPLOAD_KEY = new RegExp(`^uploads/(${UUID})/(${UUID})/(${UUID})/[a-f0-9]{64}\\.(png|jpeg|webp)$`);
 interface StateRow {
   revision: string | number; legacy_id: string; active_id: string; draft_id: string | null;
   tested_id: string | null; test_status: "not_tested" | "passed" | "failed"; tested_at: Date | null;
@@ -188,7 +191,13 @@ export class StorageSettingsStore {
       await this.audit(client, revision, "activated");
     });
   }
-  private key(key: string): void { const match = KEY.exec(key); if (!match || match[1] !== this.workspaceId) throw new StorageSettingsError(400, "STORAGE_OBJECT_KEY_INVALID"); }
+  private key(key: string): void {
+    const real = REAL_MEDIA_KEY.exec(key);
+    if (real && real[1] === this.workspaceId) return;
+    const upload = UPLOAD_KEY.exec(key);
+    if (upload && upload[1] === this.workspaceId) return;
+    throw new StorageSettingsError(400, "STORAGE_OBJECT_KEY_INVALID");
+  }
   /** Reserve before PUT, under the same lock as activation; a failed PUT retries on its original immutable target. */
   async reserve(key: string): Promise<StorageConfigurationRevision> {
     this.key(key);

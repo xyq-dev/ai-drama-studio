@@ -15,10 +15,14 @@ export interface S3MediaClient {
   get(key:string):Promise<AsyncIterable<Uint8Array>>;
 }
 const UUID="[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
-const KEY=new RegExp(`^real-media/(${UUID})/(${UUID})/(${UUID})/(${UUID})/([a-f0-9]{64})\\.(png|mp4|wav|vtt)$`);
+const REAL_MEDIA_KEY=new RegExp(`^real-media/(${UUID})/(${UUID})/(${UUID})/(${UUID})/([a-f0-9]{64})\\.(png|mp4|wav|vtt)$`);
+const UPLOAD_KEY=new RegExp(`^uploads/(${UUID})/(${UUID})/(${UUID})/([a-f0-9]{64})\\.(png|jpeg|webp)$`);
 function checkedKey(key:string,scope:{workspaceId:string;projectId:string},checksum:string):void{
-  const match=KEY.exec(key);
-  if(!match||match[1]!==scope.workspaceId||match[2]!==scope.projectId||match[5]!==checksum)throw new PersistenceError("ASSET_CONTENT_INVALID","Object key is outside the requested scope");
+  const real=REAL_MEDIA_KEY.exec(key);
+  if(real&&real[1]===scope.workspaceId&&real[2]===scope.projectId&&real[5]===checksum)return;
+  const upload=UPLOAD_KEY.exec(key);
+  if(upload&&upload[1]===scope.workspaceId&&upload[2]===scope.projectId&&upload[4]===checksum)return;
+  throw new PersistenceError("ASSET_CONTENT_INVALID","Object key is outside the requested scope");
 }
 export class S3RealMediaObjects implements RealMediaObjectStore {
   constructor(private readonly client:S3MediaClient){}
