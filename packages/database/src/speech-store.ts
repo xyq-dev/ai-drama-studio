@@ -7,6 +7,7 @@ import { SPEECH_STORAGE_VERSION, speechVoiceSchema, type SpeechBinding, type Spe
 import { buildSpeechMixPreflight, DomainError, speechExactHash, speechDialogueHash, speechLineInputHash, validateSpeechPlanSource } from "@ai-drama/domain";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { projectEpisodePlanIn } from "./episode-plan";
+import { ownedProjectBind } from "./creator-access-context";
 import { SPEECH_BATCH_MAX_INVENTORY_LINES, SPEECH_BATCH_MAX_OPERATIONS, type SpeechBatchInventory } from "@ai-drama/contracts";
 
 type Row = QueryResultRow & Record<string, unknown>;
@@ -33,8 +34,17 @@ const json = (value: unknown): Record<string, unknown> => typeof value === "stri
 const TABLES = ["speech_voice_binding", "speech_voice_revision", "speech_plan", "speech_plan_revision", "speech_line_input_revision",
   "speech_plan_line", "speech_take", "speech_selection_slot", "speech_selection", "speech_mix_dependency", "speech_mix_selection_dependency"];
 
+/**
+ * Project lookup with owner filtering (phase-4). Cross-account reads are opaque NOT_FOUND.
+ * When owner_account_id is absent (migration not applied) or access is open/ops, the filter is a no-op.
+ */
 async function project(client: PoolClient, workspaceId: string, projectId: string, lock = false): Promise<void> {
-  const row = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL" + (lock ? " FOR UPDATE" : ""), [projectId, workspaceId]);
+  const owner = await ownedProjectBind(client, undefined, 3, "p");
+  const row = await client.query(
+    `SELECT p.id FROM project p WHERE p.id = $1 AND p.workspace_id = $2 AND p.archived_at IS NULL ${owner.sql}`
+      + (lock ? " FOR UPDATE" : ""),
+    [projectId, workspaceId, ...owner.params],
+  );
   if (!row.rows[0]) fail("NOT_FOUND", "Project not found");
   if ((await projectEpisodePlanIn(client, workspaceId, projectId)).writingMode === "series") fail("SERIES_MEDIA_NOT_ENABLED", "Series media is not enabled");
 }
@@ -90,9 +100,12 @@ function line(row: Row): SpeechPlanLine {
 const LINE_SQL = `SELECT pl.*, li.input_hash, li.voice_revision_id, li.display_text, li.emotion, li.speed
   FROM speech_plan_line pl JOIN speech_line_input_revision li ON li.id=pl.line_input_revision_id AND li.workspace_id=pl.workspace_id AND li.project_id=pl.project_id`;
 async function planByRevision(client: PoolClient, workspaceId: string, planRevisionId: string, requireCurrent = true): Promise<Row> {
+  const owner = await ownedProjectBind(client, undefined, 3, "proj");
   const result = await client.query<Row>(`SELECT p.*, r.id AS revision_id, r.content_hash, r.source_dialogue_hash, r.timing_policy
-    FROM speech_plan_revision r JOIN speech_plan p ON p.id=r.plan_id AND p.workspace_id=r.workspace_id AND p.project_id=r.project_id
-    WHERE r.id=$1 AND r.workspace_id=$2`, [planRevisionId, workspaceId]);
+    FROM speech_plan_revision r
+    JOIN speech_plan p ON p.id=r.plan_id AND p.workspace_id=r.workspace_id AND p.project_id=r.project_id
+    JOIN project proj ON proj.id=p.project_id AND proj.workspace_id=p.workspace_id AND proj.archived_at IS NULL
+    WHERE r.id=$1 AND r.workspace_id=$2 ${owner.sql}`, [planRevisionId, workspaceId, ...owner.params]);
   const row = result.rows[0];
   if (!row) fail("NOT_FOUND", "Speech plan not found");
   if (requireCurrent && row.current_revision_id !== planRevisionId) fail("SPEECH_PLAN_STALE", "Speech plan was replaced");

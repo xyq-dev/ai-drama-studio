@@ -24,6 +24,8 @@ function mediaView(overrides: Partial<AdminMediaKeysView> = {}): AdminMediaKeysV
         status: "empty",
         managed: false,
         source: "none",
+        priceConfigured: false,
+        serviceState: "unconfigured",
       },
       {
         slot: "DASHSCOPE_MEDIA_API_KEY",
@@ -33,6 +35,8 @@ function mediaView(overrides: Partial<AdminMediaKeysView> = {}): AdminMediaKeysV
         status: "empty",
         managed: false,
         source: "none",
+        priceConfigured: false,
+        serviceState: "unconfigured",
       },
       {
         slot: "MINIMAX_API_KEY",
@@ -42,6 +46,8 @@ function mediaView(overrides: Partial<AdminMediaKeysView> = {}): AdminMediaKeysV
         status: "empty",
         managed: false,
         source: "none",
+        priceConfigured: false,
+        serviceState: "unconfigured",
       },
     ],
     ...overrides,
@@ -178,5 +184,49 @@ describe("administrator media key settings", () => {
     await ready();
     expect(screen.getByTestId("media-keys-pending-restart").textContent).toContain("等待进程重启");
     expect(screen.getByTestId("media-key-slot-DASHSCOPE_MEDIA_API_KEY").textContent).toContain("等待重启");
+  });
+
+  it("distinguishes key-saved from service-ready using real serviceState fields", async () => {
+    server((call) => {
+      if (call.url.endsWith("/admin/media-keys") && call.method === "GET") {
+        return json(
+          mediaView({
+            slots: mediaView().slots.map((slot) => {
+              if (slot.slot === "MINIMAX_API_KEY") {
+                return {
+                  ...slot,
+                  keyConfigured: true,
+                  status: "saved" as const,
+                  managed: true,
+                  source: "managed" as const,
+                  priceConfigured: false,
+                  serviceState: "saved_not_ready" as const,
+                };
+              }
+              if (slot.slot === "OPENAI_MEDIA_API_KEY") {
+                return {
+                  ...slot,
+                  keyConfigured: true,
+                  status: "saved" as const,
+                  managed: true,
+                  source: "managed" as const,
+                  priceConfigured: true,
+                  serviceState: "ready" as const,
+                };
+              }
+              return slot;
+            }),
+          }),
+        );
+      }
+      return undefined;
+    });
+    render(<AdminMediaKeys />);
+    await ready();
+    expect(screen.getByTestId("media-key-slot-MINIMAX_API_KEY").textContent).toContain("服务尚未就绪");
+    expect(screen.getByTestId("media-key-slot-OPENAI_MEDIA_API_KEY").textContent).toContain("服务可用");
+    fireEvent.click(screen.getByTestId("media-key-slot-MINIMAX_API_KEY"));
+    expect(screen.getByText("服务尚未就绪 · 单价尚未配置")).toBeTruthy();
+    expect(screen.getByText(/「密钥已保存」不等于「服务可用」/)).toBeTruthy();
   });
 });

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   MEDIA_KEY_SLOTS,
@@ -20,6 +19,13 @@ const STATUS_LABEL: Record<AdminMediaKeySlotView["status"], string> = {
   saved: "已保存",
   empty: "未填写",
   pending_restart: "等待重启",
+};
+
+const SERVICE_STATE_LABEL: Record<AdminMediaKeySlotView["serviceState"], { primary: string; secondary?: string; tone: "neutral" | "success" | "warning" }> = {
+  unconfigured: { primary: "未填写", tone: "neutral" },
+  saved_not_ready: { primary: "密钥已保存", secondary: "服务尚未就绪", tone: "warning" },
+  ready: { primary: "密钥已保存", secondary: "服务可用", tone: "success" },
+  single_failure: { primary: "密钥已保存", secondary: "服务可用 · 单次生成失败", tone: "warning" },
 };
 
 function messageFor(error: unknown): string {
@@ -244,33 +250,10 @@ export function AdminMediaKeys() {
   const current = view?.slots.find((item) => item.slot === selected);
 
   return (
-    <div className={styles.app}>
+    <div className={styles.app} data-embedded-admin="media-keys">
       <a href="#admin-media-content" className={styles.skip}>
         跳到正文
       </a>
-      <header className={styles.header}>
-        <Link className={styles.brand} href="/studio">
-          <span className={styles.brandMark} aria-hidden="true">
-            红
-          </span>
-          <span>
-            红果创作<span className={styles.brandSub}>管理员控制台</span>
-          </span>
-        </Link>
-        <div className={styles.headerActions}>
-          <Link href="/admin/models" className={styles.backLink}>
-            写作模型配置 <span aria-hidden="true">↗</span>
-          </Link>
-          <Link href="/studio" className={styles.backLink}>
-            返回创作中心 <span aria-hidden="true">↗</span>
-          </Link>
-          {auth === "signedin" && (
-            <button type="button" className={styles.secondary} onClick={() => void logout()} disabled={!!busy}>
-              {busy === "logout" ? "正在退出…" : "退出"}
-            </button>
-          )}
-        </div>
-      </header>
       <main id="admin-media-content" className={styles.main}>
         {auth !== "signedin" ? (
           <div className={styles.loginLayout}>
@@ -406,7 +389,12 @@ export function AdminMediaKeys() {
                           <span className={styles.providerInfo}>
                             <strong>{item.label}</strong>
                             <small>{slot}</small>
-                            <span className={styles.providerState}>{STATUS_LABEL[item.status]}</span>
+                            <span className={styles.providerState} data-service-state={item.serviceState}>
+                              {SERVICE_STATE_LABEL[item.serviceState].primary}
+                              {SERVICE_STATE_LABEL[item.serviceState].secondary
+                                ? ` · ${SERVICE_STATE_LABEL[item.serviceState].secondary}`
+                                : item.status === "pending_restart" ? ` · ${STATUS_LABEL.pending_restart}` : ""}
+                            </span>
                           </span>
                           <span className={styles.providerArrow} aria-hidden="true">
                             ↗
@@ -427,17 +415,25 @@ export function AdminMediaKeys() {
                         <h2>{current?.label}</h2>
                         <p>{current?.hint}</p>
                       </div>
-                      <Badge tone={current?.status === "saved" ? "success" : current?.status === "pending_restart" ? "warning" : "neutral"}>
-                        {current ? STATUS_LABEL[current.status] : "未填写"}
-                      </Badge>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end" }}>
+                        {current?.keyConfigured ? <Badge tone="success">密钥已保存</Badge> : <Badge>尚未保存</Badge>}
+                        {current?.serviceState === "saved_not_ready" ? (
+                          <Badge tone="warning">服务尚未就绪{current.priceConfigured ? "" : " · 单价尚未配置"}</Badge>
+                        ) : null}
+                        {current?.serviceState === "ready" ? <Badge tone="success">服务可用</Badge> : null}
+                        {current?.serviceState === "single_failure" ? <Badge tone="warning">服务可用 · 单次生成失败</Badge> : null}
+                      </div>
                     </div>
+                    <p className={styles.footnote} style={{ marginTop: 0, marginBottom: 12 }}>
+                      请先配置单价后再启用。保存密钥只做本地校验，不会调用真实供应商，也不会产生费用。
+                    </p>
                     <div className={styles.activeSummary}>
                       <span>当前来源</span>
                       <strong>
                         {current?.source === "managed" ? "后台已保存" : current?.source === "environment" ? "进程环境变量（尚未后台托管）" : "未配置"}
                       </strong>
                       <span>{current?.managed ? "该槽位已由后台管理；清除后不会回退旧环境变量。" : "从未在后台保存过时可继续使用进程环境变量。"}</span>
-                      <small>上传分镜图片不依赖这些密钥。</small>
+                      <small>上传分镜图片不依赖这些密钥。「密钥已保存」不等于「服务可用」。</small>
                     </div>
                     <form onSubmit={(event) => void saveSlot(event)}>
                       <fieldset className={styles.fieldset} disabled={!canEdit}>

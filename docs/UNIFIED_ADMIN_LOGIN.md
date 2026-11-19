@@ -1,8 +1,13 @@
-# 统一管理员登录
+# 统一站点登录（角色：operator / creator）
 
-目标：只输入一次账号密码，由应用自己维护登录会话，替代当前的两层登录（Caddy Basic Auth 弹窗 + 模型后台的管理员访问令牌），同时保留全站访问保护。
+目标：只输入一次账号密码，由应用自己维护登录会话，替代历史上的两层登录（Caddy Basic Auth 弹窗 + 模型后台的管理员访问令牌），同时保留全站访问保护。
 
-单管理员、单 API 实例。不做注册、找回密码、多租户或角色系统。**无数据库变更，不需要 Migration。**
+同一域名、同一仓库。会话已包含角色：
+
+- **operator**：现有 `SITE_AUTH_USERNAME` / `SITE_AUTH_PASSWORD_HASH`（首位管理员），`accountId` 为 legacy owner。可进入 `/admin`（文本模型、媒体密钥），并可调用管理 API（含对象存储与开户）。
+- **creator**：`creator_account` 中 `status=ACTIVE` 的账号。登录后进入「我的作品」；可对自己的作品使用已配置的平台创作能力；**不能**打开 `/admin*` 或读写管理 API。
+
+公开自助注册默认关闭（`CREATOR_PUBLIC_REGISTRATION_ENABLED` 须恰好为 `true` 才开放）。注册关闭时，由 operator 调用 `POST /api/v1/admin/creators` 开户（第一期无侧栏管理页）。创作者账号表与作品 `owner_account_id` 由既有 Migration `20261118000100_creator_account_plan` 提供；本功能 PR **不新写、不执行** Migration。
 
 ## 路由保护表
 
@@ -77,6 +82,17 @@ sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/site-auth-password.mjs --pass
 - 新版不再读取 `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN`；若仍存在，API 启动时只记录“可删除”的警告，不作为任何登录方式（令牌登录路由已删除）。
 - **但旧版 API 在模型后台开启时仍必须有这两个变量**，缺失会在启动阶段抛出 `ADMIN_NOT_CONFIGURED`（已用虚构配置在旧版 `91ed8ad` 的 bootstrap 上核对）。因此**回滚窗口内保留它们**：不改动现有 `api-admin.env`，统一登录配置放在单独的新文件；回滚窗口结束、确认不再回退后，才删除这两行和旧 `admin-login.txt`。
 - `scripts/admin-models-init.mjs` 只生成模型保险库配置，不再生成令牌或登录文件；已初始化的服务器不要重新执行。
+
+## Operator 开户（公开注册关闭时）
+
+第一期提供最小接口，**无侧栏导航、无完整管理页**：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/admin/creators` | 创建 `ACTIVE` 创作者；密码按现有创作者 scrypt 方案哈希；响应含 `id` / `username` / `status` / `role`，**不回显密码** |
+| `GET` | `/api/v1/admin/creators` | 最小列表（不含哈希） |
+
+均需 `role=operator`；创作者调用得到不透明 `401 AUTH_REQUIRED`。公开注册保持关闭。
 
 ## Hermes 部署交接
 

@@ -69,6 +69,8 @@ describe.skipIf(process.platform === "win32")("admin media keys service", () => 
       source: "managed",
       managed: true,
       keyConfigured: true,
+      priceConfigured: false,
+      serviceState: "saved_not_ready",
     });
     expect(JSON.stringify(saved)).not.toContain(SYNTHETIC);
     expect(runtime.mediaEnvironment().OPENAI_MEDIA_API_KEY).toBe(SYNTHETIC);
@@ -88,6 +90,7 @@ describe.skipIf(process.platform === "win32")("admin media keys service", () => 
       managed: true,
       source: "none",
       keyConfigured: false,
+      serviceState: "unconfigured",
     });
     expect(runtime.mediaEnvironment().MINIMAX_API_KEY).toBeUndefined();
     expect(reload).toHaveBeenCalled();

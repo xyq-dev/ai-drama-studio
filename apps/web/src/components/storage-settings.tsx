@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { storageDraftUpdateSchema, type StorageConfigurationView, type StorageProvider, type StorageSettingsView } from "@ai-drama/contracts";
 import { createStorageSettingsClient, StorageSettingsError } from "../lib/storage-settings-client";
 import { useModalKeyboard } from "../lib/modal-keyboard";
-import { CreatorShell } from "./creator-shell";
 import styles from "./storage-settings.module.css";
 
 const PROVIDERS: Array<{ key: StorageProvider; label: string }> = [
@@ -154,8 +153,9 @@ export function StorageSettings() {
   const secretLabel = form.provider === "cos" ? "SecretKey" : "Access Key Secret";
   const testLabel = !view?.draft || changed ? "未检测" : view.test.status === "passed" ? validTest ? "检测通过" : "检测已过期" : view.test.status === "failed" ? "检测失败" : "未检测";
 
-  return <CreatorShell activePath="/settings/storage"><main className={styles.page}>
-    <header className={styles.heading}><h1>对象存储设置</h1><p>配置图片、配音和视频素材的存放位置。</p></header>
+  // Operator-only page (proxy + API). Not part of the creator shell or phase-1 admin sidebar.
+  return <main className={styles.page} data-operator-only="storage">
+    <header className={styles.heading}><h1>对象存储设置</h1><p>配置图片、配音和视频素材的存放位置。仅管理员可访问。</p></header>
     {error ? <div className={styles.notice} data-error="true" role="alert"><p>{error}</p>
       <button className={styles.button} disabled={!!busy} onClick={() => changed && view ? openDialog("reload") : void run("read")}>重新读取配置</button></div> : null}
     {notice ? <p className={styles.notice} role="status">{notice}</p> : null}
@@ -218,5 +218,5 @@ export function StorageSettings() {
       <div className={styles.actions}><button className={styles.button} onClick={closeDialog}>取消</button>
         <button className={`${styles.button} ${styles.primary}`} onClick={() => void run(confirm === "activate" ? "activate" : "read")}>{confirm === "activate" ? "确认启用" : "重新读取"}</button></div>
     </div></div> : null}
-  </main></CreatorShell>;
+  </main>;
 }

@@ -39,6 +39,17 @@ export const adminMediaKeyUpdateSchema = z
 
 export type AdminMediaKeyUpdate = z.infer<typeof adminMediaKeyUpdateSchema>;
 
+/**
+ * Read-only service readiness for a media-key slot (Figma state board).
+ * 「密钥已保存」 is not the same as 「服务可用」.
+ * - unconfigured: no key
+ * - saved_not_ready: key saved, but unit price missing / service not ready
+ * - ready: key saved and service available (price snapshot present)
+ * - single_failure: service still available; a one-off generation failed (retry allowed)
+ * Derived from real config + price env snapshots only — never vendor calls, never sample data.
+ */
+export type MediaKeyServiceState = "unconfigured" | "saved_not_ready" | "ready" | "single_failure";
+
 /** Public slot view. Secret values, prefixes and fingerprints must never be added. */
 export interface AdminMediaKeySlotView {
   slot: MediaKeySlot;
@@ -52,6 +63,10 @@ export interface AdminMediaKeySlotView {
   managed: boolean;
   /** Where the effective key comes from for probes and generation. */
   source: "managed" | "environment" | "none";
+  /** Whether a positive unit-price snapshot is present for this slot's official capability. */
+  priceConfigured: boolean;
+  /** Combined key + price readiness (and optional single-failure overlay). */
+  serviceState: MediaKeyServiceState;
 }
 
 export interface AdminMediaKeysView {

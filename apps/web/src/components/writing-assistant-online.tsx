@@ -383,7 +383,7 @@ export function OnlineCandidatePanel(props: {
       {unavailable ? (
         <p className="text-sm" role="status" data-testid="online-unavailable">
           {unavailable}
-          {options?.code === "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED" ? <> <a className="underline" href="/admin/models">打开模型后台</a></> : null}
+          {options?.code === "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED" ? <> 请联系管理员在管理控制台配置写作模型。</> : null}
         </p>
       ) : null}
       {options && !unavailable && chosen ? (

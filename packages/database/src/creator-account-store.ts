@@ -67,6 +67,26 @@ export class CreatorAccountStore {
     }
   }
 
+  /** Minimal operator listing for provisioning checks. Never returns password hashes. */
+  async listActive(workspaceId: string, limit = 50): Promise<CreatorAccountRecord[]> {
+    const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 100);
+    const client = await this.pool.connect();
+    try {
+      if (!await this.tablesPresent(client)) return [];
+      const result = await client.query<QueryResultRow>(
+        `SELECT id, workspace_id, username, status, created_at, updated_at
+           FROM creator_account
+          WHERE workspace_id = $1 AND status = 'ACTIVE'
+          ORDER BY created_at ASC, username ASC
+          LIMIT $2`,
+        [workspaceId, safeLimit],
+      );
+      return result.rows.map(mapAccount);
+    } finally {
+      client.release();
+    }
+  }
+
   async createActive(input: {
     workspaceId: string;
     username: string;

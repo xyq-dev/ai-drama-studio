@@ -24,7 +24,7 @@
 5. 页内同时显示已保存与当前生效版本。保存后需要 API 重启；没有自动重启按钮。
 6. API 启动时若该工作区存在 `state=running` 的标题创作任务，继续使用持久化的旧 active 快照，显示暂缓生效。
    等任务结束后，由运维再次重启 API 才应用新配置。运行中不会自动热切换，也不会改冻结的模型 ID。
-7. 刷新可恢复登录会话，但未提交的密钥、令牌不写入浏览器存储。会话30分钟绝对过期，API重启使所有会话失效。
+7. 刷新可恢复登录会话，但未提交的密钥、令牌不写入浏览器存储。站点会话空闲 2 小时、绝对 12 小时（见 `docs/UNIFIED_ADMIN_LOGIN.md`）；API 重启使所有会话失效。仅 `role=operator` 可使用本后台；创作者会话会被页面守卫与管理 API 拒绝。
 8. 网络错误或保存结果不明时，先重新读取。页面不自动重放写请求；revision CAS 防止旧页面覆盖新配置。
 
 每日次数（1–500）、并发数（1–10）都是次数限制，不是金额硬预算。原有单任务最多8次、unknown费用、结果不确定须人工确认、操作者授权、生产强制关闭规则全部保留。
@@ -76,8 +76,9 @@ sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/admin-models-init.mjs \
 
 新版不再读取 `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN`（API 启动时只记录可删除的提示，不作为登录方式），站点 origin 改为 `SITE_AUTH_PUBLIC_ORIGIN`。**旧版 API 在后台开启时仍需要这两个变量**，所以在回滚窗口内保留它们和旧 `admin-login.txt`，不要改动此文件；统一登录配置放在单独的环境文件里。确认不再回退后再删除，步骤见 [`UNIFIED_ADMIN_LOGIN.md`](UNIFIED_ADMIN_LOGIN.md) 的 Hermes 交接。
 
-只把此EnvironmentFile注入API，不给Web/Worker。保留已有环境来源；检查 `TITLE_WRITING_ENABLED` 仍为false/未设，操作者令牌没有被替换。
-先停旧API再启新API；API健康后切换Web。Worker/media-worker无需因本功能切换；若同次部署还包含其他变更需另作差异核验。
+写作模型（`models.enc`）：只把 EnvironmentFile 注入 API，不给 Web/Worker。保留已有环境来源；检查 `TITLE_WRITING_ENABLED` 仍为 false/未设，操作者令牌没有被替换。
+媒体密钥（同目录 `media-keys.enc`、同一把 `MODEL_ADMIN_MASTER_KEY`）：API 保存后热更新；Worker 须注入相同的 `MODEL_ADMIN_CONFIG_PATH` + `MODEL_ADMIN_MASTER_KEY`，并在每次提交前重读。缺一即失败关闭，不得悄悄沿用旧环境密钥。
+先停旧 API 再启新 API；API 健康后切换 Web。若同次部署还包含其他变更需另作差异核验。
 
 部署后：
 

@@ -26,7 +26,12 @@ export interface SpeechPanelProps {
 }
 
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
-const JOB_LABEL: Record<string, string> = { PENDING: "等待开始", QUEUED: "等待配音", RUNNING: "正在生成本句", WAITING_EXTERNAL: "正在核实服务商结果", SUCCEEDED: "生成完成，请试听后选用", FAILED: "本句生成失败", CANCELED: "本次任务已取消" };
+const JOB_LABEL: Record<string, string> = { PENDING: "等待开始", QUEUED: "等待配音", RUNNING: "正在生成本句", WAITING_EXTERNAL: "正在核实服务商结果", SUCCEEDED: "生成完成，请试听后选用", FAILED: "单次生成失败，可以重试", CANCELED: "本次任务已取消" };
+/** Platform not-enabled copy — never reuse for one-off task failures. */
+export const SPEECH_NOT_ENABLED_TITLE = "配音服务暂未启用，请联系管理员。";
+export const SPEECH_NOT_ENABLED_DETAIL = "这是服务尚未配置，不是这次任务失败，配置完成前请不要反复点击生成配音。";
+export const SPEECH_SINGLE_FAILURE_TITLE = "单次生成失败，可以重试";
+export const SPEECH_SINGLE_FAILURE_DETAIL = "这是单次任务失败，服务仍处于可用状态。请勿将其与「配音服务暂未启用，请联系管理员。」混淆。";
 const EMPTY_TAKES: SpeechTakesPage = { items: [], selected: [], hasMore: false, rowVersion: 0 };
 const AMOUNT = /^(0|[1-9]\d{0,7})(\.\d{1,8})?$/;
 interface SpeechCostConfirmation { lineId: string; quoteId: string; inputHash: string; maximumAmount: string; confirmed: boolean; confirmedUncertain: boolean }
@@ -457,8 +462,20 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
     <h3 className="text-lg font-medium">角色配音</h3>
     <p className="mt-1 text-sm">给角色选声音，逐句试听后选用，再检查字幕与时长。</p>
     {loading ? <p className="mt-3" role="status">正在读取配音信息</p> : null}
-    {capabilities && !capabilities.available ? <p className="mt-3 rounded border p-3" role="status">配音服务尚未开启，可先整理台词。{capabilities.reasonCode ? `（${capabilities.reasonCode}）` : ""}</p> : null}
-    {error ? <p className="mt-3 text-sm text-red-700" role="alert">{error}</p> : null}
+    {capabilities && !capabilities.available ? <div className="mt-3 rounded border border-[#FEDF89] bg-[#FFFAEB] p-3 text-[#B54708]" role="status" data-testid="speech-not-enabled">
+      <p className="font-medium">{SPEECH_NOT_ENABLED_TITLE}</p>
+      <p className="mt-1 text-sm">{SPEECH_NOT_ENABLED_DETAIL}</p>
+      {capabilities.reasonCode === "SPEECH_STORAGE_UNAVAILABLE"
+        ? <p className="mt-1 text-sm">配音存储尚未启用（SPEECH_STORAGE_UNAVAILABLE）。</p>
+        : null}
+    </div> : null}
+    {error ? <div className="mt-3 rounded border border-[#FECDCA] bg-[#FEF3F2] p-3 text-[#B42318]" role="alert" data-testid="speech-task-error">
+      {/配音服务暂未启用|配音存储尚未启用|尚未准备好|暂不可用/.test(error) ? <p className="text-sm">{error}</p> : <>
+        <p className="font-medium">{SPEECH_SINGLE_FAILURE_TITLE}</p>
+        <p className="mt-1 text-sm">{SPEECH_SINGLE_FAILURE_DETAIL}</p>
+        {error !== SPEECH_SINGLE_FAILURE_TITLE ? <p className="mt-1 text-sm">{error}</p> : null}
+      </>}
+    </div> : null}
     {journalError && journalError !== error ? <p className="mt-3 text-sm text-red-700" role="alert">{journalError}</p> : null}
     {notice ? <p className="mt-3 text-sm" role="status">{notice}</p> : null}
     {backgroundChanged ? <p className="mt-3 text-sm" role="status">后台配音信息已刷新，未保存草稿及打开时版本仍保留。保存时会核对原版本；如有冲突，请核对后重新读取。</p> : null}
@@ -525,7 +542,10 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
     <fieldset className="mt-5 space-y-3" disabled={busy || loading}>
       <legend className="font-medium">3. 逐句试听并选用</legend>
       {pendingSubmission?.unknown ? <div className="rounded border p-3 text-sm" role="status"><p>提交结果尚未确认。请继续确认原配音任务；本次会保留原费用确认和请求标识，不新建报价。</p><p className="mt-1">原确认上限 {pendingSubmission.maximumAmount} {pendingSubmission.quote.currency}，仅限原来的一次生成。</p><button className="mt-2 rounded border px-3 py-2 disabled:opacity-50" disabled={activeJob && !pendingSubmission.jobId} type="button" onClick={() => void act(() => generateLine(pendingSubmission.lineId))}>{pendingSubmission.jobId ? "读取原配音任务" : "继续确认原配音任务"}</button></div> : null}
-      {job ? <p role="status">{JOB_LABEL[job.state] ?? job.state}{job.errorMessage ? `：${job.errorMessage}` : ""}</p> : null}
+      {job ? <div role="status" data-testid={job.state === "FAILED" ? "speech-job-failed" : "speech-job-status"}>
+        <p>{JOB_LABEL[job.state] ?? job.state}{job.state === "FAILED" && job.errorMessage ? `：${job.errorMessage}` : job.errorMessage && job.state !== "FAILED" ? `：${job.errorMessage}` : ""}</p>
+        {job.state === "FAILED" ? <p className="mt-1 text-sm text-[#B42318]">{SPEECH_SINGLE_FAILURE_DETAIL}</p> : null}
+      </div> : null}
       {saved ? lines.map((line, index) => {
         const selected = takes.selected.find((item) => item.lineId === line.lineId);
         const candidates = takes.items.filter((item) => item.lineId === line.lineId);

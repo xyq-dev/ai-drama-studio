@@ -7,7 +7,7 @@ import { PersistenceError, shortSequelAiDraftExpired, shortSequelAiMaterials, sh
 import { canonicalInputHash } from "@ai-drama/domain";
 import { TEXT_WRITING_MAX_OUTPUT_TOKENS, WRITING_ADAPTERS, WRITING_CANDIDATE_LEASE_MS, providerConfigFor, sendWriting,
   type WritingProviderConfig, type WritingTransport } from "@ai-drama/providers";
-import { operatorAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
+import { platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import { prepareShortSequelPrompt } from "./short-sequel-ai.prompt";
 import type { StudioContext } from "./studio.service";
 
@@ -113,7 +113,7 @@ export class ShortSequelAiService {
 
   private async gate(proof: OperatorProof, key: string | undefined) {
     if (!this.deps.enabled) return failure("disabled");
-    if (!operatorAllowed(this.deps, proof)) return failure("forbidden");
+    if (!platformCreationAllowed(this.deps, proof)) return failure("forbidden");
     if (!key || key.length > 200) return failure("validation");
     return await this.deps.store.storageReady() ? null : failure("storage");
   }

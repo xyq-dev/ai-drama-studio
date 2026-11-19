@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   TITLE_WRITING_DEFAULT_MODELS, TITLE_WRITING_PROVIDER_LABELS, adminLimitsUpdateSchema, adminProviderUpdateSchema, anthropicKeyProblem, anthropicWorkspaceIdValid,
@@ -451,15 +450,8 @@ export function AdminModels() {
     } finally { finish(epoch); }
   }
 
-  return <div className={styles.app}>
+  return <div className={styles.app} data-embedded-admin="models">
     <a href="#admin-content" className={styles.skip}>跳到正文</a>
-    <header className={styles.header}>
-      <Link className={styles.brand} href="/studio"><span className={styles.brandMark} aria-hidden="true">红</span><span>红果创作<span className={styles.brandSub}>管理员控制台</span></span></Link>
-      <div className={styles.headerActions}>
-        <Link href="/admin/media-keys" className={styles.backLink}>媒体密钥 <span aria-hidden="true">↗</span></Link>
-        <Link href="/studio" className={styles.backLink}>返回创作中心 <span aria-hidden="true">↗</span></Link>
-        {auth === "signedin" && <button type="button" className={styles.secondary} onClick={() => void logout()} disabled={!!busy}>{busy === "logout" ? "正在退出…" : "退出"}</button>}</div>
-    </header>
     <main id="admin-content" className={styles.main}>
       {auth !== "signedin" ? <div className={styles.loginLayout}>
         <section className={styles.loginIntro}><span className={styles.eyebrow}>红果 · 创作基础设施</span><h1>为好故事，<br />接上合适的模型。</h1><p>在一处管理创作使用的模型、访问密钥和调用规则。创作者专注于故事，配置交给管理员。</p>
@@ -471,7 +463,7 @@ export function AdminModels() {
                 <a className={styles.primary} href={loginUrl("/admin/models")}>前往登录<span aria-hidden="true">→</span></a></>}
         </section>
       </div> : <>
-        <div className={styles.pageHeading}><div><span className={styles.eyebrow}>管理控制台 / 模型配置</span><h1>模型配置<span className={styles.headingDot} /></h1><p>连接创作能力，掌握每一次调用。</p></div><Badge><LockIcon /> 管理员会话有效</Badge></div>
+        <div className={styles.pageHeading}><div><span className={styles.eyebrow}>管理控制台 / 文本模型</span><h1>文本模型<span className={styles.headingDot} /></h1><p>连接创作能力，掌握每一次调用。保存配置不发起模型调用，也不回显密钥。</p></div><Badge><LockIcon /> 管理员会话有效</Badge></div>
         {error && <div className={styles.error} role="alert">{error}</div>}
         {notice && <div className={styles.success} role="status">{notice}</div>}
         <ComfyUiConnectionCard check={client.checkComfyUi} />

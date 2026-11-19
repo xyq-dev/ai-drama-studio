@@ -140,7 +140,7 @@ describe("who may ask for an online candidate", () => {
       { username: "admin", password: "correct horse battery" });
     const cookie = cookies.map((item) => item.split(";", 1)[0]).join("; ");
     const site = { kind: "enabled" as const, auth };
-    expect(operatorProof(site, { origin: "http://127.0.0.1:3010", cookie, "x-csrf-token": session.csrfToken })).toEqual({ session: true, token: undefined });
+    expect(operatorProof(site, { origin: "http://127.0.0.1:3010", cookie, "x-csrf-token": session.csrfToken })).toEqual({ session: true, role: "operator", token: undefined });
     expect(operatorProof(site, { origin: "http://127.0.0.1:3010", cookie })).toEqual({ session: false, token: undefined });
     expect(operatorProof(site, { origin: "https://evil.example", cookie, "x-csrf-token": session.csrfToken }).session).toBe(false);
     expect(operatorProof(site, { origin: "http://127.0.0.1:3010", "x-csrf-token": session.csrfToken }).session).toBe(false);
