@@ -90,9 +90,25 @@ function sha256(value: string): string {
  * recorded with the run but is not part of the identity, so a lost receipt replayed under the other proof still finds it.
  */
 export function hashAutoCreationInput(projectId: string, input: AutoCreationFrozenInput): string {
-  const { authorization: _authorization, autoStoryboardAfterScripts, ...creative } = input;
-  // False is equivalent to an omitted preference, preserving keys and hashes from before this option existed.
-  return canonicalInputHash({ projectId, input: { ...creative, ...(autoStoryboardAfterScripts === true ? { autoStoryboardAfterScripts } : {}) } });
+  const {
+    authorization: _authorization,
+    autoStoryboardAfterScripts,
+    storyboardSource,
+    storyboardImageProvider,
+    ...creative
+  } = input;
+  // Defaults (autoStoryboardAfterScripts=false, storyboardSource=model, storyboardImageProvider=openai-media)
+  // are omitted so keys and hashes from before these options existed stay stable.
+  return canonicalInputHash({
+    projectId,
+    input: {
+      ...creative,
+      ...(autoStoryboardAfterScripts === true ? { autoStoryboardAfterScripts } : {}),
+      ...(storyboardSource === "upload" ? { storyboardSource: "upload" as const } : {}),
+      ...(storyboardSource !== "upload" && storyboardImageProvider && storyboardImageProvider !== "openai-media"
+        ? { storyboardImageProvider } : {}),
+    },
+  });
 }
 
 export function hashAutoResume(runId: string, confirmed: readonly string[]): string {
@@ -127,6 +143,8 @@ export function newAutoRun(options: {
   episodeCount: number;
   episodeSeconds: number;
   autoStoryboardAfterScripts?: boolean;
+  storyboardSource?: "model" | "upload";
+  storyboardImageProvider?: "openai-media" | "dashscope-media";
   revisionRounds: number;
   callBudget: number;
   providerKey: TitleWritingStoredProviderKey;
@@ -139,6 +157,7 @@ export function newAutoRun(options: {
    */
   versions?: Pick<AutoCreationFrozenInput, "promptVersion" | "checksVersion">;
 }): AutoRunRecord {
+  const storyboardSource = options.storyboardSource === "upload" ? "upload" as const : "model" as const;
   const input: AutoCreationFrozenInput = {
     schema: AUTO_CREATION_INPUT_SCHEMA,
     promptVersion: options.versions?.promptVersion ?? AUTO_CREATION_PROMPT_VERSION,
@@ -151,7 +170,11 @@ export function newAutoRun(options: {
     researchFetch: options.researchFetch,
     episodeCount: options.episodeCount,
     episodeSeconds: options.episodeSeconds,
-    autoStoryboardAfterScripts: options.autoStoryboardAfterScripts === true,
+    autoStoryboardAfterScripts: storyboardSource === "upload" ? false : options.autoStoryboardAfterScripts === true,
+    storyboardSource,
+    ...(storyboardSource === "model"
+      ? { storyboardImageProvider: options.storyboardImageProvider ?? "openai-media" as const }
+      : {}),
     revisionRounds: options.revisionRounds,
     callBudget: options.callBudget,
     maxOutputTokens: TEXT_WRITING_MAX_OUTPUT_TOKENS,
@@ -242,6 +265,10 @@ export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: bo
     episodeCount: input.episodeCount,
     episodeSeconds: input.episodeSeconds,
     autoStoryboardAfterScripts: input.autoStoryboardAfterScripts === true,
+    storyboardSource: input.storyboardSource === "upload" ? "upload" : "model",
+    ...(input.storyboardSource === "upload"
+      ? {}
+      : { storyboardImageProvider: input.storyboardImageProvider ?? "openai-media" }),
     providerKey: input.providerKey,
     model: input.model,
     authorization: input.authorization,

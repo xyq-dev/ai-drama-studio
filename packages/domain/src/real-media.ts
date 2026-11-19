@@ -55,7 +55,7 @@ export function assertRealMediaInput(input:Omit<RealMediaSnapshot,"budget">):voi
   const config=input.configuration;const text=input.sourceText;
   if(!text.trim()||config.capability!==input.capability)throw new DomainError("VALIDATION_ERROR","Media source is empty or mismatched");
   if(input.autoStoryboard&&(!isAutoStoryboardImageConfiguration(config)||input.sourceImage||input.comfyui||input.speech||input.dialogue||input.minimaxSpeech)){
-    throw new DomainError("AUTO_STORYBOARD_OPENAI_UNAVAILABLE","Auto storyboard images require the configured OpenAI image profile");
+    throw new DomainError("AUTO_STORYBOARD_IMAGE_UNAVAILABLE","Auto storyboard images require a frozen OpenAI sunburst or Bailian qwen-image-3.0 profile");
   }
   if(input.capability==="video.generate"&&input.characterReferenceGate==="strict")throw new DomainError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The fixed first-frame video profile cannot prove strict selected character references");
   if(input.capability==="image.generate"&&text.length>2000)throw new DomainError("VALIDATION_ERROR","Image prompt exceeds 2000 characters");

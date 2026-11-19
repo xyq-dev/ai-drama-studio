@@ -12,6 +12,7 @@ export {
   AUTO_CREATION_MIGRATION,
   SERIES_WRITING_MIGRATION,
   CREATOR_ACCOUNT_PLAN_MIGRATION,
+  UPLOAD_SESSION_MIGRATION,
   runMigrations,
   type MigrationClient,
   type MigrationOptions,
@@ -213,6 +214,7 @@ export * from "./real-media-store";
 export * from "./voice-compose-store";
 export * from "./project-library";
 export * from "./storage-settings-store";
+export * from "./upload-session-store";
 export {
   runWithStoreCreatorAccess,
   storeOwnerAccountFilter,

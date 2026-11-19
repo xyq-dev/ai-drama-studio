@@ -255,35 +255,74 @@ export class ServerRealMediaRuntime {
         && this.#environment.COMFYUI_TARGETED_CANCELLATION === "true",
     });
   }
+  /**
+   * Resolve an image.generate configuration for a specific adapted Provider.
+   * Independent of process REAL_MEDIA_IMAGE_PROVIDER so a frozen page choice can win.
+   * Missing key/price/baseUrl closes that Provider only — never falls through to the other.
+   */
+  async configurationForImageProvider(providerKey: "openai-media" | "dashscope-media"): Promise<RealMediaConfiguration | null> {
+    if (!this.enabled) return null;
+    if (providerKey === "openai-media") {
+      const credentialVersion = this.#environment.OPENAI_MEDIA_CREDENTIAL_VERSION ?? "v1";
+      const price = this.#environment.OPENAI_MEDIA_PRICE_IMAGE;
+      const baseUrl = openAiImageBaseUrl(this.#environment);
+      if (!baseUrl || !this.#credentials.has(providerKey + ":" + credentialVersion) || !price || !AMOUNT.test(price)
+        || Number(price) <= 0 || !this.#environment.REAL_MEDIA_PRICE_VERSION) return null;
+      const base = {
+        providerKey, capability: "image.generate" as const, region: new URL(baseUrl).hostname, model: OPENAI_IMAGE_MODEL_ID,
+        credentialRef: "env:openai-media", credentialVersion, priceVersion: this.#environment.REAL_MEDIA_PRICE_VERSION,
+        currency: "USD" as const, unitPrice: price,
+        maximumOperationAmount: this.#environment.REAL_MEDIA_MAX_SINGLE_USD ?? "2",
+        unitType: "image" as const, parameters: { baseUrl, quality: OPENAI_IMAGE_QUALITY, size: OPENAI_IMAGE_SIZE },
+      };
+      const version = "media-" + digest(base).slice(0, 24);
+      return { ...base, id: uuidFor([this.workspaceId, providerKey, "image.generate"]), version, enabled: true, queryAllowed: true };
+    }
+    const credentialVersion = this.#environment.DASHSCOPE_MEDIA_CREDENTIAL_VERSION ?? "v1";
+    const price = this.#environment.DASHSCOPE_MEDIA_PRICE_IMAGE;
+    if (!this.#credentials.has(providerKey + ":" + credentialVersion) || !price || !AMOUNT.test(price)
+      || Number(price) <= 0 || !this.#environment.REAL_MEDIA_PRICE_VERSION) return null;
+    const base = {
+      providerKey, capability: "image.generate" as const, region: "beijing", model: "qwen-image-3.0",
+      credentialRef: "env:dashscope-media", credentialVersion, priceVersion: this.#environment.REAL_MEDIA_PRICE_VERSION,
+      currency: "CNY" as const, unitPrice: price,
+      maximumOperationAmount: this.#environment.REAL_MEDIA_MAX_SINGLE_CNY ?? "10",
+      unitType: "image" as const, parameters: {},
+    };
+    const version = "media-" + digest(base).slice(0, 24);
+    return { ...base, id: uuidFor([this.workspaceId, providerKey, "image.generate"]), version, enabled: true, queryAllowed: true };
+  }
+
   async configurationFor(capability: RealMediaCapability): Promise<RealMediaConfiguration | null> {
     if (!this.enabled) return null;
-    const imageProvider = this.#environment.REAL_MEDIA_IMAGE_PROVIDER ?? "dashscope-media";
-    if (imageProvider !== "dashscope-media" && imageProvider !== "openai-media") throw new RealMediaEnvironmentError(["REAL_MEDIA_IMAGE_PROVIDER"]);
-    const openaiImage = capability === "image.generate" && imageProvider === "openai-media";
+    if (capability === "image.generate") {
+      const imageProvider = this.#environment.REAL_MEDIA_IMAGE_PROVIDER ?? "dashscope-media";
+      if (imageProvider !== "dashscope-media" && imageProvider !== "openai-media") {
+        throw new RealMediaEnvironmentError(["REAL_MEDIA_IMAGE_PROVIDER"]);
+      }
+      // Process default only — auto-storyboard page choice uses configurationForImageProvider instead.
+      return this.configurationForImageProvider(imageProvider);
+    }
     const music = capability === "audio.music";
-    const providerKey = openaiImage ? "openai-media" : music ? "elevenlabs-media" : "dashscope-media";
-    const credentialVersion = (openaiImage ? this.#environment.OPENAI_MEDIA_CREDENTIAL_VERSION
-      : music ? this.#environment.ELEVENLABS_MEDIA_CREDENTIAL_VERSION : this.#environment.DASHSCOPE_MEDIA_CREDENTIAL_VERSION) ?? "v1";
-    const price = openaiImage ? this.#environment.OPENAI_MEDIA_PRICE_IMAGE
-      : ({ "image.generate": this.#environment.DASHSCOPE_MEDIA_PRICE_IMAGE,
-        "video.generate": this.#environment.DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND,
-        "audio.tts": this.#environment.DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER,
-        "audio.music": this.#environment.ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND })[capability];
-    const baseUrl = openaiImage ? openAiImageBaseUrl(this.#environment) : undefined;
-    // Missing sunburst config closes image.generate. It must not fall through to DashScope.
-    if (openaiImage && !baseUrl) return null;
+    const providerKey = music ? "elevenlabs-media" : "dashscope-media";
+    const credentialVersion = (music ? this.#environment.ELEVENLABS_MEDIA_CREDENTIAL_VERSION
+      : this.#environment.DASHSCOPE_MEDIA_CREDENTIAL_VERSION) ?? "v1";
+    const price = ({
+      "video.generate": this.#environment.DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND,
+      "audio.tts": this.#environment.DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER,
+      "audio.music": this.#environment.ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND,
+    } as const)[capability as "video.generate" | "audio.tts" | "audio.music"];
     if (!this.#credentials.has(providerKey + ":" + credentialVersion) || !price || !AMOUNT.test(price) || Number(price) <= 0
       || !this.#environment.REAL_MEDIA_PRICE_VERSION) return null;
-    const usd = music || openaiImage;
-    const base = { providerKey, capability, region: openaiImage ? new URL(baseUrl!).hostname : music ? "global" : "beijing",
-      model: openaiImage ? OPENAI_IMAGE_MODEL_ID : ({ "image.generate": "qwen-image-3.0", "video.generate": "wan2.6-i2v-flash", "audio.tts": "qwen3-tts-flash", "audio.music": "music_v2" })[capability],
+    const usd = music;
+    const base = { providerKey, capability, region: music ? "global" : "beijing",
+      model: ({ "video.generate": "wan2.6-i2v-flash", "audio.tts": "qwen3-tts-flash", "audio.music": "music_v2" } as const)[capability as "video.generate" | "audio.tts" | "audio.music"],
       credentialRef: "env:" + providerKey, credentialVersion, priceVersion: this.#environment.REAL_MEDIA_PRICE_VERSION,
       currency: usd ? "USD" as const : "CNY" as const, unitPrice: price,
       maximumOperationAmount: usd ? this.#environment.REAL_MEDIA_MAX_SINGLE_USD ?? "2" : this.#environment.REAL_MEDIA_MAX_SINGLE_CNY ?? "10",
-      unitType: capability === "image.generate" ? "image" as const : capability === "audio.tts" ? "character" as const : "second" as const,
-      parameters: openaiImage ? { baseUrl: baseUrl!, quality: OPENAI_IMAGE_QUALITY, size: OPENAI_IMAGE_SIZE }
-        : { duration: Number(music ? this.#environment.ELEVENLABS_MEDIA_MUSIC_SECONDS ?? 5 : this.#environment.DASHSCOPE_MEDIA_VIDEO_SECONDS ?? 5),
-          ...(capability === "audio.tts" ? { voice: "Cherry" } : {}) },
+      unitType: capability === "audio.tts" ? "character" as const : "second" as const,
+      parameters: { duration: Number(music ? this.#environment.ELEVENLABS_MEDIA_MUSIC_SECONDS ?? 5 : this.#environment.DASHSCOPE_MEDIA_VIDEO_SECONDS ?? 5),
+        ...(capability === "audio.tts" ? { voice: "Cherry" } : {}) },
     };
     const version = "media-" + digest(base).slice(0, 24);
     return { ...base, id: uuidFor([this.workspaceId, providerKey, capability]), version, enabled: true, queryAllowed: true };
@@ -349,7 +388,10 @@ export class ServerRealMediaRuntime {
         ? await this.elevenLabsTtsConfiguration()
         : configuration.providerKey === "minimax-tts"
           ? await this.minimaxTtsConfiguration()
-          : await this.configurationFor(configuration.capability);
+          : configuration.capability === "image.generate"
+            && (configuration.providerKey === "openai-media" || configuration.providerKey === "dashscope-media")
+            ? await this.configurationForImageProvider(configuration.providerKey)
+            : await this.configurationFor(configuration.capability);
       if (!active || digest(active) !== digest(configuration)) throw new Error("REAL_MEDIA_CONFIGURATION_CHANGED");
     } else if (!configuration.queryAllowed) throw new Error("REAL_MEDIA_QUERY_DISABLED");
     const adapterConfiguration = mode === "query" ? { ...configuration, enabled: false } : configuration;

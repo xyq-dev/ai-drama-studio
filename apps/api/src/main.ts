@@ -20,8 +20,14 @@ async function bootstrap(): Promise<void> {
   });
   // JSON bodies up to 300kb (the default is 100kb); unchanged since the retired Qwen web entry.
   // useBodyParser comes from the Express adapter; its typings need @types/express, which the API does not carry.
-  (app as unknown as { useBodyParser(type: "json", options: { limit: string }): void })
+  (app as unknown as { useBodyParser(type: "json" | "raw", options: { limit: string; type?: string | string[] }): void })
     .useBodyParser("json", { limit: "300kb" });
+  // Proxied image upload PUT bodies (storyboard/source UploadSession); keep MIME-scoped so JSON routes stay intact.
+  (app as unknown as { useBodyParser(type: "json" | "raw", options: { limit: string; type?: string | string[] }): void })
+    .useBodyParser("raw", {
+      limit: "8mb",
+      type: ["image/png", "image/jpeg", "image/webp", "application/octet-stream"],
+    });
   app.setGlobalPrefix("api/v1");
   app.enableShutdownHooks();
   app.useGlobalFilters(new SafeExceptionFilter());

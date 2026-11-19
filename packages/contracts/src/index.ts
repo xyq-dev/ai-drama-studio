@@ -367,6 +367,7 @@ export * from "./speech-batch";
 export * from "./real-media";
 export * from "./media-access";
 export * from "./storage-settings";
+export * from "./asset-upload";
 export * from "./script-workbench";
 export * from "./short-sequel-ai";
 export type { ProjectLibraryScript } from "./project-library";

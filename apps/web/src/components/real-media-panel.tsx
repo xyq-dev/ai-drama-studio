@@ -1,15 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RealMediaCapability, RealMediaQuote, SpeechMixPreflight } from "@ai-drama/contracts";
+import type { AutoStoryboardImageProviderKey, RealMediaCapability, RealMediaQuote, SpeechMixPreflight } from "@ai-drama/contracts";
+import { ASSET_UPLOAD_MIME_TYPES } from "@ai-drama/contracts";
+import {
+  formatAutoStoryboardKeepIsNotReviewNote,
+  formatStoryboardUploadSourceNote,
+} from "@ai-drama/domain/auto-creation-media-capability";
 import { ApiError } from "../lib/studio-client";
 import { COMFYUI_PROMPT_LIMIT, clearRealMediaPending, createRealMediaClient, readRealMediaPending, realMediaPendingKey, rememberRealMediaPending,
-  clearRealMediaComposePending, readRealMediaComposePending, rememberRealMediaComposePending,
+  clearRealMediaComposePending, readRealMediaComposePending, rememberRealMediaComposePending, sha256Hex,
   type ComfyUiQuoteInput, type ComfyUiShot, type RealMediaComposePending, type RealMediaAsset, type RealMediaCapabilities, type RealMediaClient, type RealMediaPending } from "../lib/real-media-client";
 import { ComfyUiImageFields, comfyUiAvailability, comfyUiJobLabel, comfyUiJobSettled } from "./comfyui-image-fields";
 import { HoverMediaPreview } from "./hover-media-preview";
 import { SpeechPanel } from "./speech-panel";
 import styles from "./real-media-panel.module.css";
+
+type StoryboardSourceChoice = "model" | "upload" | "comfyui";
 
 const LABEL: Record<RealMediaCapability, string> = { "image.generate": "图片", "video.generate": "视频", "audio.tts": "配音", "audio.music": "背景音乐" };
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
@@ -50,7 +57,10 @@ function MediaScope(props: Props) {
   const [cursor, setCursor] = useState<string | null>(null);
   const [characters, setCharacters] = useState<Array<{ id: string; name: string }>>([]);
   const [capability, setCapability] = useState<RealMediaCapability>("image.generate");
+  const [storyboardSource, setStoryboardSource] = useState<StoryboardSourceChoice | null>(null);
+  const [modelImageProvider, setModelImageProvider] = useState<AutoStoryboardImageProviderKey>("openai-media");
   const [imageProvider, setImageProvider] = useState<"default" | "comfyui" | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [comfyInput, setComfyInput] = useState<ComfyUiQuoteInput | null>(null);
   const [comfyShot, setComfyShot] = useState<ComfyUiShot | null>(null);
   const [comfyReadError, setComfyReadError] = useState(false);
@@ -85,7 +95,14 @@ function MediaScope(props: Props) {
   const canReadShotMedia = comfySupported || capabilities?.readAvailable === true;
   const comfyAvailable = !checkComfyError && comfy?.status === "available" && comfy.workflows.length > 0;
   const defaultImageAvailable = capabilities?.capabilities.includes("image.generate") ?? false;
-  const useComfy = capability === "image.generate" && (imageProvider === "comfyui" || (imageProvider === null && comfyAvailable && !defaultImageAvailable));
+  // Upload reuses object storage only — it must stay reachable when image Provider keys are empty.
+  const uploadAvailable = capabilities?.readAvailable === true;
+  const resolvedSource: StoryboardSourceChoice = storyboardSource
+    ?? (imageProvider === "comfyui" || (imageProvider === null && comfyAvailable && !defaultImageAvailable) ? "comfyui"
+      : (!defaultImageAvailable && !comfyAvailable && uploadAvailable ? "upload" : "model"));
+  const useUpload = capability === "image.generate" && resolvedSource === "upload";
+  const useComfy = capability === "image.generate" && resolvedSource === "comfyui";
+  const useModelImage = capability === "image.generate" && resolvedSource === "model";
   const comfyWorkflow = comfy?.workflows.find(item => item.id === comfyInput?.workflowId) ?? comfy?.workflows[0];
   const comfySize = comfyWorkflow?.dimensions[0];
   const currentComfyInput = comfyInput && comfyWorkflow?.id === comfyInput.workflowId ? comfyInput
@@ -93,7 +110,7 @@ function MediaScope(props: Props) {
   const comfyReady = !useComfy || Boolean(comfyAvailable && currentComfyInput?.prompt.trim() && currentComfyInput.prompt.trim().length <= COMFYUI_PROMPT_LIMIT
     && comfyWorkflow?.dimensions.some(size => size.width === currentComfyInput.width && size.height === currentComfyInput.height)
     && (!comfyWorkflow.requiresReference || comfyShot?.references.some(reference => reference.id === currentComfyInput.referenceAssetId)));
-  const imageReady = capability !== "image.generate" || (useComfy ? comfyReady : defaultImageAvailable);
+  const imageReady = capability !== "image.generate" || useUpload || (useComfy ? comfyReady : defaultImageAvailable);
   const hasComfyJob = comfySupported && Boolean(job && comfyShot?.jobs.some(item => item.jobId === job.id));
   const jobStorage = realMediaPendingKey(props.projectId, props.shotRevisionId) + ":job";
   useEffect(() => {
@@ -123,7 +140,13 @@ function MediaScope(props: Props) {
         if (!caps.available && !caps.readAvailable) return;
         setImageProvider(previous => previous ?? (caps.capabilities.includes("image.generate") ? "default"
           : caps.comfyui?.status === "available" ? "comfyui" : null));
-        const offered: RealMediaCapability[] = caps.comfyui?.status === "available" ? [...caps.capabilities, "image.generate"] : caps.capabilities;
+        // image.generate stays offered for self-upload whenever object storage is readable.
+        const offerImage = caps.capabilities.includes("image.generate")
+          || caps.comfyui?.status === "available"
+          || caps.readAvailable === true;
+        const offered: RealMediaCapability[] = offerImage && !caps.capabilities.includes("image.generate")
+          ? ["image.generate", ...caps.capabilities]
+          : caps.capabilities;
         setCapability(previous => offered.includes(previous) && previous !== "audio.tts" ? previous
           : offered.find(c => c !== "audio.tts") ?? "image.generate");
         const loadAssets = async () => {
@@ -191,8 +214,54 @@ function MediaScope(props: Props) {
   function resetQuote() {
     setQuote(null); setConfirmed(false); setUncertainConfirmed(false);
   }
+  function chooseStoryboardSource(next: StoryboardSourceChoice) {
+    setStoryboardSource(next);
+    setImageProvider(next === "comfyui" ? "comfyui" : next === "model" ? "default" : null);
+    setUploadNotice(null);
+    resetQuote();
+  }
+  async function uploadWorkbenchImage(file: File | null) {
+    if (!useUpload || !file || !props.usable || props.approved === false || pending || writeBusy.current) return;
+    const mimeType = file.type;
+    if (!(ASSET_UPLOAD_MIME_TYPES as readonly string[]).includes(mimeType)) {
+      setError("仅支持 PNG、JPEG 或 WebP 图片。");
+      return;
+    }
+    if (file.size < 1 || file.size > 8 * 1024 * 1024) {
+      setError("上传文件超过 8 MiB 上限。");
+      return;
+    }
+    writeBusy.current = true; setBusy(true); setError(null); setUploadNotice(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      const contentHash = await sha256Hex(buffer);
+      const created = await api.createUploadSession({
+        projectId: props.projectId,
+        assetType: "IMAGE",
+        mimeType: mimeType as typeof ASSET_UPLOAD_MIME_TYPES[number],
+        byteSize: file.size,
+        contentHash,
+        shotRevisionId: props.shotRevisionId,
+      });
+      await api.putUploadObject(created.uploadUrl, buffer, mimeType, contentHash);
+      const completed = await api.completeUploadSession(created.uploadSession.id);
+      if (mounted.current) {
+        setUploadNotice(`已上传图片 ${completed.assetId.slice(0, 8)}。上传或「保留」不等于分镜审核通过。`);
+        setReadTick((value) => value + 1);
+        changed.current?.();
+      }
+    } catch (e) {
+      if (mounted.current) setError(detail(e));
+    } finally {
+      writeBusy.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  }
   async function checkComfyConnection() {
-    if (useComfy) setImageProvider("comfyui");
+    if (useComfy) {
+      setImageProvider("comfyui");
+      setStoryboardSource("comfyui");
+    }
     setCheckingComfy(true); setCheckComfyError(false); resetQuote();
     try {
       const current = await api.capabilities(props.projectId);
@@ -317,7 +386,9 @@ function MediaScope(props: Props) {
   const active = assets.filter(a => a.status === "ACTIVE"), images = active.filter(a => a.kind === "IMAGE"), videos = active.filter(a => a.kind === "VIDEO");
   const usableComfyJobs = new Set(comfyShot?.jobs.filter(item => item.state === "SUCCEEDED").map(item => item.jobId));
   const offeredCapabilities = (["image.generate", "video.generate", "audio.music"] as const)
-    .filter(item => capabilities?.capabilities.includes(item) || (item === "image.generate" && comfyAvailable));
+    .filter(item => capabilities?.capabilities.includes(item)
+      || (item === "image.generate" && (comfyAvailable || uploadAvailable)));
+  const workbenchControlsOpen = (Boolean(capabilities?.available) || uploadAvailable) && offeredCapabilities.length > 0;
   const estimated = quote ? amount(quote.estimatedAmount) : null, cap = amount(maximum), serverCap = quote ? amount(quote.maximumAmount) : null;
   const amountValid = estimated !== null && cap !== null && serverCap !== null && cap >= estimated && cap <= serverCap;
   return <section className={styles.panel}>
@@ -325,7 +396,7 @@ function MediaScope(props: Props) {
     {open ? <div className={styles.body}>
       <p>先生成首帧，再生成无声视频；角色配音与字幕逐句核对。每次生成单独确认费用，成功素材保留历史版本。</p>
       {storageError ? <p role="alert" className={styles.error}>{storageError}</p> : null}
-      {capabilities && !capabilities.available ? <p role="status">媒体服务尚未配置完整，当前不会提交模型调用。请先完成服务端配置与数据库启用。{capabilities.readAvailable ? "已有素材仍可查看并本地合成。" : ""}</p> : null}
+      {capabilities && !capabilities.available ? <p role="status">媒体服务尚未配置完整，当前不会提交模型调用。请先完成服务端配置与数据库启用。{capabilities.readAvailable ? "已有素材仍可查看、本地合成，也可自己上传分镜图。" : ""}</p> : null}
       {comfy || checkComfyError ? <div className={styles.comfyConnection}>
         <p role="status">{checkingComfy ? "正在检测 ComfyUI 连接与依赖。" : checkComfyError ? "暂时无法读取 ComfyUI 连接状态。" : comfy ? comfyUiAvailability[comfy.status] : null}</p>
         <button type="button" disabled={checkingComfy || busy} onClick={() => void checkComfyConnection()}>检测 ComfyUI 连接</button>
@@ -350,30 +421,56 @@ function MediaScope(props: Props) {
       </div> : null}
       {capabilities?.available || capabilities?.readAvailable ? <>
         {!props.usable ? <p role="status">{props.reason || "请先批准当前镜头及其来源，再开始生成。"}</p> : null}
-        {capabilities.available && offeredCapabilities.length > 0 ? <>
+        {workbenchControlsOpen ? <>
         <div className={styles.fields}>
           <label>本次制作
             <select value={capability} disabled={Boolean(pending) || busy} onChange={e => { setCapability(e.target.value as RealMediaCapability); resetQuote(); }}>
               {offeredCapabilities.map(c => <option key={c} value={c}>{LABEL[c]}</option>)}
             </select>
           </label>
-          {capability === "image.generate" && (comfyAvailable || imageProvider === "comfyui") ? <label>图片生成方式
-            <select value={useComfy ? "comfyui" : "default"} disabled={Boolean(pending) || busy} onChange={e => {
-              setImageProvider(e.target.value === "comfyui" ? "comfyui" : "default"); resetQuote();
-            }}>
-              {defaultImageAvailable || imageProvider === "default" ? <option value="default" disabled={!defaultImageAvailable}>现有图片供应商</option> : null}
-              <option value="comfyui" disabled={!comfyAvailable}>ComfyUI</option>
-            </select>
-          </label> : null}
+          {capability === "image.generate" ? <fieldset data-testid="workbench-storyboard-source" disabled={Boolean(pending) || busy}>
+            <legend>分镜来源</legend>
+            <label><input type="radio" name="workbench-storyboard-source" checked={resolvedSource === "model"}
+              disabled={!defaultImageAvailable && resolvedSource !== "model"}
+              onChange={() => chooseStoryboardSource("model")} />用模型生成</label>
+            {useModelImage ? <>
+              <label><input type="radio" name="workbench-model-image" checked={modelImageProvider === "openai-media"}
+                onChange={() => { setModelImageProvider("openai-media"); resetQuote(); }} />OpenAI gpt-image-2.5-sunburst</label>
+              <label><input type="radio" name="workbench-model-image" checked={modelImageProvider === "dashscope-media"}
+                onChange={() => { setModelImageProvider("dashscope-media"); resetQuote(); }} />百炼 qwen-image-3.0</label>
+              <p>自动创作会冻结所选模型；工作台按服务端已接通的生图供应商报价，未接通时不能真实出图。</p>
+            </> : null}
+            <label><input type="radio" name="workbench-storyboard-source" checked={resolvedSource === "upload"}
+              disabled={!uploadAvailable}
+              onChange={() => chooseStoryboardSource("upload")} />自己上传图片</label>
+            {comfyAvailable || resolvedSource === "comfyui" ? <label><input type="radio" name="workbench-storyboard-source"
+              checked={resolvedSource === "comfyui"} disabled={!comfyAvailable}
+              onChange={() => chooseStoryboardSource("comfyui")} />ComfyUI</label> : null}
+          </fieldset> : null}
           {capability === "video.generate" ? <label>视频首帧
             <select value={imageId} disabled={Boolean(pending) || busy} onChange={e => { setImageChoice(e.target.value); resetQuote(); }}>
-              <option value="">请选择本镜头已生成的图片</option>{images.map(a => <option key={a.id} value={a.id}>{a.id === adoptedImageId ? "已采用 · " : ""}图片 {a.id.slice(0, 8)}</option>)}
+              <option value="">请选择本镜头的 PNG 首帧（生成或上传）</option>
+              {images.filter((a) => a.mimeType === "image/png" || a.mimeType === undefined).map(a => <option key={a.id} value={a.id}>{a.id === adoptedImageId ? "已采用 · " : ""}图片 {a.id.slice(0, 8)}</option>)}
             </select>
           </label> : null}
         </div>
+        {useUpload ? <>
+          <p data-testid="workbench-upload-note">{formatStoryboardUploadSourceNote()}</p>
+          <p>{formatAutoStoryboardKeepIsNotReviewNote()}</p>
+          <label>上传本镜图片（PNG/JPEG/WebP，最大 8 MiB）
+            <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy || Boolean(pending) || !props.usable || props.approved === false}
+              data-testid="workbench-storyboard-upload"
+              onChange={(event) => {
+                const file = event.target.files?.[0] ?? null;
+                event.target.value = "";
+                void uploadWorkbenchImage(file);
+              }} />
+          </label>
+          {uploadNotice ? <p role="status">{uploadNotice}</p> : null}
+        </> : null}
         {useComfy && comfyAvailable ? <ComfyUiImageFields workflows={comfy.workflows} input={currentComfyInput} references={comfyShot?.references ?? []}
           disabled={Boolean(pending) || busy} onChange={input => { setComfyInput(input); resetQuote(); }} /> : null}
-        <button type="button" disabled={busy || checkingComfy || Boolean(pending) || !props.usable || !imageReady || (capability !== "image.generate" && props.approved === false) || (capability === "video.generate" && !imageId)} onClick={() => void getQuote()}>查看本次费用</button>
+        {!useUpload ? <button type="button" disabled={busy || checkingComfy || Boolean(pending) || !props.usable || !imageReady || (capability !== "image.generate" && props.approved === false) || (capability === "video.generate" && !imageId)} onClick={() => void getQuote()}>查看本次费用</button> : null}
         {quote ? <div className={styles.quote}>
           {quote.estimateBasis === "self-hosted-resource-estimate"
             ? <p>自托管资源估算 {quote.estimatedAmount} {quote.currency}，实际成本未知。</p>

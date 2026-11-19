@@ -36,6 +36,10 @@ export interface AutoStartBody {
   episodeCount: number;
   episodeSeconds: number;
   autoStoryboardAfterScripts?: boolean;
+  /** Frozen at start: model = quote/generate; upload = creator uploads (no quote). */
+  storyboardSource?: "model" | "upload";
+  /** Required for model mode; omit for upload. */
+  storyboardImageProvider?: "openai-media" | "dashscope-media";
   revisionRounds: number;
   callBudget: number;
   providerKey?: string;
@@ -165,7 +169,15 @@ export function normalizeAutoOptions(value: unknown): AutoCreationOptionsView | 
   if (!value || typeof value !== "object") return null;
   const record = value as Partial<AutoCreationOptionsView>;
   if (typeof record.code !== "string" || !Array.isArray(record.providers) || typeof record.enabled !== "boolean" || !record.research) return null;
-  return record as AutoCreationOptionsView;
+  const media = record.media && typeof record.media === "object" ? record.media as AutoCreationOptionsView["media"] : null;
+  if (!media || !Array.isArray(media.realProviders) || typeof media.mockOnly !== "boolean" || !Array.isArray(media.missing)) {
+    return record as AutoCreationOptionsView;
+  }
+  // Older servers omit imageProviders — default to [] so the start page can still render.
+  return {
+    ...record,
+    media: { ...media, imageProviders: Array.isArray(media.imageProviders) ? media.imageProviders : [] },
+  } as AutoCreationOptionsView;
 }
 
 export function autoOptionsUnavailable(options: AutoCreationOptionsView | null): string | null {

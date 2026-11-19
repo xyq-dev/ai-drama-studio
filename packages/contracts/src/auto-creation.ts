@@ -281,14 +281,35 @@ export const autoCreationStartSchema = z.object({
   referenceUrls: z.array(z.string().url().max(500)).max(3).default([]),
   episodeCount: z.number().int().min(TITLE_WRITING_MIN_EPISODES).max(TITLE_WRITING_MAX_EPISODES).optional(),
   episodeSeconds: z.number().int().optional(),
-  /** Open the image quote after the production prerequisites; never authorizes a paid call. */
+  /** Open the image quote after the production prerequisites; never authorizes a paid call. Only valid with storyboardSource=model. */
   autoStoryboardAfterScripts: z.boolean().default(false),
+  /**
+   * Storyboard image origin. `model` = quote then generate with a connected image provider;
+   * `upload` = creator uploads images (no quote / Provider / generation fee). Frozen at start.
+   */
+  storyboardSource: z.enum(["model", "upload"]).default("model"),
+  /**
+   * Image provider when storyboardSource=model. Frozen into later quotes/jobs; page choice wins over
+   * process REAL_MEDIA_IMAGE_PROVIDER. Ignored (and should be omitted) for upload.
+   */
+  storyboardImageProvider: z.enum(["openai-media", "dashscope-media"]).optional(),
   revisionRounds: z.number().int().min(0).max(AUTO_CREATION_MAX_REVISION_ROUNDS).default(AUTO_CREATION_MAX_REVISION_ROUNDS),
   /** The person's own call budget for this run; at least the normal calls and at most the hard cap. Default: hard cap. */
   callBudget: z.number().int().min(1).max(60).optional(),
   providerKey: z.enum(TITLE_WRITING_STORED_PROVIDER_KEYS).optional(),
   model: z.string().regex(MODEL_ID).optional(),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (value.storyboardSource === "upload") {
+    if (value.autoStoryboardAfterScripts) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Upload mode cannot auto-queue storyboard generation", path: ["autoStoryboardAfterScripts"] });
+    }
+    if (value.storyboardImageProvider !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Upload mode does not select an image provider", path: ["storyboardImageProvider"] });
+    }
+  } else if (value.storyboardImageProvider === undefined) {
+    // Default frozen choice when the client omits it: OpenAI sunburst (existing path).
+  }
+});
 export type AutoCreationStart = z.infer<typeof autoCreationStartSchema>;
 
 /** How the run was authorized; written by the server only. */
@@ -337,6 +358,10 @@ export interface AutoCreationFrozenInput {
   episodeSeconds: number;
   /** Absent on older runs; treated as false. */
   autoStoryboardAfterScripts?: boolean;
+  /** Absent on older runs; treated as model. */
+  storyboardSource?: "model" | "upload";
+  /** Absent on older model-mode runs; treated as openai-media. Ignored when storyboardSource=upload. */
+  storyboardImageProvider?: "openai-media" | "dashscope-media";
   revisionRounds: number;
   callBudget: number;
   maxOutputTokens: number;
@@ -1483,6 +1508,8 @@ export interface AutoCreationRunView {
   episodeCount: number;
   episodeSeconds: number;
   autoStoryboardAfterScripts?: boolean;
+  storyboardSource?: "model" | "upload";
+  storyboardImageProvider?: "openai-media" | "dashscope-media";
   providerKey: TitleWritingStoredProviderKey;
   model: string;
   authorization: AutoCreationAuthorization;
@@ -1553,8 +1580,23 @@ export interface AutoCreationOptionsView {
    * Phase 2–3: `openai-media` when sunburst image is connected; `minimax-tts` when MiniMax speech-2.8-hd is
    * connected and the website path accepts it; `dashscope-media` when wan2.6-i2v-flash video generate is connected.
    * missing lists concrete gaps (never hard-coded demo-only placeholders when a probe exists).
+   * imageProviders reports each adapted image Provider separately (OpenAI sunburst and Bailian qwen-image-3.0);
+   * never hard-code image capability as OpenAI-only or as mockOnly.
    */
-  media: { realProviders: string[]; mockOnly: boolean; missing: string[] };
+  media: {
+    realProviders: string[];
+    mockOnly: boolean;
+    missing: string[];
+    imageProviders: Array<{
+      providerKey: "openai-media" | "dashscope-media";
+      model: string;
+      connected: boolean;
+      missing: string[];
+      /** Null when not priced yet — UI shows 「尚未计价」. Never invent a selling price. */
+      unitPrice: string | null;
+      currency: "USD" | "CNY" | null;
+    }>;
+  };
 }
 
 export const autoCreationResumeSchema = z.object({

@@ -46,7 +46,10 @@ React.createElement(RealMediaPanel,{projectId:ids.P,shotRevisionId:ids.S,dialogu
 React.createElement(SpeechBatchPanel,{projectId:ids.P,episodeId:ids.S,client:batchApi})));
 `;
 let browser;
-const server = await createServer({ configFile: false, root: web, optimizeDeps: { include: ["react", "react-dom/client", "@ai-drama/contracts"], force: true }, server: { host: "127.0.0.1", port: 3846, strictPort: true },
+const server = await createServer({ configFile: false, root: web, optimizeDeps: {
+  include: ["react", "react-dom/client", "@ai-drama/contracts", "@ai-drama/domain", "@ai-drama/domain/auto-creation-media-capability"],
+  force: true,
+}, server: { host: "127.0.0.1", port: 3846, strictPort: true },
   plugins: [react(), { name: "local-real-production-fixture", resolveId(id) { if (id === "/fixture.tsx") return "\0fixture.tsx"; },
     load(id) { if (id === "\0fixture.tsx") return entry; }, configureServer(vite) {
       vite.middlewares.use(async (req, res, next) => {

@@ -11,14 +11,18 @@ import {
 } from "@ai-drama/contracts";
 import { formatAutoCreationStartBillingNote } from "@ai-drama/domain/auto-creation-cost-display";
 import {
+  AUTO_CREATION_DASHSCOPE_IMAGE_PROVIDER,
   AUTO_CREATION_MINIMAX_TTS_PROVIDER,
   AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
   AUTO_CREATION_VIDEO_PROVIDER,
   formatAutoCreationMediaDeliveryNote,
   formatAutoOfficialVideoConnectionNote,
   formatAutoOfficialVoiceConnectionNote,
-  formatAutoStoryboardImageConnectionNote,
+  formatImageUnitPrice,
+  formatStoryboardImageProviderNote,
+  formatStoryboardUploadSourceNote,
 } from "@ai-drama/domain/auto-creation-media-capability";
+import type { AutoStoryboardImageProviderKey } from "@ai-drama/contracts";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { suggestTitle } from "../lib/beginner-start";
 import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, providerTarget, tokenRequired } from "../lib/title-writing-client";
@@ -99,6 +103,8 @@ interface ShownSettings {
   idea: string;
   episodeCount: number;
   seconds: number;
+  storyboardSource: "model" | "upload";
+  storyboardImageProvider: AutoStoryboardImageProviderKey;
   autoStoryboardAfterScripts: boolean;
   genre: string;
   audience: string;
@@ -119,9 +125,12 @@ function frozenSettings(request: AutoStartBody): ShownSettings {
   // Read from browser storage: a missing part shows as empty instead of breaking the card (and its way to give up).
   const constraints: Partial<AutoStartBody["constraints"]> = request.constraints ?? {};
   const material = request.materials?.[0];
+  const storyboardSource = request.storyboardSource === "upload" ? "upload" as const : "model" as const;
   return {
     idea: request.idea ?? "", episodeCount: request.episodeCount, seconds: request.episodeSeconds,
-    autoStoryboardAfterScripts: request.autoStoryboardAfterScripts === true,
+    storyboardSource,
+    storyboardImageProvider: request.storyboardImageProvider === "dashscope-media" ? "dashscope-media" : "openai-media",
+    autoStoryboardAfterScripts: storyboardSource === "upload" ? false : request.autoStoryboardAfterScripts === true,
     genre: constraints.genre ?? "", audience: constraints.audience ?? "",
     maxCharacters: typeof constraints.maxCharacters === "number" ? String(constraints.maxCharacters) : "",
     maxLocations: typeof constraints.maxLocations === "number" ? String(constraints.maxLocations) : "",
@@ -151,6 +160,8 @@ export function AutoCreationStart() {
   const [idea, setIdea] = useState("");
   const [selectedEpisodeCount, setSelectedEpisodeCount] = useState<number | null>(null);
   const [selectedSeconds, setSelectedSeconds] = useState<number | null>(null);
+  const [storyboardSource, setStoryboardSource] = useState<"model" | "upload">("model");
+  const [storyboardImageProvider, setStoryboardImageProvider] = useState<AutoStoryboardImageProviderKey>("openai-media");
   const [autoStoryboardAfterScripts, setAutoStoryboardAfterScripts] = useState(false);
   const [genre, setGenre] = useState("");
   const [audience, setAudience] = useState("");
@@ -193,9 +204,14 @@ export function AutoCreationStart() {
   // While a start is pending, the card shows the request a retry replays; loaded options and defaults never change it.
   const frozen = pending?.request ?? null;
   const shown: ShownSettings = frozen ? frozenSettings(frozen) : {
-    idea, episodeCount, seconds, autoStoryboardAfterScripts, genre, audience, maxCharacters, maxLocations, forbidden, ending, rounds, budget,
+    idea, episodeCount, seconds, storyboardSource, storyboardImageProvider,
+    autoStoryboardAfterScripts: storyboardSource === "upload" ? false : autoStoryboardAfterScripts,
+    genre, audience, maxCharacters, maxLocations, forbidden, ending, rounds, budget,
     materialTitle, materialText, materialRights, providerKey,
   };
+  const imageProviders = options?.media.imageProviders ?? [];
+  const openaiImage = imageProviders.find((item) => item.providerKey === AUTO_CREATION_OPENAI_IMAGE_PROVIDER);
+  const dashscopeImage = imageProviders.find((item) => item.providerKey === AUTO_CREATION_DASHSCOPE_IMAGE_PROVIDER);
   const shownGenre = shown.genre.trim();
   const frozenProvider = frozen?.providerKey ? options?.providers.find((item) => item.providerKey === frozen.providerKey) ?? null : null;
   const providerChanged = frozen?.providerKey && options
@@ -273,6 +289,7 @@ export function AutoCreationStart() {
     if (constraintProblem) return setError(constraintProblem);
     if (needsToken && token.trim().length === 0) return setError("请先填写操作者令牌。");
     if (materialText.trim().length > 0 && !materialRights) return setError("请确认你拥有这份资料的使用权限，或清空资料。");
+    const source = storyboardSource === "upload" ? "upload" as const : "model" as const;
     const request: AutoStartBody = {
       idea: idea.trim(),
       constraints: {
@@ -282,7 +299,13 @@ export function AutoCreationStart() {
       materials: materialText.trim().length > 0
         ? [{ title: materialTitle.trim() || "我的资料", kind: "notes", text: materialText, rightsConfirmed: true }] : [],
       episodeCount, episodeSeconds: seconds, revisionRounds: rounds, callBudget: budgetValue,
-      autoStoryboardAfterScripts,
+      storyboardSource: source,
+      ...(source === "model"
+        ? {
+          storyboardImageProvider,
+          autoStoryboardAfterScripts,
+        }
+        : { autoStoryboardAfterScripts: false }),
       ...(chosen ? { providerKey: chosen.providerKey, ...(chosen.defaultModel ? { model: chosen.defaultModel } : {}) } : {}),
     };
     const draft: PendingAutoStart = {
@@ -349,17 +372,65 @@ export function AutoCreationStart() {
           </select>
         </div>
       </div>
-      <label className={styles.check}>
-        <input type="checkbox" checked={shown.autoStoryboardAfterScripts} disabled={locked}
-          onChange={(event) => setAutoStoryboardAfterScripts(event.target.checked)} />
-        剧本写完后，自动为每集生成分镜头
-      </label>
+      <fieldset className={autoStyles.genres} disabled={locked} data-testid="auto-storyboard-source">
+        <legend className={styles.label}>分镜来源</legend>
+        <label className={styles.check}>
+          <input type="radio" name="auto-storyboard-source" checked={shown.storyboardSource === "model"} disabled={locked}
+            onChange={() => setStoryboardSource("model")} />
+          用模型生成
+        </label>
+        <label className={styles.check}>
+          <input type="radio" name="auto-storyboard-source" checked={shown.storyboardSource === "upload"} disabled={locked}
+            onChange={() => {
+              setStoryboardSource("upload");
+              setAutoStoryboardAfterScripts(false);
+            }} />
+          自己上传图片
+        </label>
+      </fieldset>
+      {shown.storyboardSource === "model" ? (
+        <>
+          <fieldset className={autoStyles.genres} disabled={locked} data-testid="auto-storyboard-image-provider">
+            <legend className={styles.label}>生图模型</legend>
+            <label className={styles.check}>
+              <input type="radio" name="auto-storyboard-image-provider" checked={shown.storyboardImageProvider === "openai-media"}
+                disabled={locked} onChange={() => setStoryboardImageProvider("openai-media")} />
+              OpenAI gpt-image-2.5-sunburst
+            </label>
+            <p className={styles.helper} data-testid="auto-storyboard-openai-status">
+              {openaiImage
+                ? `${formatStoryboardImageProviderNote(openaiImage)}（单价栏：${formatImageUnitPrice(openaiImage.unitPrice)}）`
+                : "OpenAI 生图状态未返回。未接通时不能发起真实出图。单价栏：尚未计价。"}
+            </p>
+            <label className={styles.check}>
+              <input type="radio" name="auto-storyboard-image-provider" checked={shown.storyboardImageProvider === "dashscope-media"}
+                disabled={locked} onChange={() => setStoryboardImageProvider("dashscope-media")} />
+              百炼 qwen-image-3.0
+            </label>
+            <p className={styles.helper} data-testid="auto-storyboard-dashscope-status">
+              {dashscopeImage
+                ? `${formatStoryboardImageProviderNote(dashscopeImage)}（单价栏：${formatImageUnitPrice(dashscopeImage.unitPrice)}）`
+                : "百炼生图状态未返回。未接通时不能发起真实出图。单价栏：尚未计价。"}
+            </p>
+          </fieldset>
+          <label className={styles.check}>
+            <input type="checkbox" checked={shown.autoStoryboardAfterScripts} disabled={locked}
+              onChange={(event) => setAutoStoryboardAfterScripts(event.target.checked)} />
+            剧本写完后，自动为每集生成分镜头
+          </label>
+          <p className={styles.helper}>默认只写故事和剧本。勾选后，等你审核故事、写入分集并备好镜头，再自动打开报价。确认费用后才出图；勾选本身不会跳过报价或直接出图。未接通所选模型时不能发起真实出图。</p>
+        </>
+      ) : (
+        <p className={styles.helper} data-testid="auto-storyboard-upload-note">{formatStoryboardUploadSourceNote()}</p>
+      )}
       {options ? (
         <>
           <p className={styles.helper} data-testid="auto-storyboard-image-status">
-            {formatAutoStoryboardImageConnectionNote(
-              options.media.realProviders.includes(AUTO_CREATION_OPENAI_IMAGE_PROVIDER),
-            )}
+            {shown.storyboardSource === "upload"
+              ? formatStoryboardUploadSourceNote()
+              : shown.storyboardImageProvider === "dashscope-media"
+                ? (dashscopeImage ? formatStoryboardImageProviderNote(dashscopeImage) : "百炼生图状态未返回。")
+                : (openaiImage ? formatStoryboardImageProviderNote(openaiImage) : "OpenAI 生图状态未返回。")}
           </p>
           <p className={styles.helper} data-testid="auto-voice-status">
             {formatAutoOfficialVoiceConnectionNote(
@@ -377,7 +448,6 @@ export function AutoCreationStart() {
           </p>
         </>
       ) : null}
-      <p className={styles.helper}>默认只写故事和剧本。勾选后，等你审核故事、写入分集并备好镜头，再自动打开报价。确认费用后才出图；勾选本身不会跳过报价或直接出图。</p>
       <details className={styles.more}>
         <summary>高级设置（可不填，留空由 AI 决定；填写的内容是必须遵守的硬约束）</summary>
         <div className={styles.moreGrid}>

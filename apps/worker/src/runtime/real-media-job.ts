@@ -62,9 +62,17 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
         else if((snapshot.capability==="audio.tts"?source.dialogue??"":source.promptText.trim())!==snapshot.sourceText)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Source changed before sending");
         if(comfyUi&&snapshot.sourceImage)await assertComfyUiReference(execution,client);
         else if(snapshot.sourceImage){
-          const found=await client.query(`SELECT a.id FROM asset a JOIN generation_job j ON j.id=a.source_generation_job_id
+          const found=await client.query(`SELECT a.id FROM asset a
             WHERE a.id=$1 AND a.workspace_id=$2 AND a.project_id=$3 AND a.source_shot_revision_id=$4 AND a.status='ACTIVE'
-              AND a.kind='IMAGE' AND a.checksum_sha256=$5 AND j.state='SUCCEEDED' FOR SHARE OF a,j`,
+              AND a.kind='IMAGE' AND a.checksum_sha256=$5 AND a.mime_type='image/png'
+              AND (
+                (a.source_kind='UPLOAD' AND a.source_generation_job_id IS NULL)
+                OR EXISTS (
+                  SELECT 1 FROM generation_job j
+                   WHERE j.id=a.source_generation_job_id AND j.state='SUCCEEDED'
+                )
+              )
+            FOR SHARE OF a`,
           [snapshot.sourceImage.assetId,execution.workspaceId,execution.projectId,execution.shotRevisionId,snapshot.sourceImage.checksumSha256]);
           if(!found.rows[0])throw new PersistenceError("REAL_MEDIA_SOURCE_INVALID","First frame changed before sending");
         }
@@ -105,7 +113,7 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
 }
 function localSubmissionErrorCode(error:unknown,comfyUi:boolean):string {
   if(!(error instanceof PersistenceError)&&!(error instanceof DomainError))return "REAL_MEDIA_SUBMIT_BLOCKED";
-  if(["AUTO_STORYBOARD_OPENAI_UNAVAILABLE","AUTO_STORYBOARD_SELECTION_UNAVAILABLE","AUTO_STORYBOARD_SOURCE_NOT_READY","AUTO_STORYBOARD_SHOT_BUSY"].includes(error.code))return error.code;
+  if(["AUTO_STORYBOARD_OPENAI_UNAVAILABLE","AUTO_STORYBOARD_IMAGE_UNAVAILABLE","AUTO_STORYBOARD_SELECTION_UNAVAILABLE","AUTO_STORYBOARD_SOURCE_NOT_READY","AUTO_STORYBOARD_SHOT_BUSY"].includes(error.code))return error.code;
   if(error.code==="REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED")return error.code;
   if(comfyUi&&["REAL_MEDIA_SOURCE_INVALID","REAL_MEDIA_INPUT_CHANGED","REVIEW_REQUIRED","STALE_RECALCULATION_PENDING",
     "COMFYUI_DEPENDENCIES_MISSING","COMFYUI_UNAVAILABLE"].includes(error.code))return error.code;
@@ -144,8 +152,12 @@ async function persistOutput(e:RealMediaExecution,output:MediaProviderOutput,ada
   if(comfyUi&&(media.mimeType!=="image/png"||media.width!==e.inputSnapshot.comfyui?.width||media.height!==e.inputSnapshot.comfyui?.height)){
     throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Generated image dimensions do not match the frozen workflow");
   }
-  if(e.inputSnapshot.autoStoryboard&&(media.mimeType!=="image/png"||`${String(media.width)}x${String(media.height)}`!==OPENAI_IMAGE_SIZE)){
-    throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Storyboard image does not match the frozen OpenAI dimensions");
+  if(e.inputSnapshot.autoStoryboard){
+    const provider=e.inputSnapshot.configuration.providerKey;
+    const expected=provider==="dashscope-media"?"720x1280":OPENAI_IMAGE_SIZE;
+    if(media.mimeType!=="image/png"||`${String(media.width)}x${String(media.height)}`!==expected){
+      throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Storyboard image does not match the frozen provider dimensions");
+    }
   }
   if(!await d.store.renewDeliveryLease(e,leaseOwner,d.leaseMs))throw new PersistenceError("REAL_MEDIA_LEASE_LOST","Media delivery executor lost its lease");
   const object=await d.objects.putVerified({workspaceId:e.workspaceId,projectId:e.projectId,generationJobId:e.jobId,jobAttemptId:e.attemptId,bytes:media.bytes,mimeType:media.mimeType});

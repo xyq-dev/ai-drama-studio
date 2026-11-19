@@ -285,8 +285,25 @@ describe("automatic creation API", () => {
     expect(rejectedPath.media.realProviders).toEqual([]);
     expect(rejectedPath.media.missing.some((item) => item.includes("网页主路径仍拒绝 minimax-tts"))).toBe(true);
 
+    const qwenImage = (): RealMediaConfiguration => ({
+      id: "44444444-4444-4444-8444-444444444444", version: "qwen-v1", providerKey: "dashscope-media",
+      capability: "image.generate", model: "qwen-image-3.0", region: "beijing",
+      credentialRef: "env:dashscope-media", credentialVersion: "v1", enabled: true, queryAllowed: true,
+      priceVersion: "fixture-v1", currency: "CNY", unitPrice: "0.18", unitType: "image",
+      maximumOperationAmount: "10", parameters: {},
+    });
     const all = (await setup({
-      mediaImageProbe: async () => ({ imageProvider: "openai-media", mediaApiKeyPresent: true, configuration: sunburstConfig() }),
+      mediaImageProbe: async () => ({
+        processImageProvider: "openai-media",
+        openai: {
+          providerKey: "openai-media", mediaApiKeyPresent: true, unitPricePresent: true,
+          priceVersionPresent: true, configuration: sunburstConfig(),
+        },
+        dashscope: {
+          providerKey: "dashscope-media", mediaApiKeyPresent: true, unitPricePresent: true,
+          priceVersionPresent: true, configuration: qwenImage(),
+        },
+      }),
       mediaVoiceProbe: async () => ({
         minimaxApiKeyPresent: true, unitPricePresent: true, priceVersionPresent: true, baseUrlCompliant: true,
         configuration: minimaxConfig(), webPathAcceptsMinimax: true,
@@ -298,6 +315,7 @@ describe("automatic creation API", () => {
       }),
     }).service.options()).body as AutoCreationOptionsView;
     expect(all.media.realProviders).toEqual(["openai-media", "minimax-tts", "dashscope-media"]);
+    expect(all.media.imageProviders.every((item) => item.connected)).toBe(true);
     expect(all.media.mockOnly).toBe(false);
     expect(all.media.missing).toEqual(["剧本拆解功能（服务端关闭，不会写入分镜生产数据）"]);
     expect(JSON.stringify(all.media)).not.toMatch(/sk-|api[_-]?key\s*=/i);

@@ -1,5 +1,6 @@
-import type { AutoEpisodeStoryboardShotView } from "@ai-drama/contracts";
-import { createRealMediaClient } from "./real-media-client";
+import type { AutoEpisodeStoryboardShotView, AutoStoryboardImageProviderKey, CreateUploadSessionRequest } from "@ai-drama/contracts";
+import { ASSET_UPLOAD_MIME_TYPES } from "@ai-drama/contracts";
+import { createRealMediaClient, sha256Hex } from "./real-media-client";
 import { ApiError, StudioClient } from "./studio-client";
 
 const ID = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
@@ -69,11 +70,46 @@ export function createAutoEpisodeStoryboardsClient(studio = new StudioClient()) 
     async read(projectId: string, runId: string, signal: AbortSignal) {
       return checked(await studio.get<AutoStoryboardView>(path(projectId, runId), { signal }));
     },
-    quote(projectId: string, runId: string, shotRevisionId: string) {
-      return media.quote(projectId, shotRevisionId, "image.generate", undefined, undefined, runId);
+    quote(projectId: string, runId: string, shotRevisionId: string, imageProvider?: AutoStoryboardImageProviderKey) {
+      return media.quote(projectId, shotRevisionId, "image.generate", undefined, undefined, runId, imageProvider);
     },
     authorize: media.authorize,
     generate: media.generate,
+    createUploadSession: media.createUploadSession,
+    putUploadObject: media.putUploadObject,
+    completeUploadSession: media.completeUploadSession,
+    /**
+     * Upload one storyboard image for a shot: create session → PUT bytes → complete → assetId.
+     * Does not authorize a paid generation and does not mean review approval.
+     */
+    async uploadShotImage(input: {
+      projectId: string;
+      runId: string;
+      shotRevisionId: string;
+      file: File;
+    }): Promise<{ assetId: string }> {
+      const mimeType = input.file.type;
+      if (!(ASSET_UPLOAD_MIME_TYPES as readonly string[]).includes(mimeType)) {
+        throw new ApiError(400, "UNSUPPORTED_MEDIA", "仅支持 PNG、JPEG 或 WebP 图片。");
+      }
+      if (input.file.size < 1 || input.file.size > 8 * 1024 * 1024) {
+        throw new ApiError(400, "UPLOAD_LIMIT", "上传文件超过 8 MiB 上限。");
+      }
+      const buffer = await input.file.arrayBuffer();
+      const contentHash = await sha256Hex(buffer);
+      const body: CreateUploadSessionRequest = {
+        projectId: input.projectId,
+        assetType: "IMAGE",
+        mimeType: mimeType as CreateUploadSessionRequest["mimeType"],
+        byteSize: input.file.size,
+        contentHash,
+        shotRevisionId: input.shotRevisionId,
+        autoStoryboardRunId: input.runId,
+      };
+      const created = await media.createUploadSession(body);
+      await media.putUploadObject(created.uploadUrl, buffer, mimeType, contentHash);
+      return media.completeUploadSession(created.uploadSession.id);
+    },
     async keep(projectId: string, runId: string, shot: AutoStoryboardShot, assetId: string, idempotencyKey: string) {
       const { body } = await studio.write<{ selectedAssetId: string }>({
         path: `${path(projectId, runId)}/${shot.shotRevisionId}/selection`, method: "PUT", idempotencyKey,

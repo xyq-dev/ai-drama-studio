@@ -28,6 +28,9 @@ function setup(){
     comfyuiShot:vi.fn(async(_project:string,_shot:string,_signal?:AbortSignal):Promise<ComfyUiShot>=>({references:[],jobs:[],selectedAssetId:null})),
     adoptComfyUiImage:vi.fn(async(_project:string,_shot:string,_asset:string,_previous:string|null,_key:string)=>{}),
     cancelComfyUiJob:vi.fn(async(_job:string,_key:string)=>{}),
+    createUploadSession:vi.fn(async()=>{throw new Error("upload unused in this suite");}),
+    putUploadObject:vi.fn(async()=>{throw new Error("upload unused in this suite");}),
+    completeUploadSession:vi.fn(async()=>{throw new Error("upload unused in this suite");}),
   };
   const changed=vi.fn(),props={projectId:P,shotRevisionId:S,dialogue:"林夏：这不是我。",usable:true,refreshEpoch:0,client:api,onChanged:changed};
   return {api,props,items,changed,storageKey:realMediaPendingKey(P,S)};
@@ -53,7 +56,7 @@ describe("real media panel explicit paid send and scoped recovery",()=>{
     h.api.quote.mockResolvedValue({...quote(),estimateBasis:"self-hosted-resource-estimate"});
     render(<RealMediaPanel {...h.props} promptText="初始镜头提示词"/>);await open();
     expect(screen.queryByLabelText("ComfyUI 工作流")).toBeNull();
-    fireEvent.change(screen.getByLabelText("图片生成方式"),{target:{value:"comfyui"}});
+    fireEvent.click(screen.getByRole("radio",{name:"ComfyUI"}));
     expect((screen.getByLabelText("图片提示词") as HTMLTextAreaElement).value).toBe("初始镜头提示词");
     fireEvent.change(screen.getByLabelText("ComfyUI 工作流"),{target:{value:"image-v1"}});
     expect((screen.getByRole("button",{name:"查看本次费用"}) as HTMLButtonElement).disabled).toBe(true);
@@ -148,9 +151,21 @@ describe("real media panel explicit paid send and scoped recovery",()=>{
     const h=setup();h.api.capabilities.mockResolvedValue({available:false,readAvailable:true,reasonCode:"REAL_MEDIA_NOT_READY",capabilities:[]});
     render(<RealMediaPanel {...h.props}/>);fireEvent.click(screen.getByRole("button",{name:/图片、视频与角色配音/}));
     await screen.findByTestId("speech-child");expect(await screen.findByAltText("已生成图片 "+A.slice(0,8))).toBeTruthy();
+    // Upload stays available without image Provider keys; paid model quote/generate stay hidden.
+    expect(await screen.findByTestId("workbench-storyboard-source")).toBeTruthy();
+    expect((screen.getByLabelText("自己上传图片") as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole("button",{name:"查看本次费用"})).toBeNull();expect(h.api.quote).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button",{name:"完成逐句合成预检替身"}));fireEvent.click(await screen.findByRole("button",{name:"合成本段画面、声音与字幕"}));
     await screen.findByText(/合成任务已受理/);expect(h.api.compose).toHaveBeenCalledOnce();expect(h.api.generate).not.toHaveBeenCalled();
+  });
+  it("offers upload when object storage is readable even without image.generate",async()=>{
+    const h=setup();
+    h.api.capabilities.mockResolvedValue({available:false,readAvailable:true,reasonCode:"REAL_MEDIA_PROVIDER_DISABLED",capabilities:["video.generate"]});
+    render(<RealMediaPanel {...h.props} approved usable />);
+    fireEvent.click(screen.getByRole("button",{name:/图片、视频与角色配音/}));
+    expect(await screen.findByTestId("workbench-storyboard-upload")).toBeTruthy();
+    expect((screen.getByLabelText("自己上传图片") as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole("button",{name:"查看本次费用"})).toBeNull();
   });
   it("keeps the original compose request across refresh and a changed preflight",async()=>{
     const h=setup();h.api.compose.mockRejectedValueOnce(new ApiError(503,"UNAVAILABLE","Compose receipt unknown"));

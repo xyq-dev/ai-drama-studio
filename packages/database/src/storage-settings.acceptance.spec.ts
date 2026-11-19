@@ -25,7 +25,12 @@ async function world() {
   const workspaceId = (await pool.query("INSERT INTO workspace(name) VALUES('Synthetic storage acceptance') RETURNING id")).rows[0].id as string;
   let time = Date.now();
   const store = new StorageSettingsStore(pool, workspaceId, master, legacy, () => time);
-  return { workspaceId, store, key: () => `real-media/${workspaceId}/${randomUUID()}/${randomUUID()}/${randomUUID()}/${"a".repeat(64)}.png`, advance: (ms: number) => { time += ms; } };
+  return {
+    workspaceId, store,
+    key: () => `real-media/${workspaceId}/${randomUUID()}/${randomUUID()}/${randomUUID()}/${"a".repeat(64)}.png`,
+    uploadKey: () => `uploads/${workspaceId}/${randomUUID()}/${randomUUID()}/${"b".repeat(64)}.png`,
+    advance: (ms: number) => { time += ms; },
+  };
 }
 const save = async (store: StorageSettingsStore, expectedRevision: number, configuration = managed) => store.save({ ...configuration, expectedRevision, secretAction: "replace" }, () => undefined);
 async function pass(store: StorageSettingsStore) { const view = await store.view(); await store.recordTest(view.revision, view.draft!.id!, true); }
@@ -83,6 +88,11 @@ describe("persistent storage revisions on an empty disposable PostgreSQL databas
     await expect(pool.query("UPDATE storage_settings_state SET revision=revision+1,legacy_id=draft_id WHERE workspace_id=$1", [w.workspaceId])).rejects.toThrow();
     await expect(pool.query("INSERT INTO storage_object_binding(workspace_id,object_key,configuration_id) VALUES($1,$2,$3)", [w.workspaceId, w.key(), (await other.store.view()).draft!.id])).rejects.toThrow();
     await expect(w.store.reserve(other.key())).rejects.toMatchObject({ code: "STORAGE_OBJECT_KEY_INVALID" });
+    // UploadSession keys share the same scoped validator; before activation they still bind to legacy/environment.
+    const uploadReservation = await w.store.reserve(w.uploadKey());
+    expect(uploadReservation.configuration).toBeTruthy();
+    expect(["environment", "managed"]).toContain(uploadReservation.source);
+    await expect(w.store.reserve(other.uploadKey())).rejects.toMatchObject({ code: "STORAGE_OBJECT_KEY_INVALID" });
   });
   it("fails closed on a lost/wrong master even if the console switch is off", async () => {
     const w = await world(); expect(await openStorageSettingsStore(pool, w.workspaceId, {}, legacy)).toBeNull(); await save(w.store, 0);

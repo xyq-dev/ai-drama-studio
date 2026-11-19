@@ -1,8 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type { RealMediaQuote } from "@ai-drama/contracts";
-import { formatAutoStoryboardKeepIsNotReviewNote } from "@ai-drama/domain/auto-creation-media-capability";
+import type { AutoStoryboardImageProviderKey, RealMediaQuote } from "@ai-drama/contracts";
+import {
+  formatAutoStoryboardKeepIsNotReviewNote,
+  formatStoryboardUploadSourceNote,
+} from "@ai-drama/domain/auto-creation-media-capability";
 import {
   createAutoEpisodeStoryboardsClient,
   storyboardGate,
@@ -35,7 +38,7 @@ const safeRefusal = new Set([
 ]);
 // These API codes originate in the generation transaction before a job or outbox entry is created.
 const preDispatchUnavailable = new Set([
-  "AUTO_STORYBOARD_OPENAI_UNAVAILABLE", "AUTO_STORYBOARD_SELECTION_UNAVAILABLE",
+  "AUTO_STORYBOARD_IMAGE_UNAVAILABLE", "AUTO_STORYBOARD_OPENAI_UNAVAILABLE", "AUTO_STORYBOARD_SELECTION_UNAVAILABLE",
   "REAL_MEDIA_NOT_READY", "REAL_MEDIA_STORAGE_NOT_READY",
 ]);
 
@@ -47,9 +50,20 @@ interface Props {
   projectId: string;
   runId: string;
   autoQuote: boolean;
+  /** Frozen at start; upload mode skips quote/generate and auto-queue. */
+  storyboardSource?: "model" | "upload";
+  /** Frozen image provider for model mode (defaults to openai-media for older runs). */
+  storyboardImageProvider?: AutoStoryboardImageProviderKey;
   refreshKey?: string | number;
   scopeEpisodeNo?: number;
   children?: (actions: AutoEpisodeStoryboardActions) => ReactNode;
+}
+
+function imageUnavailableText(provider: AutoStoryboardImageProviderKey): string {
+  if (provider === "dashscope-media") {
+    return "还没有接通百炼生图（qwen-image-3.0），不能生成分镜头。未接通时不会把演示素材写成真实生成。";
+  }
+  return "还没有接通 OpenAI 生图（gpt-image-2.5-sunburst），不能生成分镜头。未接通时不会把演示素材写成真实生成。";
 }
 interface QuoteRow {
   episodeNo: number;
@@ -71,7 +85,9 @@ function format(value: bigint): string {
 
 function paidQuote(quote: RealMediaQuote): boolean {
   const estimate = units(quote.estimatedAmount);
-  return quote.currency === "USD" && quote.estimateBasis === undefined && !quote.uncertainJobIds?.length
+  // OpenAI quotes are USD; Bailian / DashScope quotes are CNY.
+  return (quote.currency === "USD" || quote.currency === "CNY") && quote.estimateBasis === undefined
+    && !quote.uncertainJobIds?.length
     && estimate > 0n && estimate <= units(quote.maximumAmount) && Date.parse(quote.expiresAt) > Date.now();
 }
 
@@ -92,7 +108,13 @@ export function AutoEpisodeStoryboards(props: Props) {
   return <StoryboardScope key={`${props.projectId}:${props.runId}:${props.scopeEpisodeNo ?? ""}`} {...props} />;
 }
 
-function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshKey, children }: Props) {
+function StoryboardScope({
+  projectId, runId, autoQuote, scopeEpisodeNo, refreshKey, children,
+  storyboardSource = "model",
+  storyboardImageProvider = "openai-media",
+}: Props) {
+  const uploadMode = storyboardSource === "upload";
+  const imageProvider = storyboardImageProvider === "dashscope-media" ? "dashscope-media" as const : "openai-media" as const;
   const [view, setView] = useState<AutoStoryboardView | null>(null);
   const [failure, setFailure] = useState("");
   const [readFailure, setReadFailure] = useState("");
@@ -111,6 +133,8 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
   const quoteHeading = useRef<HTMLHeadingElement>(null);
   const headingId = useId();
   const quoteId = useId();
+  // Upload mode never auto-opens quotes.
+  const allowAutoQuote = autoQuote && !uploadMode;
 
   useEffect(() => {
     active.current = true;
@@ -133,7 +157,7 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let follow = autoQuote;
+    let follow = allowAutoQuote;
     function live() { return active.current && !controller.signal.aborted; }
     async function load() {
       try {
@@ -161,7 +185,7 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
         setPending(local);
         setView(result);
         setReadFailure("");
-        const waiting = autoQuote && !autoStarted.current && result.imageAvailable && result.selectionAvailable;
+        const waiting = allowAutoQuote && !autoStarted.current && result.imageAvailable && result.selectionAvailable;
         const working = episodesIn(result, scopeEpisodeNo).some((episode) => episode.shots.some((shot) => shot.state === "queued"));
         follow = waiting || working || local.size > 0 || tracked.size > 0;
         if (follow) timer = setTimeout(() => void load(), 3_000);
@@ -177,7 +201,7 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
       controller.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [projectId, runId, scopeEpisodeNo, autoQuote, readTick, refreshKey]);
+  }, [projectId, runId, scopeEpisodeNo, allowAutoQuote, readTick, refreshKey]);
 
   const episodes = view ? episodesIn(view, scopeEpisodeNo) : [];
   const hasUndecomposed = episodes.some((episode) => episode.blocked === "shots_not_ready");
@@ -198,7 +222,9 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
     return () => { live = false; };
   }, [hasUndecomposed]);
 
-  const available = !!(view?.imageAvailable && view.selectionAvailable && !readFailure);
+  const available = uploadMode
+    ? !!(view?.selectionAvailable && !readFailure)
+    : !!(view?.imageAvailable && view.selectionAvailable && !readFailure);
   const ready = episodes.filter((episode) => !episode.blocked).flatMap((episode) => episode.shots
     .filter((shot) => shot.state === "ready" && !pending.has(shot.shotRevisionId) && !accepted.has(shot.shotRevisionId))
     .map((shot) => ({ episode, shot })));
@@ -218,7 +244,7 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
   }
 
   async function requestQuotes(targets: Target[], allEpisodes = false) {
-    if (!available || targets.length === 0) return;
+    if (uploadMode || !available || targets.length === 0) return;
     const operation = begin();
     if (!operation) return;
     setQuoteReview(null);
@@ -239,7 +265,7 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
           continue;
         }
         try {
-          const quote = await client.quote(projectId, runId, shot.shotRevisionId);
+          const quote = await client.quote(projectId, runId, shot.shotRevisionId, imageProvider);
           rows.push(paidQuote(quote) ? { ...label, quote } : {
             ...label, quote: null, detail: "报价不可核实或存在结果未知任务，已跳过。",
           });
@@ -252,7 +278,7 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
   }
 
   useEffect(() => {
-    if (!autoQuote || autoStarted.current || inAction.current || !available || !ready.length
+    if (!allowAutoQuote || autoStarted.current || inAction.current || !available || !ready.length
       || view?.episodes.some((episode) => episode.blocked || episode.shots.some((shot) =>
         shot.state === "queued" || shot.state === "unknown" || pending.has(shot.shotRevisionId)))) return;
     autoStarted.current = true;
@@ -265,6 +291,31 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
 
   const payable = quoteReview?.rows.flatMap((row) => row.quote ? [{ ...row, quote: row.quote }] : []) ?? [];
   const total = format(payable.reduce((sum, row) => sum + units(row.quote.estimatedAmount), 0n));
+  const quoteCurrency = payable[0]?.quote.currency ?? (imageProvider === "dashscope-media" ? "CNY" : "USD");
+
+  async function uploadForShot(episode: AutoStoryboardEpisode, shot: AutoStoryboardShot, file: File | null) {
+    if (!uploadMode || !file || !view?.selectionAvailable || readFailure || episode.blocked) return;
+    const operation = begin();
+    if (!operation) return;
+    try {
+      const { assetId } = await client.uploadShotImage({ projectId, runId, shotRevisionId: shot.shotRevisionId, file });
+      if (inAction.current !== operation) return;
+      await client.keep(projectId, runId, shot, assetId, crypto.randomUUID());
+      if (inAction.current === operation) setView((previous) => previous && ({
+        ...previous, episodes: previous.episodes.map((item) => item.episodeNo !== episode.episodeNo ? item : {
+          ...item, shots: item.shots.map((candidate) => candidate.shotRevisionId !== shot.shotRevisionId
+            ? candidate : { ...candidate, previewAssetId: assetId, keptAssetId: assetId, state: "kept" }),
+        }),
+      }));
+    } catch (caught) {
+      if (inAction.current === operation) {
+        setFailure(reasonText(caught, "上传失败，请检查文件类型（PNG/JPEG/WebP）与大小（不超过 8 MiB）后重试。"));
+      }
+    } finally {
+      if (inAction.current === operation) reread();
+      end(operation);
+    }
+  }
 
   async function submitConfirmedShot(original: RealMediaPending, operation: object) {
     let request = original;
@@ -397,12 +448,14 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
   }
 
   const openQuote = (targets: Target[], allEpisodes = false) => {
+    if (uploadMode) return;
     autoStarted.current = true;
     void requestQuotes(targets, allEpisodes);
   };
-  const allAction = <button className={writing.secondary} type="button" disabled={busy || !available || !ready.length}
+  const allAction = uploadMode ? null : <button className={writing.secondary} type="button" disabled={busy || !available || !ready.length}
     onClick={() => openQuote(ready, true)}>为全部集生成分镜头</button>;
   const episodeAction = (episodeNo: number) => {
+    if (uploadMode) return null;
     const targets = ready.filter((row) => row.episode.episodeNo === episodeNo);
     return <button className={writing.secondary} type="button" disabled={busy || !available || !targets.length}
       onClick={() => openQuote(targets)}>生成这一集的分镜头</button>;
@@ -410,32 +463,35 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
 
   return <>
     {children?.({ episodeAction, allAction })}
-    <section className={styles.section} aria-labelledby={headingId} aria-busy={busy} data-testid="auto-episode-storyboards">
+    <section className={styles.section} aria-labelledby={headingId} aria-busy={busy} data-testid="auto-episode-storyboards"
+      data-storyboard-source={uploadMode ? "upload" : "model"}
+      data-storyboard-image-provider={uploadMode ? undefined : imageProvider}>
       <h2 id={headingId} className={writing.sectionTitle}>分镜图</h2>
       {!view && !readFailure ? <p role="status">正在读取分镜图状态…</p> : null}
       {busy ? <p role="status">正在处理当前分镜图操作…</p> : null}
       {readFailure ? <p className={writing.warning} role="alert">{readFailure}</p> : null}
       {failure ? <p className={writing.warning} role="alert">{failure}</p> : null}
-      {view && !view.imageAvailable ? <p>还没有接通 OpenAI 生图，不能生成分镜头</p> : null}
-      {view && !view.selectionAvailable ? <p>当前未启用分镜图选用，生成暂停。</p> : null}
-      {view ? <p className={writing.helper}>{view.characterReferencesAvailable
+      {uploadMode && view ? <p className={writing.helper} data-testid="auto-storyboard-upload-mode-note">{formatStoryboardUploadSourceNote()}</p> : null}
+      {!uploadMode && view && !view.imageAvailable ? <p data-testid="auto-storyboard-unavailable">{imageUnavailableText(imageProvider)}</p> : null}
+      {view && !view.selectionAvailable ? <p>当前未启用分镜图选用，{uploadMode ? "上传后的保留" : "生成"}暂停。</p> : null}
+      {!uploadMode && view ? <p className={writing.helper}>{view.characterReferencesAvailable
         ? "建议先定好角色外形，出图时会带入人物设定文字。"
         : "定妆图暂不可用，将按人物设定文字保持一致。"}</p> : null}
       {view ? <p className={writing.helper} data-testid="auto-storyboard-keep-note">{formatAutoStoryboardKeepIsNotReviewNote()}</p> : null}
-      {view ? <p className={writing.helper}>实际费用尚未核实</p> : null}
+      {!uploadMode && view ? <p className={writing.helper}>实际费用尚未核实</p> : null}
       <div className={writing.actions}>
         {!children ? allAction : null}
         {(view || readFailure) ? <button className={writing.textLink} type="button" disabled={busy} onClick={reread}>刷新分镜图状态</button> : null}
       </div>
-      {quoteReview ? (
+      {!uploadMode && quoteReview ? (
         <section className={writing.config} aria-labelledby={quoteId}>
           <h3 id={quoteId} ref={quoteHeading} tabIndex={-1}>确认分镜图报价</h3>
           {payable.length
-            ? <p>预计生成 {payable.length} 张图，每镜一张。合计估算 <strong>{total} USD</strong>。实际费用尚未核实。</p>
+            ? <p>预计生成 {payable.length} 张图，每镜一张。合计估算 <strong>{total} {quoteCurrency}</strong>。实际费用尚未核实。</p>
             : <p>当前没有可确认的报价，尚未提交生成。</p>}
           <ul className={styles.list}>
             {quoteReview.rows.map((row) => <li key={row.shot.shotRevisionId}>
-              第 {row.episodeNo} 集 · {row.shot.caption} · {row.quote ? `${row.quote.estimatedAmount} USD` : row.detail}
+              第 {row.episodeNo} 集 · {row.shot.caption} · {row.quote ? `${row.quote.estimatedAmount} ${row.quote.currency}` : row.detail}
             </li>)}
             {quoteReview.allEpisodes ? episodes.filter((episode) => episode.blocked).map((episode) => <li key={episode.episodeNo}>
               第 {episode.episodeNo} 集已跳过。{storyboardGate[episode.blocked!]}
@@ -478,10 +534,10 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
                 <h4>{shot.caption}</h4>
                 <p>{canRecover ? (authorizationPending ? "费用授权待核实，尚未提交出图。" : "上次出图在创建任务前被拒绝。")
                   : waiting ? "提交结果待核实" : submitted ? "任务已受理，等待核实状态" : storyboardShotStatus[shot.state]}</p>
-                {canRecover ? <>
+                {!uploadMode && canRecover ? <>
                   <p className={writing.helper}>{authorizationPending
-                    ? `继续后使用原报价 ${request.maximumAmount} USD，确认授权后才提交这一镜。`
-                    : `继续后沿用本镜原授权，确认金额 ${request.maximumAmount} USD。`}</p>
+                    ? `继续后使用原报价 ${request.maximumAmount} ${request.quote.currency}，确认授权后才提交这一镜。`
+                    : `继续后沿用本镜原授权，确认金额 ${request.maximumAmount} ${request.quote.currency}。`}</p>
                   <button className={writing.textLink} disabled={busy || !!readFailure} type="button"
                     onClick={() => void recoverOriginalRequest(episode.episodeNo, request)}>
                     {authorizationPending ? "继续上次授权" : "继续上次出图"} {shot.caption}
@@ -492,9 +548,26 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
                   src={`/api/v1/real-media/assets/${shot.keptAssetId}/content`} label={`已保留 · ${shot.caption}`} /> : null}
                 {shot.previewAssetId ? <HoverMediaPreview kind="image"
                   src={`/api/v1/real-media/assets/${shot.previewAssetId}/content`} label={`分镜图 · ${shot.caption}`} /> : null}
-                {eligible && shot.state === "ready" ? <button className={writing.textLink} disabled={busy} type="button"
+                {uploadMode && available && !episode.blocked && !waiting && !submitted ? (
+                  <label className={writing.helper}>
+                    上传本镜图片（PNG/JPEG/WebP，最大 8 MiB）
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      disabled={busy}
+                      data-testid={`auto-storyboard-upload-${shot.shotRevisionId}`}
+                      aria-label={`上传本镜 ${shot.caption}`}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] ?? null;
+                        event.target.value = "";
+                        void uploadForShot(episode, shot, file);
+                      }}
+                    />
+                  </label>
+                ) : null}
+                {!uploadMode && eligible && shot.state === "ready" ? <button className={writing.textLink} disabled={busy} type="button"
                   onClick={() => openQuote([{ episode, shot }])}>生成本镜 {shot.caption}</button> : null}
-                {eligible && shot.state === "failed" ? <button className={writing.textLink} disabled={busy} type="button"
+                {!uploadMode && eligible && shot.state === "failed" ? <button className={writing.textLink} disabled={busy} type="button"
                   onClick={() => openQuote([{ episode, shot }])}>重试本镜 {shot.caption}</button> : null}
                 {view?.selectionAvailable && !readFailure && !episode.blocked && (shot.state === "generated" || shot.state === "kept")
                   && shot.previewAssetId !== null && shot.previewAssetId !== shot.keptAssetId ? <button className={writing.textLink} disabled={busy}

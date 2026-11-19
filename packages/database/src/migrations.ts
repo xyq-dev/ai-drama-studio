@@ -110,6 +110,13 @@ export const SERIES_WRITING_MIGRATION = "20261023000100_series_writing";
 export const CREATOR_ACCOUNT_PLAN_MIGRATION = "20261118000100_creator_account_plan";
 
 /**
+ * UploadSession for user image uploads (storyboard source). Additive; creates upload_session only. Requires the seven
+ * base migrations (project, asset, shot_revision). Independent of script breakdown / writing / auto-creation / series /
+ * creator-plan migrations.
+ */
+export const UPLOAD_SESSION_MIGRATION = "20261119000100_upload_session";
+
+/**
  * The only migrations a guarded single run may apply, each with the migrations it requires. Each is applied by its own
  * command; none of them takes the script breakdown (or anything else pending) along.
  */
@@ -120,6 +127,7 @@ export const GUARDED_SINGLE_MIGRATIONS: Readonly<Record<string, readonly string[
   [AUTO_CREATION_MIGRATION]: BASE_MIGRATIONS,
   [SERIES_WRITING_MIGRATION]: BASE_MIGRATIONS,
   [CREATOR_ACCOUNT_PLAN_MIGRATION]: BASE_MIGRATIONS,
+  [UPLOAD_SESSION_MIGRATION]: BASE_MIGRATIONS,
 };
 
 export async function runMigrations(

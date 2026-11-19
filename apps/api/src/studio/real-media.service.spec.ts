@@ -69,19 +69,20 @@ describe("explicit real-media budget API",()=>{
     expect(jobsSql).not.toContain("'openai-media'");
   });
   it.each([["dashscope-media","qwen-image-3.0"],["openai-media","gpt-image-2.5-flare"],
-    ["openai-media","dall-e-3"],["comfyui","sd-1.5"]])("refuses %s / %s instead of substituting for Sunburst",async(providerKey,model)=>{
+    ["openai-media","dall-e-3"],["comfyui","sd-1.5"]])("refuses incomplete or wrong %s / %s profiles instead of inventing a connected model",async(providerKey,model)=>{
     const o=options();
     const configurationFor=vi.fn(async()=>({providerKey,model,capability:"image.generate",enabled:true}));
-    const service=new RealMediaService({...o.typed,objects:{readVerified:vi.fn()},configurationFor} as RealMediaServiceOptions);
-    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:"11111111-1111-4111-8111-111111111111"}))
-      .rejects.toMatchObject({code:"AUTO_STORYBOARD_OPENAI_UNAVAILABLE"});
+    const configurationForImageProvider=vi.fn(async(key:string)=>key===providerKey?{providerKey,model,capability:"image.generate",enabled:true}:null);
+    const service=new RealMediaService({...o.typed,objects:{readVerified:vi.fn()},configurationFor,configurationForImageProvider} as unknown as RealMediaServiceOptions);
+    const imageProvider=providerKey==="dashscope-media"||providerKey==="openai-media"?providerKey:"openai-media";
+    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:"11111111-1111-4111-8111-111111111111",imageProvider}))
+      .rejects.toMatchObject({code:"AUTO_STORYBOARD_IMAGE_UNAVAILABLE"});
     expect(o.raw.store.createQuote).not.toHaveBeenCalled();
-    expect(configurationFor).toHaveBeenCalledWith("image.generate",undefined);
   });
   it("keeps new storyboard spends and selections closed without authenticated media delivery",async()=>{
     const o=options(),service=new RealMediaService({...o.typed,readEnabled:false,objects:{readVerified:vi.fn()}});
     const runId="11111111-1111-4111-8111-111111111111";
-    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:runId})).rejects.toMatchObject({code:"AUTO_STORYBOARD_OPENAI_UNAVAILABLE"});
+    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:runId})).rejects.toMatchObject({code:"AUTO_STORYBOARD_IMAGE_UNAVAILABLE"});
     await expect(service.selectAutoStoryboardImage("project",runId,"shot",{assetId:"22222222-2222-4222-8222-222222222222",expectedSelectedAssetId:null}))
       .rejects.toMatchObject({code:"AUTO_STORYBOARD_SELECTION_UNAVAILABLE"});
     expect(o.raw.configurationFor).not.toHaveBeenCalled();

@@ -216,7 +216,17 @@ export class AutoCreationService {
   private async mediaOptions(): Promise<AutoCreationOptionsView["media"]> {
     const image: AutoStoryboardImageProbe = this.deps.mediaImageProbe
       ? await this.deps.mediaImageProbe()
-      : { imageProvider: undefined, mediaApiKeyPresent: false, configuration: null };
+      : {
+        processImageProvider: undefined,
+        openai: {
+          providerKey: "openai-media", mediaApiKeyPresent: false, unitPricePresent: false,
+          priceVersionPresent: false, configuration: null,
+        },
+        dashscope: {
+          providerKey: "dashscope-media", mediaApiKeyPresent: false, unitPricePresent: false,
+          priceVersionPresent: false, configuration: null,
+        },
+      };
     const voice: AutoOfficialVoiceProbe = this.deps.mediaVoiceProbe
       ? await this.deps.mediaVoiceProbe()
       : {
@@ -317,6 +327,8 @@ export class AutoCreationService {
       episodeCount: plan.episodeCount,
       episodeSeconds: plan.targetEpisodeSeconds,
       autoStoryboardAfterScripts: request.autoStoryboardAfterScripts,
+      storyboardSource: request.storyboardSource,
+      storyboardImageProvider: request.storyboardImageProvider,
       revisionRounds: request.revisionRounds,
       callBudget,
       providerKey,

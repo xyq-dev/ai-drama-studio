@@ -6,9 +6,38 @@ import {
   autoResumeRefused,
   autoUserReviseRefused,
   isAutoCreationAuthSessionLoss,
+  normalizeAutoOptions,
 } from "./auto-creation-client";
 import { TitleWritingError } from "./title-writing-client";
-import type { AutoCreationRunView } from "@ai-drama/contracts";
+import type { AutoCreationOptionsView, AutoCreationRunView } from "@ai-drama/contracts";
+
+describe("normalizeAutoOptions", () => {
+  it("defaults media.imageProviders to [] when older servers omit it", () => {
+    const legacy = {
+      enabled: true,
+      code: "AUTO_CREATION_READY",
+      storageReady: true,
+      operatorTokenRequired: false,
+      defaultProvider: "deepseek",
+      providers: [],
+      maxCallsPerDay: 30,
+      maxActiveRuns: 1,
+      billing: "unknown",
+      episodePlan: { minEpisodes: 1, maxEpisodes: 6, defaultEpisodes: 1, secondsChoices: [60, 90], defaultSeconds: 60 },
+      episodePlanReady: true,
+      revisionRounds: { max: 2, default: 2 },
+      maxOutputTokensPerCall: 4096,
+      maxPromptChars: 40000,
+      research: {
+        fetchEnabled: false, allowedHosts: [], builtInSources: 0, readableMarketSources: 0,
+        expectedMode: "limited", visualAnalysis: false,
+      },
+      media: { realProviders: [], mockOnly: true, missing: [] },
+    } as unknown as AutoCreationOptionsView;
+    const normalized = normalizeAutoOptions(legacy);
+    expect(normalized?.media.imageProviders).toEqual([]);
+  });
+});
 
 describe("auto-creation refusal wording", () => {
   it("prompt v9: a method id outside the run's catalog is a refused answer with its own wording and field", () => {

@@ -37,6 +37,15 @@ describe("durable real media objects",()=>{
       await expect(objects.readVerified({storageProvider:"s3",objectKey:key,byteSize:3,checksumSha256:createHash("sha256").update(bytes).digest("hex")},{...scope,maxBytes:3})).rejects.toThrow();
     }
   });
+  it("reads UploadSession objects under uploads/… and rejects foreign workspace keys",async()=>{
+    const bytes=Buffer.from("upload-png");const checksumSha256=createHash("sha256").update(bytes).digest("hex");
+    const sessionId="55555555-5555-4555-8555-555555555555";
+    const objectKey=`uploads/${scope.workspaceId}/${scope.projectId}/${sessionId}/${checksumSha256}.png`;
+    const objects=new S3RealMediaObjects({put:async()=>"exists",get:async()=>({async *[Symbol.asyncIterator](){yield bytes;}})});
+    expect(await objects.readVerified({storageProvider:"s3",objectKey,byteSize:bytes.length,checksumSha256},{workspaceId:scope.workspaceId,projectId:scope.projectId,maxBytes:bytes.length})).toEqual(bytes);
+    await expect(objects.readVerified({storageProvider:"s3",objectKey,byteSize:bytes.length,checksumSha256},
+      {workspaceId:scope.projectId,projectId:scope.projectId,maxBytes:bytes.length})).rejects.toThrow(/scope/);
+  });
   it("accepts only bounded canonical MP3 data receipts and never fetches untrusted references",async()=>{
     const bytes=Buffer.from("offline mp3 fixture");
     expect(await downloadRealMediaResult(`data:audio/mpeg;base64,${bytes.toString("base64")}`,100)).toEqual(bytes);

@@ -114,48 +114,77 @@ function videoProbe(overrides: Partial<AutoOfficialVideoProbe> = {}): AutoOffici
 }
 
 describe("auto-creation media capability (phase 2 image)", () => {
-  it("reports disconnected when provider, key, or sunburst config is missing", () => {
+  it("reports disconnected when key or sunburst config is missing (process provider is not a hard gate)", () => {
     expect(isAutoStoryboardImageConnected({
-      imageProvider: undefined, mediaApiKeyPresent: false, configuration: null,
+      processImageProvider: undefined, mediaApiKeyPresent: false, configuration: null,
+      openai: {
+        providerKey: "openai-media", mediaApiKeyPresent: false, unitPricePresent: false,
+        priceVersionPresent: false, configuration: null,
+      },
+      dashscope: {
+        providerKey: "dashscope-media", mediaApiKeyPresent: false, unitPricePresent: false,
+        priceVersionPresent: false, configuration: null,
+      },
     })).toBe(false);
     const gaps = diagnoseAutoStoryboardImageGaps({
-      imageProvider: "dashscope-media", mediaApiKeyPresent: false, configuration: null,
+      processImageProvider: "dashscope-media", mediaApiKeyPresent: false, configuration: null,
+      openai: {
+        providerKey: "openai-media", mediaApiKeyPresent: false, unitPricePresent: false,
+        priceVersionPresent: false, configuration: null,
+      },
+      dashscope: {
+        providerKey: "dashscope-media", mediaApiKeyPresent: false, unitPricePresent: false,
+        priceVersionPresent: false, configuration: null,
+      },
     });
-    expect(gaps.some((item) => item.includes("REAL_MEDIA_IMAGE_PROVIDER"))).toBe(true);
+    // Process REAL_MEDIA_IMAGE_PROVIDER no longer blocks OpenAI as a selectable option.
+    expect(gaps.some((item) => item.includes("REAL_MEDIA_IMAGE_PROVIDER"))).toBe(false);
     expect(gaps.some((item) => item.includes("OPENAI_MEDIA_API_KEY"))).toBe(true);
-    expect(gaps.some((item) => item.includes("gpt-image-2.5-sunburst"))).toBe(true);
+    expect(gaps.some((item) => item.includes("gpt-image-2.5-sunburst") || item.includes("尚未计价"))).toBe(true);
     expect(gaps.join("\n")).toContain("不是写作 OPENAI_API_KEY");
     expect(gaps.join("\n")).not.toMatch(/sk-|api[_-]?key\s*=/i);
   });
 
   it("marks openai-media connected only for an enabled sunburst configuration", () => {
+    const openaiReady = {
+      providerKey: "openai-media" as const, mediaApiKeyPresent: true, unitPricePresent: true,
+      priceVersionPresent: true, configuration: sunburst(),
+    };
+    const dashscopeMissing = {
+      providerKey: "dashscope-media" as const, mediaApiKeyPresent: false, unitPricePresent: false,
+      priceVersionPresent: false, configuration: null,
+    };
     const connected = resolveAutoCreationMediaOptions({
-      imageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
-      mediaApiKeyPresent: true,
-      configuration: sunburst(),
+      processImageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+      openai: openaiReady,
+      dashscope: dashscopeMissing,
     }, voiceProbe({ minimaxApiKeyPresent: false, configuration: null, webPathAcceptsMinimax: false }), videoProbe({
       dashscopeApiKeyPresent: false, configuration: null, shotComposeEnabled: false, episodeComposeEnabled: false,
     }));
     expect(connected.realProviders).toEqual([AUTO_CREATION_OPENAI_IMAGE_PROVIDER]);
+    expect(connected.imageProviders).toHaveLength(2);
+    expect(connected.imageProviders.find((item) => item.providerKey === "openai-media")).toMatchObject({
+      connected: true, model: "gpt-image-2.5-sunburst", unitPrice: "0.04",
+    });
+    expect(connected.imageProviders.find((item) => item.providerKey === "dashscope-media")?.connected).toBe(false);
     expect(connected.mockOnly).toBe(false);
     expect(connected.missing.some((item) => item.includes("正式配音"))).toBe(true);
     expect(connected.missing.some((item) => item.includes("真实视频") || item.includes("成片"))).toBe(true);
     expect(connected.missing.every((item) => !item.includes("OpenAI 生图未接通"))).toBe(true);
     expect(isAutoStoryboardImageConnected({
-      imageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
-      mediaApiKeyPresent: true,
-      configuration: sunburst(),
+      processImageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+      openai: openaiReady, dashscope: dashscopeMissing,
     })).toBe(true);
 
     expect(isAutoStoryboardImageConnected({
-      imageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
-      mediaApiKeyPresent: true,
-      configuration: sunburst({ model: "gpt-image-2.5-flare" }),
+      processImageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+      openai: { ...openaiReady, configuration: sunburst({ model: "gpt-image-2.5-flare" }) },
+      dashscope: dashscopeMissing,
     })).toBe(false);
     expect(isAutoStoryboardImageConnected({
-      imageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
-      mediaApiKeyPresent: true,
-      configuration: sunburst({ unitPrice: "0.04", maximumOperationAmount: "0.01" }),
+      processImageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+      openai: { ...openaiReady, configuration: sunburst({ unitPrice: "0.04", maximumOperationAmount: "0.01" }) },
+      dashscope: dashscopeMissing,
     })).toBe(false);
   });
 
@@ -231,9 +260,24 @@ describe("auto-creation media capability (phase 3 voice + video)", () => {
 
     const media = resolveAutoCreationMediaOptions({
       image: {
-        imageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
+        processImageProvider: AUTO_CREATION_OPENAI_IMAGE_PROVIDER,
         mediaApiKeyPresent: true,
         configuration: sunburst(),
+        openai: {
+          providerKey: "openai-media", mediaApiKeyPresent: true, unitPricePresent: true,
+          priceVersionPresent: true, configuration: sunburst(),
+        },
+        dashscope: {
+          providerKey: "dashscope-media", mediaApiKeyPresent: true, unitPricePresent: true,
+          priceVersionPresent: true,
+          configuration: {
+            id: "44444444-4444-4444-8444-444444444444", version: "qwen-v1", providerKey: "dashscope-media",
+            capability: "image.generate", model: "qwen-image-3.0", region: "beijing",
+            credentialRef: "env:dashscope-media", credentialVersion: "v1", enabled: true, queryAllowed: true,
+            priceVersion: "fixture-v1", currency: "CNY", unitPrice: "0.18", unitType: "image",
+            maximumOperationAmount: "10", parameters: {},
+          },
+        },
       },
       voice: voiceProbe(),
       video: videoProbe(),
@@ -243,6 +287,7 @@ describe("auto-creation media capability (phase 3 voice + video)", () => {
       AUTO_CREATION_MINIMAX_TTS_PROVIDER,
       AUTO_CREATION_VIDEO_PROVIDER,
     ]);
+    expect(media.imageProviders.every((item) => item.connected)).toBe(true);
     expect(media.mockOnly).toBe(false);
     expect(media.missing).toEqual(["剧本拆解功能（服务端关闭，不会写入分镜生产数据）"]);
   });
