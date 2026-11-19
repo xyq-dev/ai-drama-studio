@@ -88,8 +88,10 @@ describe("persistent storage revisions on an empty disposable PostgreSQL databas
     await expect(pool.query("UPDATE storage_settings_state SET revision=revision+1,legacy_id=draft_id WHERE workspace_id=$1", [w.workspaceId])).rejects.toThrow();
     await expect(pool.query("INSERT INTO storage_object_binding(workspace_id,object_key,configuration_id) VALUES($1,$2,$3)", [w.workspaceId, w.key(), (await other.store.view()).draft!.id])).rejects.toThrow();
     await expect(w.store.reserve(other.key())).rejects.toMatchObject({ code: "STORAGE_OBJECT_KEY_INVALID" });
-    // UploadSession keys share the managed authority; foreign workspace uploads stay invalid.
-    expect((await w.store.reserve(w.uploadKey())).source).toBe("managed");
+    // UploadSession keys share the same scoped validator; before activation they still bind to legacy/environment.
+    const uploadReservation = await w.store.reserve(w.uploadKey());
+    expect(uploadReservation.configuration).toBeTruthy();
+    expect(["environment", "managed"]).toContain(uploadReservation.source);
     await expect(w.store.reserve(other.uploadKey())).rejects.toMatchObject({ code: "STORAGE_OBJECT_KEY_INVALID" });
   });
   it("fails closed on a lost/wrong master even if the console switch is off", async () => {

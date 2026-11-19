@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AutoStoryboardImageProviderKey, RealMediaCapability, RealMediaQuote, SpeechMixPreflight } from "@ai-drama/contracts";
 import { ASSET_UPLOAD_MIME_TYPES } from "@ai-drama/contracts";
-import { formatAutoStoryboardKeepIsNotReviewNote, formatStoryboardUploadSourceNote } from "@ai-drama/domain/auto-creation-media-capability";
+import {
+  formatAutoStoryboardKeepIsNotReviewNote,
+  formatStoryboardUploadSourceNote,
+} from "@ai-drama/domain";
 import { ApiError } from "../lib/studio-client";
 import { COMFYUI_PROMPT_LIMIT, clearRealMediaPending, createRealMediaClient, readRealMediaPending, realMediaPendingKey, rememberRealMediaPending,
   clearRealMediaComposePending, readRealMediaComposePending, rememberRealMediaComposePending, sha256Hex,
