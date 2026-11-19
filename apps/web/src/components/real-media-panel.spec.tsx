@@ -53,7 +53,7 @@ describe("real media panel explicit paid send and scoped recovery",()=>{
     h.api.quote.mockResolvedValue({...quote(),estimateBasis:"self-hosted-resource-estimate"});
     render(<RealMediaPanel {...h.props} promptText="初始镜头提示词"/>);await open();
     expect(screen.queryByLabelText("ComfyUI 工作流")).toBeNull();
-    fireEvent.change(screen.getByLabelText("图片生成方式"),{target:{value:"comfyui"}});
+    fireEvent.click(screen.getByRole("radio",{name:"ComfyUI"}));
     expect((screen.getByLabelText("图片提示词") as HTMLTextAreaElement).value).toBe("初始镜头提示词");
     fireEvent.change(screen.getByLabelText("ComfyUI 工作流"),{target:{value:"image-v1"}});
     expect((screen.getByRole("button",{name:"查看本次费用"}) as HTMLButtonElement).disabled).toBe(true);

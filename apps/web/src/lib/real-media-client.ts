@@ -1,11 +1,52 @@
-import type { ComfyUiAvailability, ComfyUiWorkflowOption, RealMediaCapability, RealMediaQuote, SpeechMixPreflight } from "@ai-drama/contracts";
+import type {
+  AutoStoryboardImageProviderKey,
+  ComfyUiAvailability,
+  ComfyUiWorkflowOption,
+  CompleteUploadSessionResponse,
+  CreateUploadSessionRequest,
+  CreateUploadSessionResponse,
+  RealMediaCapability,
+  RealMediaQuote,
+  SpeechMixPreflight,
+  UploadSessionView,
+} from "@ai-drama/contracts";
+import { ASSET_UPLOAD_MAX_BYTES, ASSET_UPLOAD_MIME_TYPES } from "@ai-drama/contracts";
 import { ApiError, StudioClient } from "./studio-client";
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const AMOUNT = /^(0|[1-9]\d{0,7})(\.\d{1,8})?$/;
 const CAPS = new Set(["image.generate", "video.generate", "audio.tts", "audio.music"]);
+const SHA256_HEX = /^[a-f0-9]{64}$/;
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 function invalid(): never { throw new ApiError(502, "INVALID_RESPONSE", "服务回执无法核对，请保留原请求并继续确认。"); }
+
+/** Browser SHA-256 hex for UploadSession Content-Type / X-Content-SHA256. */
+export async function sha256Hex(bytes: ArrayBuffer | Uint8Array): Promise<string> {
+  const buffer = bytes instanceof Uint8Array
+    ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    : bytes;
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function checkedUploadSession(value: unknown): UploadSessionView {
+  const session = object(value);
+  if (!UUID.test(String(session.id)) || !UUID.test(String(session.projectId))
+    || typeof session.storageProvider !== "string" || typeof session.temporaryStorageKey !== "string"
+    || typeof session.expectedMimeType !== "string"
+    || !(ASSET_UPLOAD_MIME_TYPES as readonly string[]).includes(session.expectedMimeType)
+    || !Number.isSafeInteger(session.expectedByteSize) || Number(session.expectedByteSize) < 1
+    || Number(session.expectedByteSize) > ASSET_UPLOAD_MAX_BYTES
+    || (session.expectedContentHash !== null && (typeof session.expectedContentHash !== "string" || !SHA256_HEX.test(session.expectedContentHash)))
+    || typeof session.status !== "string" || typeof session.expiresAt !== "string"
+    || typeof session.createdBy !== "string" || typeof session.createdAt !== "string"
+    || (session.completedAt !== null && typeof session.completedAt !== "string")
+    || (session.completedAssetId !== null && (typeof session.completedAssetId !== "string" || !UUID.test(session.completedAssetId)))
+    || (session.sourceShotRevisionId !== null && (typeof session.sourceShotRevisionId !== "string" || !UUID.test(session.sourceShotRevisionId)))) {
+    return invalid();
+  }
+  return value as UploadSessionView;
+}
 export function checkedRealMediaQuote(value: unknown): RealMediaQuote {
   const q = object(value);
   if (typeof q.quoteId !== "string" || !UUID.test(q.quoteId) || typeof q.inputHash !== "string" || !/^[a-f0-9]{64}$/.test(q.inputHash)
@@ -118,13 +159,42 @@ export function createRealMediaClient(studio = new StudioClient()) {
       } while (cursor);
       return result;
     },
-    async quote(projectId: string, shotRevisionId: string, capability: RealMediaCapability, sourceImageAssetId?: string, comfyui?: ComfyUiQuoteInput, autoStoryboardRunId?: string) {
+    async quote(
+      projectId: string,
+      shotRevisionId: string,
+      capability: RealMediaCapability,
+      sourceImageAssetId?: string,
+      comfyui?: ComfyUiQuoteInput,
+      autoStoryboardRunId?: string,
+      imageProvider?: AutoStoryboardImageProviderKey,
+    ) {
       if (autoStoryboardRunId && (capability !== "image.generate" || sourceImageAssetId || comfyui || !UUID.test(autoStoryboardRunId))) return invalid();
       const quote = checkedRealMediaQuote(await studio.postJson("/projects/" + projectId + "/shot-revisions/" + shotRevisionId + "/real-media/quote",
         { capability, ...(sourceImageAssetId ? { sourceImageAssetId } : {}), ...(comfyui ? { comfyui } : {}),
-          ...(autoStoryboardRunId ? { autoStoryboardRunId } : {}) }));
+          ...(autoStoryboardRunId ? { autoStoryboardRunId, ...(imageProvider ? { imageProvider } : {}) } : {}) }));
       if (quote.capability !== capability) return invalid();
       return quote;
+    },
+    async createUploadSession(body: CreateUploadSessionRequest): Promise<CreateUploadSessionResponse> {
+      const result = object(await studio.postJson("/assets/uploads", body));
+      const session = checkedUploadSession(result.uploadSession);
+      if (typeof result.uploadUrl !== "string" || !result.uploadUrl.startsWith("/api/v1/asset-upload-sessions/")) return invalid();
+      return { uploadSession: session, uploadUrl: result.uploadUrl };
+    },
+    async putUploadObject(uploadUrl: string, bytes: ArrayBuffer | Uint8Array, contentType: string, contentSha256: string) {
+      if (!SHA256_HEX.test(contentSha256) || !(ASSET_UPLOAD_MIME_TYPES as readonly string[]).includes(contentType)) {
+        throw new ApiError(400, "VALIDATION_ERROR", "上传文件类型或校验信息不正确。");
+      }
+      const path = uploadUrl.startsWith("/api/v1/") ? uploadUrl.slice("/api/v1".length) : uploadUrl;
+      const result = object(await studio.putBytes<unknown>(path, bytes, { contentType, contentSha256 }));
+      if (result.uploadSession) checkedUploadSession(result.uploadSession);
+      return result as { uploadSession: UploadSessionView };
+    },
+    async completeUploadSession(uploadSessionId: string): Promise<CompleteUploadSessionResponse> {
+      if (!UUID.test(uploadSessionId)) return invalid();
+      const result = object(await studio.postJson(`/asset-upload-sessions/${uploadSessionId}/complete`, {}));
+      if (!UUID.test(String(result.assetId))) return invalid();
+      return { assetId: String(result.assetId) };
     },
     async comfyuiShot(projectId: string, shotRevisionId: string, signal?: AbortSignal) {
       return comfyShot(await studio.get(comfyShotPath(projectId, shotRevisionId), { signal }));

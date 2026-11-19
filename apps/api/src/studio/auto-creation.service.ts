@@ -317,6 +317,8 @@ export class AutoCreationService {
       episodeCount: plan.episodeCount,
       episodeSeconds: plan.targetEpisodeSeconds,
       autoStoryboardAfterScripts: request.autoStoryboardAfterScripts,
+      storyboardSource: request.storyboardSource,
+      storyboardImageProvider: request.storyboardImageProvider,
       revisionRounds: request.revisionRounds,
       callBudget,
       providerKey,

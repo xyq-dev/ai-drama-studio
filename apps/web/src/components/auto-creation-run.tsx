@@ -502,7 +502,11 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
 
         {Object.keys(run.currentEpisodes).length > 0 ? (
           <AutoEpisodeStoryboards key={run.runId} projectId={projectId} runId={run.runId}
-            autoQuote={run.autoStoryboardAfterScripts === true && run.packageStatus === "ready"} refreshKey={run.updatedAt}>
+            autoQuote={run.storyboardSource !== "upload"
+              && run.autoStoryboardAfterScripts === true && run.packageStatus === "ready"}
+            storyboardSource={run.storyboardSource === "upload" ? "upload" : "model"}
+            storyboardImageProvider={run.storyboardImageProvider === "dashscope-media" ? "dashscope-media" : "openai-media"}
+            refreshKey={run.updatedAt}>
             {(storyboards) => <AutoEpisodeList run={run} bible={bible} outline={outline} storyboards={storyboards}
               continuation={run.state === "completed"
                 ? <ShortSequelEntry projectId={projectId} afterEpisodeNo={run.episodeCount} />

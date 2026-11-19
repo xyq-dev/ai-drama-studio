@@ -42,7 +42,7 @@ import {
   PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
   UploadSessionStore,
 } from "@ai-drama/database";
-import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject, canonicalMiniMaxTtsBaseUrl } from "@ai-drama/providers";
+import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject, readVerifiedUploadObject, canonicalMiniMaxTtsBaseUrl } from "@ai-drama/providers";
 import { StorageSettingsService } from "../admin/storage-settings.service";
 import { VimaxPlanningService } from "./vimax-planning.service";
 import { RealMediaService } from "./real-media.service";
@@ -440,7 +440,13 @@ export class StudioRuntime implements OnModuleDestroy {
           ? realRuntime.minimaxSpeechCatalog()
           : { available: false, reasonCode: "SPEECH_PROVIDER_NOT_CONFIGURED", catalogVersion: "none", voices: [] };
       },
-      ...(mediaClient ? { objects: { readVerified: (asset, scope) => readVerifiedS3MediaObject(mediaClient, asset, scope) } } : {}) });
+      ...(objectStore ? { objects: {
+        // Generated media reads still prefer the receipt-gated client; uploads work without image keys / receipt cipher.
+        readVerified: mediaClient
+          ? (asset, scope) => readVerifiedS3MediaObject(mediaClient, asset, scope)
+          : async () => { throw new Error("MEDIA_OBJECT_CONTENT_INVALID"); },
+        readUpload: (asset, scope) => readVerifiedUploadObject(objectStore, asset, scope),
+      } } : {}) });
     const speechStore = new PostgresSpeechStore(pool, jobs);
     const speech = new SpeechService({ workspaceId, store: speechStore, batchStore: new PostgresSpeechBatchStore(pool, jobs), generation: realMedia.speechPort() });
     const voiceCompose = new VoiceComposeService({ workspaceId,

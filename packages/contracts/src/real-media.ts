@@ -4,9 +4,21 @@ export const REAL_MEDIA_SCHEMA = "real-media.v1" as const;
 export const realMediaCapabilitySchema = z.enum(["image.generate", "video.generate", "audio.tts", "audio.music"]);
 export type RealMediaCapability = z.infer<typeof realMediaCapabilitySchema>;
 export const realMediaAmountSchema = z.string().regex(/^(0|[1-9]\d{0,7})(\.\d{1,8})?$/);
+/** Website auto-storyboard image providers that already have adapters in this repo. */
+export const autoStoryboardImageProviderSchema = z.enum(["openai-media", "dashscope-media"]);
+export type AutoStoryboardImageProviderKey = z.infer<typeof autoStoryboardImageProviderSchema>;
+/** Storyboard image origin on start/result/workbench pages. */
+export const storyboardSourceSchema = z.enum(["model", "upload"]);
+export type StoryboardSource = z.infer<typeof storyboardSourceSchema>;
+
 export const realMediaQuoteRequestSchema = z.object({
   capability: realMediaCapabilitySchema,
   autoStoryboardRunId: z.string().uuid().optional(),
+  /**
+   * Frozen image provider for an auto-storyboard quote. Required when autoStoryboardRunId is set;
+   * ignored otherwise. Page choice wins over process REAL_MEDIA_IMAGE_PROVIDER.
+   */
+  imageProvider: autoStoryboardImageProviderSchema.optional(),
   sourceImageAssetId: z.string().uuid().optional(),
   comfyui: z.object({
     workflowId: z.enum(["sd15-txt2img", "sd15-img2img"]),
@@ -37,12 +49,32 @@ export interface RealMediaConfiguration {
   maximumOperationAmount?: string;
 }
 
-export function isAutoStoryboardImageConfiguration(config: RealMediaConfiguration | null | undefined): config is RealMediaConfiguration {
+/** OpenAI sunburst frozen profile used by auto storyboards. */
+export function isAutoStoryboardOpenAiImageConfiguration(config: RealMediaConfiguration | null | undefined): config is RealMediaConfiguration {
   return !!config?.enabled && config.providerKey === "openai-media" && config.capability === "image.generate"
     && config.model === "gpt-image-2.5-sunburst" && config.unitType === "image" && config.currency === "USD"
     && config.parameters?.quality === "max" && config.parameters?.size === "1024x1536"
     && typeof config.parameters.baseUrl === "string" && Object.keys(config.parameters).sort().join(",") === "baseUrl,quality,size"
     && realMediaAmountSchema.safeParse(config.unitPrice).success && Number(config.unitPrice) > 0;
+}
+
+/** Bailian / DashScope qwen-image-3.0 frozen profile used by auto storyboards. */
+export function isAutoStoryboardDashScopeImageConfiguration(config: RealMediaConfiguration | null | undefined): config is RealMediaConfiguration {
+  return !!config?.enabled && config.providerKey === "dashscope-media" && config.capability === "image.generate"
+    && config.model === "qwen-image-3.0" && config.unitType === "image" && config.currency === "CNY"
+    && config.region === "beijing" && config.credentialRef === "env:dashscope-media"
+    && realMediaAmountSchema.safeParse(config.unitPrice).success && Number(config.unitPrice) > 0;
+}
+
+/** True when config matches either already-adapted auto-storyboard image profile. */
+export function isAutoStoryboardImageConfiguration(config: RealMediaConfiguration | null | undefined): config is RealMediaConfiguration {
+  return isAutoStoryboardOpenAiImageConfiguration(config) || isAutoStoryboardDashScopeImageConfiguration(config);
+}
+
+/** Expected pixel size for a frozen auto-storyboard image provider. */
+export function autoStoryboardImageDimensions(providerKey: AutoStoryboardImageProviderKey): { width: number; height: number; size: string } {
+  if (providerKey === "openai-media") return { width: 1024, height: 1536, size: "1024x1536" };
+  return { width: 720, height: 1280, size: "720x1280" };
 }
 export interface RealMediaQuote {
   quoteId: string; inputHash: string; capability: RealMediaCapability;

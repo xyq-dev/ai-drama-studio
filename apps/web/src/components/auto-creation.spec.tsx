@@ -26,7 +26,29 @@ function options(overrides: Partial<AutoCreationOptionsView> = {}): AutoCreation
     episodePlan: { minEpisodes: 1, maxEpisodes: 6, defaultEpisodes: 1, secondsChoices: [60, 90], defaultSeconds: 60 }, episodePlanReady: true,
     revisionRounds: { max: 2, default: 2 }, maxOutputTokensPerCall: 4096, maxPromptChars: 40000,
     research: { fetchEnabled: false, allowedHosts: [], builtInSources: 4, readableMarketSources: 0, expectedMode: "limited", visualAnalysis: false },
-    media: { realProviders: [], mockOnly: true, missing: [] },
+    media: {
+      realProviders: [],
+      mockOnly: true,
+      missing: [],
+      imageProviders: [
+        {
+          providerKey: "openai-media",
+          model: "gpt-image-2.5-sunburst",
+          connected: false,
+          missing: ["OpenAI 生图未接通：缺少 OPENAI_MEDIA_API_KEY（媒体密钥，不是写作 OPENAI_API_KEY）"],
+          unitPrice: null,
+          currency: null,
+        },
+        {
+          providerKey: "dashscope-media",
+          model: "qwen-image-3.0",
+          connected: false,
+          missing: ["百炼生图未接通：缺少 DASHSCOPE_MEDIA_API_KEY（媒体密钥；与视频同源，不是百炼 TTS 或其他密钥）"],
+          unitPrice: null,
+          currency: null,
+        },
+      ],
+    },
     ...overrides,
   };
 }
@@ -58,10 +80,12 @@ describe("AI 自动创作 start card", () => {
     vi.stubGlobal("location", { ...window.location, assign });
     render(<AutoCreationStart />);
     await screen.findByTestId("auto-provider-target");
+    expect(screen.getByTestId("auto-storyboard-source")).toBeTruthy();
     const preference = screen.getByRole("checkbox", { name: "剧本写完后，自动为每集生成分镜头" }) as HTMLInputElement;
     expect(preference.checked).toBe(false);
     expect(preference.disabled).toBe(false);
-    expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("还没有接通 OpenAI 生图");
+    expect(screen.getByTestId("auto-storyboard-openai-status").textContent).toContain("尚未计价");
+    expect(screen.getByTestId("auto-storyboard-image-status").textContent).toMatch(/未接通|缺少/);
     expect(screen.getByTestId("auto-voice-status").textContent).toContain("还没有接通正式配音");
     expect(screen.getByTestId("auto-finished-video-status").textContent).toContain("还没有接通真实视频与成片");
     expect(screen.getByTestId("auto-media-delivery").textContent).not.toContain("配音、动态和成片不在本次任务内");
@@ -70,19 +94,65 @@ describe("AI 自动创作 start card", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto`));
     const writes = calls.filter(({ method }) => method === "POST");
     expect(writes.map(({ url }) => url)).toEqual(["/api/v1/projects", `/api/v1/projects/${P1}/auto-runs`]);
-    expect(writes[1]?.body).toMatchObject({ autoStoryboardAfterScripts: checked });
+    expect(writes[1]?.body).toMatchObject({
+      autoStoryboardAfterScripts: checked,
+      storyboardSource: "model",
+      storyboardImageProvider: "openai-media",
+    });
     // Checkbox only freezes the quote preference — no media quote/authorize/generate on start.
     expect(writes.every(({ url }) => !url.includes("/real-media/") && !url.includes("/storyboards"))).toBe(true);
   });
 
-  it("shows OpenAI image connected status next to the storyboard checkbox without enabling generation", async () => {
+  it("upload mode hides auto checkbox and freezes storyboardSource without quoting", async () => {
+    const calls = server(options(), ({ url }) => url === "/api/v1/projects" ? json({ id: P1 }, 201)
+      : json({ run: { runId: RUN, projectId: P1, state: "running" } }, 201));
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    render(<AutoCreationStart />);
+    await screen.findByTestId("auto-provider-target");
+    fireEvent.click(screen.getByRole("radio", { name: "自己上传图片" }));
+    expect(screen.queryByRole("checkbox", { name: "剧本写完后，自动为每集生成分镜头" })).toBeNull();
+    expect(screen.getByTestId("auto-storyboard-upload-note").textContent).toContain("不报价");
+    expect(screen.getByTestId("auto-storyboard-upload-note").textContent).toContain("不等于分镜审核通过");
+    fireEvent.click(screen.getByRole("button", { name: "AI 自动创作" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto`));
+    const start = calls.find((call) => call.url.endsWith("/auto-runs"));
+    expect(start?.body).toMatchObject({ storyboardSource: "upload", autoStoryboardAfterScripts: false });
+    expect(start?.body).not.toHaveProperty("storyboardImageProvider");
+  });
+
+  it("shows OpenAI and Bailian image provider notes with unit price or 尚未计价", async () => {
     const calls = server(options({
-      media: { realProviders: ["openai-media"], mockOnly: false, missing: ["正式配音未接通：缺少 MINIMAX_API_KEY（不得用 ELEVENLABS_TTS_API_KEY、写作 OPENAI_API_KEY 或百炼 TTS 替补）"] },
+      media: {
+        realProviders: ["openai-media"],
+        mockOnly: false,
+        missing: ["正式配音未接通：缺少 MINIMAX_API_KEY（不得用 ELEVENLABS_TTS_API_KEY、写作 OPENAI_API_KEY 或百炼 TTS 替补）"],
+        imageProviders: [
+          {
+            providerKey: "openai-media",
+            model: "gpt-image-2.5-sunburst",
+            connected: true,
+            missing: [],
+            unitPrice: "0.04",
+            currency: "USD",
+          },
+          {
+            providerKey: "dashscope-media",
+            model: "qwen-image-3.0",
+            connected: false,
+            missing: ["百炼生图未接通：缺少 DASHSCOPE_MEDIA_API_KEY（媒体密钥；与视频同源，不是百炼 TTS 或其他密钥）"],
+            unitPrice: null,
+            currency: null,
+          },
+        ],
+      },
     }));
     render(<AutoCreationStart />);
     await screen.findByTestId("auto-provider-target");
-    expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("OpenAI 生图已接通");
-    expect(screen.getByTestId("auto-storyboard-image-status").textContent).toContain("确认费用后才出图");
+    expect(screen.getByTestId("auto-storyboard-openai-status").textContent).toContain("已接通");
+    expect(screen.getByTestId("auto-storyboard-openai-status").textContent).toContain("0.04");
+    expect(screen.getByTestId("auto-storyboard-dashscope-status").textContent).toContain("尚未计价");
+    expect(screen.getByTestId("auto-storyboard-dashscope-status").textContent).toContain("DASHSCOPE_MEDIA_API_KEY");
     expect(screen.getByTestId("auto-voice-status").textContent).toContain("MINIMAX_API_KEY");
     expect((screen.getByRole("checkbox", { name: "剧本写完后，自动为每集生成分镜头" }) as HTMLInputElement).disabled).toBe(false);
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
@@ -94,6 +164,24 @@ describe("AI 自动创作 start card", () => {
         realProviders: ["openai-media", "minimax-tts", "dashscope-media"],
         mockOnly: false,
         missing: ["剧本拆解功能（服务端关闭，不会写入分镜生产数据）"],
+        imageProviders: [
+          {
+            providerKey: "openai-media",
+            model: "gpt-image-2.5-sunburst",
+            connected: true,
+            missing: [],
+            unitPrice: "0.04",
+            currency: "USD",
+          },
+          {
+            providerKey: "dashscope-media",
+            model: "qwen-image-3.0",
+            connected: true,
+            missing: [],
+            unitPrice: "0.12",
+            currency: "CNY",
+          },
+        ],
       },
     }));
     render(<AutoCreationStart />);

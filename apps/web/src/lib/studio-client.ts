@@ -51,6 +51,24 @@ export class StudioClient {
     return parseBody<T>(response);
   }
 
+  /** Binary PUT for UploadSession object bodies (Content-Type + X-Content-SHA256). */
+  async putBytes<T>(
+    path: string,
+    body: ArrayBuffer | Uint8Array,
+    headers: { contentType: string; contentSha256: string },
+  ): Promise<T> {
+    const response = await this.request(`${this.prefix}${path}`, {
+      method: "PUT",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": headers.contentType,
+        "X-Content-SHA256": headers.contentSha256,
+      },
+      body: body instanceof Uint8Array ? body : new Uint8Array(body),
+    });
+    return parseBody<T>(response);
+  }
+
   async write<T>(request: WriteRequest): Promise<WriteResult<T>> {
     const headers: Record<string, string> = {
       Accept: "application/json",

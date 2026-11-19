@@ -37,6 +37,18 @@ export class MediaS3Client {
   destroy(): void { this.#client.destroy(); }
 }
 
+async function readVerifiedObjectBytes(client: { get(key: string): Promise<AsyncIterable<Uint8Array>> },
+  input: { objectKey: string; byteSize: number; checksumSha256: string }, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [], hash = createHash("sha256"); let size = 0;
+  for await (const chunk of await client.get(input.objectKey)) {
+    size += chunk.byteLength;
+    if (size > input.byteSize || size > maxBytes) throw new Error("MEDIA_OBJECT_CONTENT_INVALID");
+    hash.update(chunk); chunks.push(Buffer.from(chunk));
+  }
+  if (size !== input.byteSize || hash.digest("hex") !== input.checksumSha256) throw new Error("MEDIA_OBJECT_CONTENT_INVALID");
+  return Buffer.concat(chunks, size);
+}
+
 /** Shared API/worker reader: namespace, size and content hash are verified before bytes leave the boundary. */
 export async function readVerifiedS3MediaObject(client: { get(key: string): Promise<AsyncIterable<Uint8Array>> },
   input: { storageProvider: string; objectKey: string; byteSize: number; checksumSha256: string },
@@ -48,12 +60,24 @@ export async function readVerifiedS3MediaObject(client: { get(key: string): Prom
     || !/^[a-f0-9]{64}$/.test(input.checksumSha256) || parts.length !== 6 || parts[0] !== "real-media"
     || parts[1] !== scope.workspaceId || parts[2] !== scope.projectId || !parts.slice(1, 5).every(p => uuid.test(p))
     || !["png", "mp4", "wav", "vtt"].some(ext => parts[5] === input.checksumSha256 + "." + ext)) throw new Error("MEDIA_OBJECT_CONTENT_INVALID");
-  const chunks: Buffer[] = [], hash = createHash("sha256"); let size = 0;
-  for await (const chunk of await client.get(input.objectKey)) {
-    size += chunk.byteLength;
-    if (size > input.byteSize || size > scope.maxBytes) throw new Error("MEDIA_OBJECT_CONTENT_INVALID");
-    hash.update(chunk); chunks.push(Buffer.from(chunk));
+  return readVerifiedObjectBytes(client, input, scope.maxBytes);
+}
+
+/**
+ * Reader for UploadSession-completed assets under uploads/{workspace}/{project}/{session}/{checksum}.{ext}.
+ * Independent of image Provider keys; verifies namespace, size and SHA-256 only.
+ */
+export async function readVerifiedUploadObject(client: { get(key: string): Promise<AsyncIterable<Uint8Array>> },
+  input: { storageProvider: string; objectKey: string; byteSize: number; checksumSha256: string },
+  scope: { workspaceId: string; projectId: string; maxBytes: number }): Promise<Buffer> {
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+  const parts = input.objectKey.split("/");
+  if (input.storageProvider !== "s3" || !Number.isSafeInteger(input.byteSize) || input.byteSize < 1
+    || !Number.isSafeInteger(scope.maxBytes) || scope.maxBytes < 1 || input.byteSize > scope.maxBytes
+    || !/^[a-f0-9]{64}$/.test(input.checksumSha256) || parts.length !== 5 || parts[0] !== "uploads"
+    || parts[1] !== scope.workspaceId || parts[2] !== scope.projectId || !uuid.test(parts[3]!)
+    || !["png", "jpeg", "webp"].some(ext => parts[4] === input.checksumSha256 + "." + ext)) {
+    throw new Error("MEDIA_OBJECT_CONTENT_INVALID");
   }
-  if (size !== input.byteSize || hash.digest("hex") !== input.checksumSha256) throw new Error("MEDIA_OBJECT_CONTENT_INVALID");
-  return Buffer.concat(chunks, size);
+  return readVerifiedObjectBytes(client, input, scope.maxBytes);
 }

@@ -52,6 +52,34 @@ export async function assertAutoStoryboardSource(client: PoolClient, scope: Omit
   }
 }
 
+/** Either already-adapted auto-storyboard image Provider frozen into the job snapshot. */
+const AUTO_STORYBOARD_PROVIDER = `(
+    (job.input_snapshot#>>'{configuration,providerKey}'='openai-media'
+      AND job.input_snapshot#>>'{configuration,model}'='gpt-image-2.5-sunburst')
+    OR (job.input_snapshot#>>'{configuration,providerKey}'='dashscope-media'
+      AND job.input_snapshot#>>'{configuration,model}'='qwen-image-3.0')
+  )`;
+const AUTO_STORYBOARD_JOB = `job.input_snapshot->>'schema'='real-media.v1'
+  AND job.input_snapshot->>'capability'='image.generate'
+  AND ${AUTO_STORYBOARD_PROVIDER}`;
+const SCOPED_JOB = `job.workspace_id=$1 AND job.project_id=$2 AND ${AUTO_STORYBOARD_JOB}
+  AND job.input_snapshot#>>'{autoStoryboard,runId}'=$3`;
+const ASSET_JOB_ON = `job.id=asset.source_generation_job_id AND job.workspace_id=asset.workspace_id
+  AND job.project_id=asset.project_id AND job.source_shot_revision_id=asset.source_shot_revision_id`;
+/** Dimensions follow the frozen Provider: OpenAI 1024×1536, Bailian qwen 720×1280. */
+const USABLE_IMAGE = `asset.status='ACTIVE' AND asset.review_status<>'REJECTED' AND asset.kind='IMAGE'
+  AND asset.storage_provider='s3' AND asset.mime_type='image/png' AND job.state='SUCCEEDED'
+  AND ((job.input_snapshot#>>'{configuration,providerKey}'='openai-media' AND asset.width=1024 AND asset.height=1536)
+    OR (job.input_snapshot#>>'{configuration,providerKey}'='dashscope-media' AND asset.width=720 AND asset.height=1280))
+  AND asset.byte_size BETWEEN 1 AND 8388608 AND asset.checksum_sha256 ~ '^[a-f0-9]{64}$'
+  AND asset.object_key=concat('real-media/',asset.workspace_id,'/',asset.project_id,'/',job.id,'/',asset.source_job_attempt_id,'/',asset.checksum_sha256,'.png')`;
+/** Uploaded storyboard images: no Provider job; MIME/size already validated at UploadSession complete. */
+const USABLE_UPLOAD_IMAGE = `asset.status='ACTIVE' AND asset.review_status<>'REJECTED' AND asset.kind='IMAGE'
+  AND asset.source_kind='UPLOAD' AND asset.source_generation_job_id IS NULL AND asset.source_job_attempt_id IS NULL
+  AND asset.mime_type IN ('image/png','image/jpeg','image/webp')
+  AND asset.byte_size BETWEEN 1 AND 8388608 AND asset.checksum_sha256 ~ '^[a-f0-9]{64}$'
+  AND asset.storage_provider='s3'`;
+
 /** Call while holding the project lock shared by media authorization and intent. */
 export async function assertNoBusyAutoStoryboardShot(client: PoolClient, scope: Scope, shotId: string, shotRevisionId: string, excludeJobId?: string): Promise<void> {
   const { rows } = await client.query(`SELECT 1 FROM generation_job job JOIN shot_revision revision ON revision.id=job.source_shot_revision_id
@@ -60,8 +88,7 @@ export async function assertNoBusyAutoStoryboardShot(client: PoolClient, scope: 
     WHERE job.workspace_id=$1 AND job.project_id=$2 AND revision.shot_id=$3
       AND job.input_snapshot->>'schema'='real-media.v1' AND job.input_snapshot->>'capability'='image.generate'
       AND (job.state IN ('PENDING','QUEUED','RUNNING','WAITING_EXTERNAL') OR receipt.state IN ('INTENT','UNKNOWN','ACKNOWLEDGED')
-        OR (revision.id=$5 AND job.input_snapshot#>>'{autoStoryboard,runId}'=$6 AND job.input_snapshot#>>'{configuration,providerKey}'='openai-media'
-          AND job.input_snapshot#>>'{configuration,model}'='gpt-image-2.5-sunburst' AND EXISTS (
+        OR (revision.id=$5 AND job.input_snapshot#>>'{autoStoryboard,runId}'=$6 AND (${AUTO_STORYBOARD_PROVIDER}) AND EXISTS (
             SELECT 1 FROM asset WHERE asset.source_generation_job_id=job.id AND asset.workspace_id=job.workspace_id
               AND asset.project_id=job.project_id AND asset.source_shot_revision_id=revision.id AND ${USABLE_IMAGE}
           )))
@@ -69,23 +96,9 @@ export async function assertNoBusyAutoStoryboardShot(client: PoolClient, scope: 
   if (rows.length) throw new PersistenceError("AUTO_STORYBOARD_SHOT_BUSY", "This shot already has an active, unresolved or usable image request");
 }
 
-const OPENAI_STORYBOARD_JOB = `job.input_snapshot->>'schema'='real-media.v1'
-  AND job.input_snapshot->>'capability'='image.generate'
-  AND job.input_snapshot#>>'{configuration,providerKey}'='openai-media'
-  AND job.input_snapshot#>>'{configuration,model}'='gpt-image-2.5-sunburst'`;
-const SCOPED_JOB = `job.workspace_id=$1 AND job.project_id=$2 AND ${OPENAI_STORYBOARD_JOB}
-  AND job.input_snapshot#>>'{autoStoryboard,runId}'=$3`;
-const ASSET_JOB_ON = `job.id=asset.source_generation_job_id AND job.workspace_id=asset.workspace_id
-  AND job.project_id=asset.project_id AND job.source_shot_revision_id=asset.source_shot_revision_id`;
-const ASSET_JOB_JOIN = `JOIN generation_job job ON ${ASSET_JOB_ON}`;
-const USABLE_IMAGE = `asset.status='ACTIVE' AND asset.review_status<>'REJECTED' AND asset.kind='IMAGE'
-  AND asset.storage_provider='s3' AND asset.mime_type='image/png' AND asset.width=1024 AND asset.height=1536 AND job.state='SUCCEEDED'
-  AND asset.byte_size BETWEEN 1 AND 8388608 AND asset.checksum_sha256 ~ '^[a-f0-9]{64}$'
-  AND asset.object_key=concat('real-media/',asset.workspace_id,'/',asset.project_id,'/',job.id,'/',asset.source_job_attempt_id,'/',asset.checksum_sha256,'.png')`;
-
 /** Shared selection readers bind the asset to the scoped selection and its verified checksum.
  * Use the job's stored source revision, as at adoption, for the shot lineage. */
-export const RETAINED_AUTO_STORYBOARD_IMAGE_FILTER = `${OPENAI_STORYBOARD_JOB}
+export const RETAINED_AUTO_STORYBOARD_IMAGE_FILTER = `${AUTO_STORYBOARD_JOB}
   AND job.input_snapshot#>>'{autoStoryboard,runId}' IS NOT NULL
   AND job.source_shot_revision_id=asset.source_shot_revision_id
   AND ${USABLE_IMAGE}`;
@@ -106,12 +119,17 @@ export async function readAutoStoryboardShots(client: PoolClient, scope: Scope, 
       AND (job.source_shot_revision_id=ANY($4::uuid[]) OR ${unresolved})
     ORDER BY revision.shot_id,(${unresolved} IS TRUE) DESC,job.created_at DESC,job.id DESC`, [...values, shots.map(({ shotId }) => shotId)]);
   const assets = await client.query(`SELECT DISTINCT ON (asset.source_shot_revision_id) asset.source_shot_revision_id,asset.id
-    FROM asset ${ASSET_JOB_JOIN} WHERE ${SCOPED_JOB} AND asset.source_shot_revision_id=ANY($4::uuid[]) AND ${USABLE_IMAGE}
+    FROM asset
+    LEFT JOIN generation_job job ON ${ASSET_JOB_ON}
+    WHERE asset.workspace_id=$1 AND asset.project_id=$2 AND asset.source_shot_revision_id=ANY($4::uuid[])
+      AND ((${SCOPED_JOB} AND ${USABLE_IMAGE}) OR (${USABLE_UPLOAD_IMAGE} AND asset.source_shot_revision_id=ANY($4::uuid[])))
     ORDER BY asset.source_shot_revision_id,asset.created_at DESC,asset.id DESC`, values);
   const kept = selectionAvailable ? await client.query(`SELECT chosen.shot_revision_id,chosen.asset_id FROM comfyui_shot_image_selection chosen
     JOIN asset ON asset.id=chosen.asset_id AND asset.workspace_id=chosen.workspace_id AND asset.project_id=chosen.project_id
       AND asset.source_shot_revision_id=chosen.shot_revision_id AND asset.checksum_sha256=chosen.asset_checksum_sha256
-    ${ASSET_JOB_JOIN} WHERE ${SCOPED_JOB} AND chosen.shot_revision_id=ANY($4::uuid[]) AND ${USABLE_IMAGE}`, values) : null;
+    LEFT JOIN generation_job job ON ${ASSET_JOB_ON}
+    WHERE chosen.workspace_id=$1 AND chosen.project_id=$2 AND chosen.shot_revision_id=ANY($4::uuid[])
+      AND ((${SCOPED_JOB} AND ${USABLE_IMAGE}) OR ${USABLE_UPLOAD_IMAGE})`, values) : null;
   const latest = new Map(jobs.rows.map(row => [row.shot_id, row]));
   const previews = new Map(assets.rows.map(row => [row.source_shot_revision_id, String(row.id)]));
   const selections = new Map(kept?.rows.map(row => [row.shot_revision_id, String(row.asset_id)]) ?? []);
@@ -132,19 +150,26 @@ export async function adoptAutoStoryboardImage(client: PoolClient, scope: Scope,
   await requireAutoStoryboardSelection(client);
   const values = [...scopeValues(scope), shotRevisionId];
   const previous = await client.query(`SELECT chosen.asset_id, job.input_snapshot#>>'{autoStoryboard,runId}' AS run_id,
-      (${USABLE_IMAGE} AND asset.checksum_sha256=chosen.asset_checksum_sha256) AS usable
+      asset.source_kind,
+      (((${USABLE_IMAGE}) OR (${USABLE_UPLOAD_IMAGE})) AND asset.checksum_sha256=chosen.asset_checksum_sha256) AS usable
     FROM comfyui_shot_image_selection chosen
     JOIN asset ON asset.id=chosen.asset_id AND asset.workspace_id=chosen.workspace_id AND asset.project_id=chosen.project_id
     LEFT JOIN generation_job job ON ${ASSET_JOB_ON}
     WHERE chosen.workspace_id=$1 AND chosen.project_id=$2 AND chosen.shot_revision_id=$3 FOR UPDATE OF chosen`,
     [scope.workspaceId, scope.projectId, shotRevisionId]);
   const selected = previous.rows[0];
-  if (selected && selected.run_id !== scope.runId) throw new PersistenceError("REFERENCE_SELECTION_CONFLICT", "This shot already has a different image selection");
+  // Generated keeps are scoped to this run; uploads may replace a keep for the same shot without a run match.
+  if (selected && selected.run_id && selected.run_id !== scope.runId && selected.source_kind !== "UPLOAD") {
+    throw new PersistenceError("REFERENCE_SELECTION_CONFLICT", "This shot already has a different image selection");
+  }
   const old = selected?.usable ? String(selected.asset_id) : null;
   if (old === input.assetId) return { selectedAssetId: input.assetId };
   if (old !== input.expectedSelectedAssetId) throw new PersistenceError("REFERENCE_SELECTION_CONFLICT", "Storyboard selection changed");
-  const candidate = await client.query(`SELECT asset.checksum_sha256 FROM asset ${ASSET_JOB_JOIN}
-    WHERE ${SCOPED_JOB} AND asset.source_shot_revision_id=$4 AND asset.id=$5 AND ${USABLE_IMAGE} FOR SHARE OF asset,job`, [...values, input.assetId]);
+  const candidate = await client.query(`SELECT asset.checksum_sha256 FROM asset
+    LEFT JOIN generation_job job ON ${ASSET_JOB_ON}
+    WHERE asset.workspace_id=$1 AND asset.project_id=$2 AND asset.source_shot_revision_id=$4 AND asset.id=$5
+      AND ((${SCOPED_JOB} AND ${USABLE_IMAGE}) OR ${USABLE_UPLOAD_IMAGE})
+    FOR SHARE OF asset`, [...values, input.assetId]);
   if (!candidate.rows[0]) throw new PersistenceError("REAL_MEDIA_SOURCE_INVALID", "Storyboard image is not a usable candidate for this shot");
   await client.query(`INSERT INTO comfyui_shot_image_selection(workspace_id,project_id,shot_revision_id,asset_id,asset_checksum_sha256,selected_by)
     VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,project_id,shot_revision_id) DO UPDATE SET

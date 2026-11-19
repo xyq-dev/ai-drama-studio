@@ -144,8 +144,12 @@ async function persistOutput(e:RealMediaExecution,output:MediaProviderOutput,ada
   if(comfyUi&&(media.mimeType!=="image/png"||media.width!==e.inputSnapshot.comfyui?.width||media.height!==e.inputSnapshot.comfyui?.height)){
     throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Generated image dimensions do not match the frozen workflow");
   }
-  if(e.inputSnapshot.autoStoryboard&&(media.mimeType!=="image/png"||`${String(media.width)}x${String(media.height)}`!==OPENAI_IMAGE_SIZE)){
-    throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Storyboard image does not match the frozen OpenAI dimensions");
+  if(e.inputSnapshot.autoStoryboard){
+    const provider=e.inputSnapshot.configuration.providerKey;
+    const expected=provider==="dashscope-media"?"720x1280":OPENAI_IMAGE_SIZE;
+    if(media.mimeType!=="image/png"||`${String(media.width)}x${String(media.height)}`!==expected){
+      throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Storyboard image does not match the frozen provider dimensions");
+    }
   }
   if(!await d.store.renewDeliveryLease(e,leaseOwner,d.leaseMs))throw new PersistenceError("REAL_MEDIA_LEASE_LOST","Media delivery executor lost its lease");
   const object=await d.objects.putVerified({workspaceId:e.workspaceId,projectId:e.projectId,generationJobId:e.jobId,jobAttemptId:e.attemptId,bytes:media.bytes,mimeType:media.mimeType});

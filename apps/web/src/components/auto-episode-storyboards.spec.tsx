@@ -79,8 +79,8 @@ describe("Auto episode storyboard", () => {
     expect(screen.getByText(/预计生成 2 张图，每镜一张/)).toBeTruthy();
     expect(screen.getByText("第 2 集 · 第 1 镜，共 1 镜")).toBeTruthy();
     expect(writes.map((item) => item.body)).toEqual([
-      { capability: "image.generate", autoStoryboardRunId: R },
-      { capability: "image.generate", autoStoryboardRunId: R },
+      { capability: "image.generate", autoStoryboardRunId: R, imageProvider: "openai-media" },
+      { capability: "image.generate", autoStoryboardRunId: R, imageProvider: "openai-media" },
     ]);
     page.rerender(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote refreshKey={1} />);
     expect(writes).toHaveLength(2);
@@ -117,13 +117,100 @@ describe("Auto episode storyboard", () => {
     expect(writes).toEqual([expect.objectContaining({ url: expect.stringContaining(`/shot-revisions/${A}/real-media/quote`) })]);
   });
 
-  it("explains missing OpenAI configuration without quoting or substituting a provider", async () => {
+  it("explains missing image provider configuration without quoting or substituting a provider", async () => {
     const { writes } = fixture({ ...view(episode(1)), imageAvailable: false });
-    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
-    await screen.findByText("还没有接通 OpenAI 生图，不能生成分镜头");
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote storyboardImageProvider="dashscope-media" />);
+    await screen.findByTestId("auto-storyboard-unavailable");
+    expect(screen.getByTestId("auto-storyboard-unavailable").textContent).toContain("百炼生图");
+    expect(screen.getByTestId("auto-storyboard-unavailable").textContent).toContain("qwen-image-3.0");
     expect(screen.getByTestId("auto-storyboard-keep-note").textContent).toContain("不等于分镜审核通过");
     expect((screen.getByRole("button", { name: "生成这一集的分镜头" }) as HTMLButtonElement).disabled).toBe(true);
     expect(writes).toEqual([]);
+  });
+
+  it("passes frozen imageProvider into quote body and accepts CNY quotes", async () => {
+    const { state, writes } = fixture(view(episode(1, [shot(A)])));
+    vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      if (method === "GET" && url === BASE) return Response.json(state.value);
+      if (method === "GET") return Response.json({}, { status: 404 });
+      writes.push({ method, url, body: JSON.parse(String(options?.body)), key: new Headers(options?.headers).get("Idempotency-Key") });
+      if (url.endsWith("/quote")) return Response.json({
+        quoteId: Q, inputHash: "e".repeat(64), capability: "image.generate", currency: "CNY",
+        estimatedAmount: "0.12", maximumAmount: "1", expiresAt: "2099-01-01T00:00:00.000Z",
+        providerConfigurationId: J, providerConfigurationVersion: "1", priceVersion: "1",
+        actualCost: "unknown", singleOperation: true,
+      });
+      throw new Error(`Unexpected route ${url}`);
+    }));
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote={false} storyboardImageProvider="dashscope-media" />);
+    fireEvent.click(await screen.findByRole("button", { name: "生成本镜 门口一镜" }));
+    expect(await screen.findByText("0.12 CNY")).toBeTruthy();
+    expect(writes[0]?.body).toEqual({
+      capability: "image.generate", autoStoryboardRunId: R, imageProvider: "dashscope-media",
+    });
+  });
+
+  it("upload mode shows file input, never quotes, and completes UploadSession then keep", async () => {
+    const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const writes: Array<{ method: string; url: string; body: unknown; headers?: Headers }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      const headers = new Headers(options?.headers);
+      if (method === "GET" && url === BASE) {
+        return Response.json({
+          ...view(episode(1, [shot(A)])),
+          imageAvailable: false,
+        });
+      }
+      if (method === "GET") return Response.json({}, { status: 404 });
+      writes.push({ method, url, body: options?.body ?? null, headers });
+      if (url.endsWith("/assets/uploads")) {
+        return Response.json({
+          uploadSession: {
+            id: sessionId, projectId: P, storageProvider: "s3", temporaryStorageKey: "uploads/tmp",
+            expectedMimeType: "image/png", expectedByteSize: 4, expectedContentHash: "a".repeat(64),
+            status: "PENDING", expiresAt: "2099-01-01T00:00:00.000Z", createdBy: "u", createdAt: "2026-01-01T00:00:00.000Z",
+            completedAt: null, completedAssetId: null, sourceShotRevisionId: A,
+          },
+          uploadUrl: `/api/v1/asset-upload-sessions/${sessionId}/object`,
+        }, { status: 201 });
+      }
+      if (url.endsWith("/object") && method === "PUT") {
+        return Response.json({
+          uploadSession: {
+            id: sessionId, projectId: P, storageProvider: "s3", temporaryStorageKey: "uploads/tmp",
+            expectedMimeType: "image/png", expectedByteSize: 4, expectedContentHash: "a".repeat(64),
+            status: "UPLOADED", expiresAt: "2099-01-01T00:00:00.000Z", createdBy: "u", createdAt: "2026-01-01T00:00:00.000Z",
+            completedAt: null, completedAssetId: null, sourceShotRevisionId: A,
+          },
+        });
+      }
+      if (url.endsWith("/complete")) return Response.json({ assetId: ASSET });
+      if (url.endsWith("/selection")) return Response.json({ selectedAssetId: ASSET });
+      throw new Error(`Unexpected route ${url}`);
+    }));
+    // Deterministic digest for the tiny PNG-like bytes used below.
+    const digest = new Uint8Array(32).fill(0xaa);
+    vi.stubGlobal("crypto", {
+      ...crypto,
+      subtle: { digest: async () => digest.buffer },
+      randomUUID: crypto.randomUUID.bind(crypto),
+    });
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote storyboardSource="upload" />);
+    expect(await screen.findByTestId("auto-storyboard-upload-mode-note")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "为全部集生成分镜头" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "生成本镜 门口一镜" })).toBeNull();
+    const input = await screen.findByTestId(`auto-storyboard-upload-${A}`) as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3, 4])], "shot.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(writes.some((item) => item.url.endsWith("/selection"))).toBe(true));
+    expect(writes.some((item) => String(item.url).includes("/quote"))).toBe(false);
+    expect(writes.some((item) => String(item.url).includes("/authorize"))).toBe(false);
+    const put = writes.find((item) => item.method === "PUT");
+    expect(put?.headers?.get("Content-Type")).toBe("image/png");
+    expect(put?.headers?.get("X-Content-SHA256")).toBe("aa".repeat(32));
+    expect(screen.getByTestId("auto-storyboard-keep-note").textContent).toContain("不等于分镜审核通过");
   });
 
   it("opens a quote only after confirmation gates and never treats keep as review approval", async () => {
