@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { runWithStoreCreatorAccess } from "./creator-access-context";
 import { MediaAssetStore } from "./media-assets";
+import { RealMediaStore } from "./real-media-store";
 import { RuntimeStore } from "./runtime-store";
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
@@ -123,6 +124,58 @@ describe("creator ownership filters on non-project resources", () => {
     const projectLock = statements.find((statement) => statement.sql.includes("FOR UPDATE") && statement.sql.includes("FROM project"));
     expect(projectLock?.sql).toContain("owner_account_id = $3::uuid");
     expect(projectLock?.values).toEqual(["55555555-5555-4555-8555-555555555555", WORKSPACE, OWNER]);
+  });
+
+  it("scopes real-media costExposure through project.owner_account_id when ALS is set", async () => {
+    const statements: Statement[] = [];
+    const release = vi.fn();
+    const answers: Answer[] = [
+      { rows: [{ ready: true }] },
+      { rows: [{ present: true }] },
+      EMPTY,
+    ];
+    const query = async (sql: string, values: unknown[] = []): Promise<Answer> => {
+      statements.push({ sql, values });
+      const answer = answers.shift();
+      if (!answer) throw new Error(`Unexpected query: ${sql}`);
+      return answer;
+    };
+    const client = { query, release } as unknown as PoolClient;
+    const store = new RealMediaStore({ connect: async () => client });
+    await expect(runWithStoreCreatorAccess(
+      { kind: "scoped", ownerAccountId: OWNER, actorId: `creator:${OWNER}` },
+      () => store.costExposure(WORKSPACE, "55555555-5555-4555-8555-555555555555"),
+    )).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const projectLookup = statements.find((statement) => statement.sql.includes("FROM project p") && statement.sql.includes("owner_account_id"));
+    expect(projectLookup?.values).toEqual(["55555555-5555-4555-8555-555555555555", WORKSPACE, OWNER]);
+  });
+
+  it("scopes prepareRealShotGeneration project gate through owner_account_id when ALS is set", async () => {
+    const statements: Statement[] = [];
+    const answers: Answer[] = [
+      { rows: [{ present: true }] },
+      EMPTY,
+    ];
+    const query = async (sql: string, values: unknown[] = []): Promise<Answer> => {
+      statements.push({ sql, values });
+      const answer = answers.shift();
+      if (!answer) throw new Error(`Unexpected query: ${sql}`);
+      return answer;
+    };
+    const client = { query } as unknown as PoolClient;
+    const assets = new MediaAssetStore({ connect: async () => client });
+    await expect(runWithStoreCreatorAccess(
+      { kind: "scoped", ownerAccountId: OWNER, actorId: `creator:${OWNER}` },
+      () => assets.prepareRealShotGenerationInTransaction(
+        client,
+        WORKSPACE,
+        "55555555-5555-4555-8555-555555555555",
+        "77777777-7777-4777-8777-777777777777",
+        "audio.tts",
+      ),
+    )).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(statements.at(-1)?.sql).toContain("p.owner_account_id = $3::uuid");
+    expect(statements.at(-1)?.values).toEqual(["55555555-5555-4555-8555-555555555555", WORKSPACE, OWNER]);
   });
 
   it("does not let a second creator id leak into another scope's binds", async () => {

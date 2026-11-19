@@ -5,7 +5,7 @@ import { passesAutoStoryboardDashScopeImageRuntimeGate,passesAutoStoryboardImage
 import { assertComfyUiImageInput, assertComfyUiPromptText, canonicalOpenAiImageBaseUrl } from "@ai-drama/providers";
 import { PersistenceError,assertSpeechGenerationInputInTransaction,assertSpeechBatchDispatchInTransaction,bindSpeechBatchJobInTransaction,freezeComfyUiReference,type JobPersistenceService,type MediaAssetStore,
   adoptAutoStoryboardImage,assertAutoStoryboardSource,autoStoryboardMediaReadiness,freezeAutoStoryboardSource,readAutoEpisodeStoryboardSources,
-  readAutoStoryboardShots,requireAutoEpisodeStoryboardShot,requireAutoStoryboardSelection,
+  readAutoStoryboardShots,requireAutoEpisodeStoryboardShot,requireAutoStoryboardSelection,storeActorId,
   type RealMediaStore,type FrozenRealMediaInput,type MediaAssetRecord } from "@ai-drama/database";
 import { adoptComfyUiImage, listComfyUiShotMedia } from "./comfyui-shot-media";
 import type { StudioContext } from "./studio.service";
@@ -318,7 +318,7 @@ export class RealMediaService {
           throw new PersistenceError("SPEECH_VOICE_UNSUPPORTED","Official MiniMax speech-2.8-hd supports at most the catalog character limit with neutral delivery at normal speed");
         }
         await this.options.store.transaction(client=>assertSpeechGenerationInputInTransaction(client,input));
-        const quote=await this.options.store.createQuote({workspaceId:input.workspaceId,projectId:input.projectId,actorId:"server-owner",
+        const quote=await this.options.store.createQuote({workspaceId:input.workspaceId,projectId:input.projectId,actorId:storeActorId(),
           frozen:{schema:"real-media.v1",shotRevisionId:input.shotRevisionId,capability:"audio.tts",sourceText:input.spokenText,
             sourceHash:createHash("sha256").update(input.spokenText).digest("hex"),configuration:config,speech:input,
             minimaxSpeech:{schema:"minimax-tts.speech.v1",text:input.spokenText,voiceId:input.voice.voiceId}}});
