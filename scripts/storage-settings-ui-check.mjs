@@ -15,13 +15,20 @@ const initial = () => ({ revision: 1, managed: true,
   active: { id: null, provider: "minio", endpoint: "https://legacy.example.com", region: "us-east-1", bucket: "legacy-media", prefix: "", forcePathStyle: true, hasCredentials: true, source: "environment" },
   draft: { id, provider: "cos", endpoint: "https://cos.ap-guangzhou.myqcloud.com", region: "ap-guangzhou", bucket: "hongguo-media-1250000000", prefix: "hongguo/", forcePathStyle: false, hasCredentials: true, source: "managed" },
   test: { status: "not_tested", testedAt: null, expiresAt: null } });
-const entry = `import React from 'react';import{createRoot}from'react-dom/client';import'/src/app/globals.css';import{StorageSettings}from'/src/components/storage-settings.tsx';createRoot(document.getElementById('root')).render(React.createElement(StorageSettings));`;
+// Operator-only page: AdminShell + StorageSettings (not CreatorShell / 设置).
+const entry = `import React from 'react';import{createRoot}from'react-dom/client';import'/src/app/globals.css';import{AdminShell}from'/src/components/admin-shell.tsx';import{StorageSettings}from'/src/components/storage-settings.tsx';createRoot(document.getElementById('root')).render(React.createElement(AdminShell,null,React.createElement(StorageSettings)));`;
 const evidence = { kind: "chromium-actual-react-fixture-api", externalRequests: 0, checks: [], errors: [] };
 let view = initial(), unavailable = false;
 const writes = [];
-const server = await createServer({ configFile: false, root: web, optimizeDeps: { include: ["react", "react-dom/client", "@ai-drama/contracts"] },
-  server: { host: "127.0.0.1", port: 3847, strictPort: true }, plugins: [react(), { name: "storage-settings-fixture",
-    resolveId(id) { if (id === "/fixture.tsx") return "\0fixture.tsx"; }, load(id) { if (id === "\0fixture.tsx") return entry; },
+const nextNavigationStub = resolve(root, "scripts/fixtures/next-navigation-stub.mjs");
+const server = await createServer({
+  configFile: false, root: web,
+  resolve: { alias: [{ find: /^next\/navigation$/, replacement: nextNavigationStub }] },
+  optimizeDeps: { include: ["react", "react-dom/client", "@ai-drama/contracts"], exclude: ["next", "next/navigation"] },
+  server: { host: "127.0.0.1", port: 3847, strictPort: true },
+  plugins: [react(), { name: "storage-settings-fixture",
+    resolveId(id) { if (id === "/fixture.tsx") return "\0fixture.tsx"; },
+    load(id) { if (id === "\0fixture.tsx") return entry; },
     configureServer(vite) { vite.middlewares.use(async (req, res, next) => {
       if (req.url?.startsWith("/api/v1/admin/storage")) {
         res.setHeader("Content-Type", "application/json"); res.setHeader("Cache-Control", "no-store");
@@ -68,7 +75,16 @@ try {
     await activate.click(); await page.getByRole("button", { name: "确认启用", exact: true }).click();
     await page.getByText("当前已启用", { exact: true }).waitFor(); assert.equal(writes.length, 3);
     await page.reload(); await page.getByText("当前已启用", { exact: true }).waitFor(); assert.equal(writes.length, 3);
-    if (width === 390) { await page.getByRole("button", { name: "打开导航" }).click(); assert.equal(await page.getByRole("dialog").getByRole("link", { name: "设置", exact: true }).getAttribute("href"), "/settings/storage"); await page.keyboard.press("Escape"); }
+    if (width === 390) {
+      await page.getByRole("button", { name: "打开导航" }).click();
+      const dialog = page.getByRole("dialog", { name: "管理导航" });
+      await dialog.waitFor();
+      assert.equal(await dialog.getByRole("link", { name: "文本模型", exact: true }).getAttribute("href"), "/admin/models");
+      assert.equal(await dialog.getByRole("link", { name: "媒体密钥", exact: true }).getAttribute("href"), "/admin/media-keys");
+      assert.equal(await dialog.getByRole("link", { name: "设置", exact: true }).count(), 0);
+      assert.equal(await dialog.getByRole("link", { name: "我的作品", exact: true }).count(), 0);
+      await page.keyboard.press("Escape");
+    }
     unavailable = true; await page.reload(); await page.getByRole("alert").waitFor(); assert.equal(await save.isDisabled(), true);
     await page.screenshot({ path: resolve(output, `storage-unavailable-${width}.png`), fullPage: true });
     evidence.checks.push({ width, overflow: false, providers: true, saveProbeActivate: true, escapeRestoresFocus: true, refreshNoWrites: true, unavailableDisabled: true });
