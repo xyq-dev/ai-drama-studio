@@ -41,7 +41,7 @@ describe("creator interface", () => {
     const opener = screen.getByRole("button", { name: "打开导航" });
     fireEvent.click(opener);
     expect(screen.getByRole("dialog", { name: "导航" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "关闭导航" }));
+    fireEvent.click(screen.getByRole("button", { name: "关闭菜单" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "导航" })).toBeNull());
     expect(document.activeElement).toBe(opener);
   });
@@ -144,13 +144,13 @@ describe("creator interface", () => {
     render(<ProductHome />);
     fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
     const dialog = await screen.findByRole("dialog", { name: "导航" });
-    const close = screen.getByRole("button", { name: "关闭导航" });
-    const settings = within(dialog).getByRole("link", { name: "设置" });
-    settings.focus();
+    const close = screen.getByRole("button", { name: "关闭菜单" });
+    const works = within(dialog).getByRole("link", { name: "我的作品" });
+    works.focus();
     fireEvent.keyDown(window, { key: "Tab" });
     expect(document.activeElement).toBe(close);
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-    expect(document.activeElement).toBe(settings);
+    expect(document.activeElement).toBe(works);
     expect(dialog.contains(document.activeElement)).toBe(true);
     matches = true;
     act(() => {

@@ -41,7 +41,7 @@ function harness(options: Options = {}) {
     else if (sql.includes("WHERE o.quote_id=$1")) rows = options.owned === false ? [] : [{ id: OP, batch_id: BATCH, workspace_id: WS }];
     else if (sql.startsWith("SELECT project_id FROM speech_batch_command")) rows = [{ project_id: PROJECT }];
     else if (sql.startsWith("SELECT workspace_id FROM speech_batch_command")) rows = [{ workspace_id: WS }];
-    else if (sql.startsWith("SELECT id FROM project")) rows = [{ id: PROJECT }];
+    else if (sql.startsWith("SELECT id FROM project") || sql.includes("FROM project p WHERE")) rows = [{ id: PROJECT }];
     else if (sql.startsWith("SELECT id FROM episode")) rows = [{ id: EPISODE }];
     else if (sql.startsWith("SELECT id FROM speech_batch_command") && sql.includes("ORDER BY")) rows = [{ id: BATCH }];
     else if (sql.startsWith("SELECT * FROM speech_batch_command")) rows = [structuredClone(batch)];
