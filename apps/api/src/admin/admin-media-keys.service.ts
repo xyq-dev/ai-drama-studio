@@ -11,6 +11,7 @@ import {
 import {
   MediaKeyVault,
   applyManagedMediaKeys,
+  createRealMediaReceiptCipher,
   mediaKeyPresent,
   mediaKeyVaultPath,
   type ManagedMediaKeys,
@@ -42,14 +43,25 @@ export function mediaKeyPriceConfigured(slot: MediaKeySlot, env: RealMediaEnviro
   return positive(env.MINIMAX_TTS_PRICE_CHARACTER);
 }
 
+/**
+ * Local enablement gate matching ServerRealMediaRuntime (REAL_MEDIA_ENABLED + receipt cipher).
+ * Never calls vendors; used so 「服务可用」 does not appear when generation cannot start.
+ */
+export function mediaKeyRuntimeReady(env: RealMediaEnvironment, runtime?: ServerRealMediaRuntime | null): boolean {
+  if (runtime) return runtime.enabled;
+  return env.REAL_MEDIA_ENABLED === "true" && Boolean(createRealMediaReceiptCipher(env));
+}
+
 export function mediaKeyServiceState(input: {
   keyConfigured: boolean;
   priceConfigured: boolean;
+  /** Local runtime enablement (flag + receipt cipher). Defaults true for unit fixtures that only test key/price. */
+  runtimeReady?: boolean;
   /** Optional overlay: a one-off generation failed while the service remains available. */
   singleFailure?: boolean;
 }): MediaKeyServiceState {
   if (!input.keyConfigured) return "unconfigured";
-  if (!input.priceConfigured) return "saved_not_ready";
+  if (!input.priceConfigured || input.runtimeReady === false) return "saved_not_ready";
   if (input.singleFailure) return "single_failure";
   return "ready";
 }
@@ -70,6 +82,7 @@ export class AdminMediaKeysService implements AdminMediaKeysBackend {
     private readonly processMediaEnv: RealMediaEnvironment,
     private readonly apply: (managed: ManagedMediaKeys) => void,
     private appliedRevision: number,
+    private readonly runtime: ServerRealMediaRuntime | null,
   ) {}
 
   static async open(
@@ -87,7 +100,7 @@ export class AdminMediaKeysService implements AdminMediaKeysBackend {
       runtime?.reloadMediaApiKeys(effective);
     };
     apply(doc.saved);
-    return new AdminMediaKeysService(vault, processMediaEnv, apply, doc.saved.revision);
+    return new AdminMediaKeysService(vault, processMediaEnv, apply, doc.saved.revision, runtime);
   }
 
   /** Server-only; never returned by the controller. */
@@ -144,6 +157,7 @@ export class AdminMediaKeysService implements AdminMediaKeysBackend {
     if (entry.managed && entry.apiKey !== null && pendingRestart) status = "pending_restart";
     const keyConfigured = configured && status !== "pending_restart";
     const priceConfigured = mediaKeyPriceConfigured(slot, this.processMediaEnv);
+    const runtimeReady = mediaKeyRuntimeReady(this.processMediaEnv, this.runtime);
     return {
       slot,
       label: MEDIA_KEY_SLOT_LABELS[slot],
@@ -153,7 +167,7 @@ export class AdminMediaKeysService implements AdminMediaKeysBackend {
       managed: entry.managed,
       source,
       priceConfigured,
-      serviceState: mediaKeyServiceState({ keyConfigured, priceConfigured }),
+      serviceState: mediaKeyServiceState({ keyConfigured, priceConfigured, runtimeReady }),
     };
   }
 }

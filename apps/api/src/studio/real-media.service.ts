@@ -63,7 +63,7 @@ export class RealMediaService {
     return this.options.store.transaction(client=>listComfyUiShotMedia(client,
       {workspaceId:this.options.workspaceId,projectId,shotRevisionId},configuration?.parameters.targetedCancellation===true));
   }
-  async selectComfyUiImage(projectId:string,shotRevisionId:string,body:unknown,actorId="server-owner"){
+  async selectComfyUiImage(projectId:string,shotRevisionId:string,body:unknown,actorId=storeActorId()){
     if(!(this.options.readEnabled??this.options.enabled))throw new PersistenceError("REAL_MEDIA_NOT_READY","Authenticated media access is not configured");
     const parsed=comfyUiShotSelectionSchema.safeParse(body);
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Invalid image selection");
@@ -94,7 +94,7 @@ export class RealMediaService {
       }))};
     });
   }
-  async selectAutoStoryboardImage(projectId:string,runId:string,shotRevisionId:string,body:unknown,actorId="server-owner"){
+  async selectAutoStoryboardImage(projectId:string,runId:string,shotRevisionId:string,body:unknown,actorId=storeActorId()){
     if(!this.autoStoryboardMediaAccess())throw new PersistenceError("AUTO_STORYBOARD_SELECTION_UNAVAILABLE","Storyboard image selection is not available");
     const parsed=comfyUiShotSelectionSchema.safeParse(body);
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Invalid image selection");
@@ -111,7 +111,7 @@ export class RealMediaService {
     if(!this.options.enabled||!this.options.store.receiptReady())throw new PersistenceError("REAL_MEDIA_NOT_READY","Real media is not configured");
     await this.options.store.requireReady(client);
   }
-  async quote(projectId:string,shotRevisionId:string,body:unknown,actorId="server-owner"){
+  async quote(projectId:string,shotRevisionId:string,body:unknown,actorId=storeActorId()){
     const parsed=realMediaQuoteRequestSchema.safeParse(body);
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Invalid real media quote request");
     if(parsed.data.autoStoryboardRunId){
@@ -230,7 +230,7 @@ export class RealMediaService {
     if(passesAutoStoryboardDashScopeImageRuntimeGate(configuration))return configuration;
     throw new PersistenceError("AUTO_STORYBOARD_IMAGE_UNAVAILABLE","Bailian qwen-image-3.0 storyboard images are unavailable");
   }
-  async authorize(projectId:string,body:unknown,actorId="server-owner"){
+  async authorize(projectId:string,body:unknown,actorId=storeActorId()){
     await this.ready();const parsed=realMediaAuthorizationSchema.safeParse(body);
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Confirm one quoted paid operation and its exact budget");
     return this.options.store.authorize({workspaceId:this.options.workspaceId,projectId,actorId,...parsed.data});
