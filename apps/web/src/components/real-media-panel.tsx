@@ -6,7 +6,7 @@ import { ASSET_UPLOAD_MIME_TYPES } from "@ai-drama/contracts";
 import {
   formatAutoStoryboardKeepIsNotReviewNote,
   formatStoryboardUploadSourceNote,
-} from "@ai-drama/domain";
+} from "@ai-drama/domain/auto-creation-media-capability";
 import { ApiError } from "../lib/studio-client";
 import { COMFYUI_PROMPT_LIMIT, clearRealMediaPending, createRealMediaClient, readRealMediaPending, realMediaPendingKey, rememberRealMediaPending,
   clearRealMediaComposePending, readRealMediaComposePending, rememberRealMediaComposePending, sha256Hex,
