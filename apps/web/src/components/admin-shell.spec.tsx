@@ -67,7 +67,7 @@ it("opens a mobile drawer below 1024px with 44px touch targets", () => {
 });
 
 it("signs out from the top bar with the session CSRF token and returns to login", async () => {
-  const fetchMock = vi.fn(async (url: string) => {
+  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
     if (String(url).endsWith("/auth/logout")) return new Response(null, { status: 204 });
     return new Response(JSON.stringify({ enabled: true, authenticated: true, role: "operator" }), {
       status: 200, headers: { "content-type": "application/json" },
