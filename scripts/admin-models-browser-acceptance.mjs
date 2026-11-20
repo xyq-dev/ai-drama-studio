@@ -66,6 +66,15 @@ async function signIn(page) {
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await page.getByRole("button", { name: "保存设置", exact: true }).waitFor();
 }
+async function signOut(page) {
+  const logout = page.getByRole("button", { name: "退出", exact: true });
+  // On narrow viewports the admin footer lives in the drawer; open it before signing out.
+  if (!(await logout.isVisible())) {
+    await page.getByRole("button", { name: "打开导航" }).click();
+    await page.getByRole("dialog", { name: "管理导航" }).waitFor();
+  }
+  await logout.click();
+}
 async function readView(page) {
   const result = await page.evaluate(async () => {
     const response = await fetch("/api/v1/admin/models", { credentials: "same-origin", cache: "no-store" });
@@ -169,7 +178,7 @@ try {
   assert.match(storage.cookie, /^ads_csrf=[A-Za-z0-9_-]{43}$/);
   assert.equal(storage.cookie.includes(session.value), false);
   evidence.checks.refresh = { sameSavedRevision: true, httpOnlySession: true, noSecretsInBrowserStorage: true };
-  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await signOut(page);
   await page.waitForURL(/\/login\?returnTo=%2Fadmin%2Fmodels&reason=signed-out$/);
   const afterLogout = await context.request.get(`${origin}/api/v1/admin/models`);
   assert.equal(afterLogout.status(), 401);
@@ -249,7 +258,7 @@ try {
   assert.equal(JSON.stringify(deepseekSaved).includes(fakeDeepseekKey), false);
   await capture(page, "mobile-deepseek-quick-setup");
   evidence.checks.deepseek = { savedRevision: 5, activeRevision: 0, pendingRestart: true, defaultProvider: "deepseek", model: "deepseek-flash", secretNotReturned: true };
-  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await signOut(page);
   await page.waitForURL(/\/login\?/);
   await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
   await capture(page, "mobile-login");
