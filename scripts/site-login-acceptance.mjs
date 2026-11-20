@@ -182,11 +182,11 @@ try {
   await capture(page, "desktop-studio");
 
   await page.goto(`${SITE}/admin/models`);
-  await page.getByRole("button", { name: "校验并保存配置" }).waitFor();
+  await page.getByRole("button", { name: "保存设置" }).waitFor();
   assert.equal(await page.getByLabel(/令牌/).count(), 0, "no administrator token field");
   await capture(page, "desktop-admin-models");
   await page.reload();
-  await page.getByRole("button", { name: "校验并保存配置" }).waitFor();
+  await page.getByRole("button", { name: "保存设置" }).waitFor();
   evidence.checks.refreshKeepsSession = true;
   const options = await (await page.request.get(`${SITE}/api/v1/writing/title-runs/options`)).json();
   assert.equal(options.enabled, false, "signing in does not switch on title writing");
@@ -212,7 +212,7 @@ try {
   await mobile.getByText(title).first().waitFor();
   await capture(mobile, "mobile-studio");
   await mobile.goto(`${SITE}/admin/models`);
-  await mobile.getByRole("button", { name: "校验并保存配置" }).waitFor();
+  await mobile.getByRole("button", { name: "保存设置" }).waitFor();
   await capture(mobile, "mobile-admin-models");
   await mobile.goto(`${SITE}/studio`);
   await mobile.getByRole("button", { name: /打开导航|导航|菜单/ }).first().click();

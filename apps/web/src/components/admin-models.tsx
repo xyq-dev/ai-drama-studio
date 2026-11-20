@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   adminLimitsUpdateSchema, adminProviderUpdateSchema, anthropicKeyProblem, anthropicWorkspaceIdValid,
   claudeSetupState, deepseekKeyProblem, providerSetupState, type AdminModelsView, type AdminProviderView, type ClaudeSetupState, type TitleWritingProviderKey,
@@ -96,11 +96,11 @@ function LockIcon() {
   );
 }
 
-function StatusBanner({ title, detail, tone }: { title: string; detail: string; tone: "neutral" | "success" | "warning" }) {
+function StatusBanner({ title, detail, tone, state }: { title: string; detail: string; tone: "neutral" | "success" | "warning"; state: string }) {
   const className = tone === "success" ? styles.statusSuccess : tone === "warning" ? styles.statusWarning : styles.statusNeutral;
   const mark = tone === "success" ? "✓" : "!";
   return (
-    <div className={className} role="status" data-testid="writing-status">
+    <div className={className} role="status" data-testid="writing-status" data-state={state}>
       <span className={styles.statusIcon} aria-hidden="true">{mark}</span>
       <div>
         <strong>{title}</strong>
@@ -121,6 +121,8 @@ export function AdminModels() {
   const [limits, setLimits] = useState<LimitsDraft>({ defaultProvider: "", maxCallsPerDay: "30", maxActiveRuns: "1" });
   const [apiKey, setApiKey] = useState("");
   const [replacingKey, setReplacingKey] = useState(false);
+  const [clearingKey, setClearingKey] = useState(false);
+  const [clearConfirmed, setClearConfirmed] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [mustReload, setMustReload] = useState(false);
@@ -150,6 +152,8 @@ export function AdminModels() {
   function forgetSecrets() {
     setApiKey("");
     setReplacingKey(false);
+    setClearingKey(false);
+    setClearConfirmed(false);
     setClaudeWorkspace("");
     setClaudeWorkspaceClear(false);
   }
@@ -311,14 +315,51 @@ export function AdminModels() {
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
     if (!session || !view || !canEdit || busyRef.current) return;
-    if (modelProblem(draft)) {
+    if (clearingKey) {
+      if (!clearConfirmed) {
+        setError("清除密钥前请勾选确认。");
+        return;
+      }
+      const parsed = adminProviderUpdateSchema.safeParse({
+        expectedRevision: view.savedRevision,
+        models: [],
+        secretAction: "clear" as const,
+      });
+      if (!parsed.success) {
+        setError("请检查配置后再保存。");
+        return;
+      }
+      const epoch = begin("save");
+      if (epoch === null) return;
+      setError("");
+      setNotice("");
+      try {
+        const next = await client.provider(selected, parsed.data);
+        if (epoch !== generation.current) return;
+        installView(next);
+        setNotice("设置已保存");
+      } catch (caught) {
+        if (epoch !== generation.current) return;
+        if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已过期，请重新验证。");
+        else {
+          setError(messageFor(caught));
+          if (caught instanceof AdminApiError && (caught.status === 409 || caught.status === 0)) setMustReload(true);
+        }
+      } finally {
+        finish(epoch);
+      }
+      return;
+    }
+    const key = apiKey.trim();
+    const secretAction = key ? "replace" as const : "keep" as const;
+    // Empty models + a new key is the documented quick setup: the API fills provider defaults.
+    const quickKeySetup = secretAction === "replace" && draft.models.length === 0;
+    if (!quickKeySetup && modelProblem(draft)) {
       setShowModelProblem(true);
       setShowModels(true);
       setError("请选择至少一个默认模型后再保存。");
       return;
     }
-    const key = apiKey.trim();
-    const secretAction = key ? "replace" as const : "keep" as const;
     if (secretAction === "replace") {
       if (selected === "deepseek" && deepseekKeyProblem(key) !== null) {
         setError(CREDENTIAL_ERRORS.ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT!);
@@ -349,7 +390,7 @@ export function AdminModels() {
       : {};
     const parsed = adminProviderUpdateSchema.safeParse({
       expectedRevision: view.savedRevision,
-      models: orderedModels(draft),
+      models: quickKeySetup ? [] : orderedModels(draft),
       secretAction,
       ...(secretAction === "replace" ? { apiKey: key } : {}),
       ...workspaceUpdate,
@@ -498,8 +539,42 @@ export function AdminModels() {
                 </div>
 
                 <section className={styles.settingsCard} aria-label={`${meta.label}写作设置`}>
-                  <StatusBanner title={status.title} detail={status.detail} tone={status.tone} />
+                  <StatusBanner title={status.title} detail={status.detail} tone={status.tone} state={setup.state} />
                   <h2>{meta.label} 写作设置</h2>
+                  {clearingKey ? (
+                    <form onSubmit={(event) => void saveSettings(event)}>
+                      <fieldset className={styles.fieldset} disabled={!canEdit}>
+                        <StatusBanner
+                          title="清除后，这项服务会停用"
+                          detail="确认清除前，你可以随时取消。"
+                          tone="warning"
+                          state="clearing"
+                        />
+                        <p className={styles.footnote}>此操作只清除当前供应商的密钥，其他供应商不受影响。</p>
+                        <label className={styles.confirm}>
+                          <input
+                            type="checkbox"
+                            checked={clearConfirmed}
+                            onChange={(event) => setClearConfirmed(event.target.checked)}
+                          />
+                          我确认清除这项服务的密钥
+                        </label>
+                        <div className={styles.actions}>
+                          <button className={styles.primary} type="submit" disabled={!canEdit || !clearConfirmed}>
+                            {busy === "save" ? "正在清除…" : "确认清除"}
+                          </button>
+                          <button
+                            className={styles.secondary}
+                            type="button"
+                            disabled={!!busy}
+                            onClick={() => { setClearingKey(false); setClearConfirmed(false); setError(""); }}
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </fieldset>
+                    </form>
+                  ) : (
                   <form onSubmit={(event) => void saveSettings(event)}>
                     <fieldset className={styles.fieldset} disabled={!canEdit}>
                       <div className={styles.fieldGrid}>
@@ -540,6 +615,7 @@ export function AdminModels() {
                               onChange={(event) => setApiKey(event.target.value)}
                               maxLength={256}
                               placeholder={saved?.keyConfigured ? "填写新密钥以替换" : "粘贴服务密钥"}
+                              aria-label={`${meta.label} API Key`}
                               data-testid="writing-key-input"
                             />
                           )}
@@ -585,6 +661,15 @@ export function AdminModels() {
                         <button type="button" className={styles.textLink} onClick={() => setShowModels((open) => !open)}>
                           管理可用模型
                         </button>
+                        {saved?.keyConfigured ? (
+                          <button
+                            type="button"
+                            className={styles.textLink}
+                            onClick={() => { setClearingKey(true); setClearConfirmed(false); setReplacingKey(false); setApiKey(""); setError(""); setNotice(""); }}
+                          >
+                            清除密钥
+                          </button>
+                        ) : null}
                       </div>
 
                       {showModels ? (
@@ -618,6 +703,7 @@ export function AdminModels() {
                       ) : null}
                     </fieldset>
                   </form>
+                  )}
                 </section>
 
                 {showLimits ? (
