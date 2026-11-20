@@ -42,33 +42,54 @@ afterEach(() => {
   document.cookie = "ads_csrf=; Max-Age=0; Path=/";
 });
 
-it("shows only phase-1 admin sidebar items and the confirmed top-bar actions", () => {
+it("shows live model/API links, planned columns, and Hongguo admin branding", () => {
   render(<AdminShell><main>正文</main></AdminShell>);
   const nav = screen.getByRole("navigation", { name: "管理菜单" });
   expect(within(nav).getAllByRole("link").map((link) => [link.getAttribute("href"), link.textContent])).toEqual([
     ["/admin/models", "文本模型"],
     ["/admin/media-keys", "媒体密钥"],
   ]);
+  expect(within(nav).getByText("模型与 API")).toBeTruthy();
+  expect(within(nav).getByText("规划中的栏目")).toBeTruthy();
+  expect(within(nav).getByRole("button", { name: /创作内容/ })).toBeTruthy();
+  expect(within(nav).getByRole("button", { name: /任务与用量/ })).toBeTruthy();
+  expect(within(nav).getByRole("button", { name: /系统管理/ })).toBeTruthy();
   expect(within(nav).queryByText("充值")).toBeNull();
   expect(within(nav).queryByText("会员")).toBeNull();
-  expect(screen.getByPlaceholderText("搜索设置…")).toBeTruthy();
+  expect(screen.getByText("红果")).toBeTruthy();
+  expect(screen.getByText("AI DRAMA STUDIO")).toBeTruthy();
+  expect(screen.getByText("平台管理员")).toBeTruthy();
+  expect(screen.getByText("已登录")).toBeTruthy();
   expect(screen.getByRole("link", { name: "返回创作中心" }).getAttribute("href")).toBe("/studio");
-  expect(screen.getByText("管理员会话有效")).toBeTruthy();
   expect(screen.getByRole("button", { name: "退出" })).toBeTruthy();
+  expect(screen.getByRole("navigation", { name: "面包屑" }).textContent).toContain("文本模型");
 });
 
-it("opens a mobile drawer below 1024px with 44px touch targets", () => {
+it("expands a planned group to show purpose copy without inventing routes", () => {
+  render(<AdminShell><main>正文</main></AdminShell>);
+  const nav = screen.getByRole("navigation", { name: "管理菜单" });
+  fireEvent.click(within(nav).getByRole("button", { name: /创作内容/ }));
+  expect(within(nav).getByText("作品管理")).toBeTruthy();
+  expect(within(nav).getByText("查看作品及所属工作区，定位剧集和当前制作阶段。")).toBeTruthy();
+  expect(within(nav).getByText("素材库")).toBeTruthy();
+  expect(within(nav).queryByRole("link", { name: "作品管理" })).toBeNull();
+});
+
+it("opens a mobile drawer below 1024px with 44px touch targets and closes after selecting a live link", () => {
   viewport(false);
   render(<AdminShell><main>正文</main></AdminShell>);
   expect(screen.queryByRole("navigation", { name: "管理菜单" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
   const dialog = screen.getByRole("dialog", { name: "管理导航" });
+  expect(within(dialog).getByText("后台导航")).toBeTruthy();
   expect(within(dialog).getByRole("link", { name: "文本模型" })).toBeTruthy();
   const close = within(dialog).getByRole("button", { name: "关闭菜单" });
   expect(getComputedStyle(close).minHeight === "44px" || close.className.length > 0).toBe(true);
+  fireEvent.click(within(dialog).getByRole("link", { name: "媒体密钥" }));
+  expect(screen.queryByRole("dialog", { name: "管理导航" })).toBeNull();
 });
 
-it("signs out from the top bar with the session CSRF token and returns to login", async () => {
+it("signs out from the sidebar with the session CSRF token and returns to login", async () => {
   const fetchMock = vi.fn(async (input: string, _init?: RequestInit) => {
     if (String(input).endsWith("/auth/logout")) return new Response(null, { status: 204 });
     return new Response(JSON.stringify({ enabled: true, authenticated: true, role: "operator" }), {

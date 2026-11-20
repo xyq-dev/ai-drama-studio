@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
-  MEDIA_KEY_SLOTS,
   adminMediaKeyUpdateSchema,
   type AdminMediaKeySlotView,
   type AdminMediaKeysView,
@@ -13,20 +12,58 @@ import { goToLogin, loginUrl, readSession, type SiteSession } from "../lib/site-
 import styles from "./admin-models.module.css";
 
 type AuthState = "checking" | "guest" | "unavailable" | "signedin";
-type SecretAction = "keep" | "replace" | "clear";
+type Mode = "view" | "replace" | "clear";
 
-const STATUS_LABEL: Record<AdminMediaKeySlotView["status"], string> = {
-  saved: "已保存",
-  empty: "未填写",
-  pending_restart: "等待重启",
-};
+const VENDORS: Array<{ slot: MediaKeySlot; title: string; vendor: string }> = [
+  { slot: "MINIMAX_API_KEY", title: "角色配音", vendor: "MiniMax" },
+  { slot: "OPENAI_MEDIA_API_KEY", title: "图像生成", vendor: "OpenAI" },
+  { slot: "DASHSCOPE_MEDIA_API_KEY", title: "百炼媒体", vendor: "DashScope" },
+];
 
-const SERVICE_STATE_LABEL: Record<AdminMediaKeySlotView["serviceState"], { primary: string; secondary?: string; tone: "neutral" | "success" | "warning" }> = {
-  unconfigured: { primary: "未填写", tone: "neutral" },
-  saved_not_ready: { primary: "密钥已保存", secondary: "服务尚未就绪", tone: "warning" },
-  ready: { primary: "密钥已保存", secondary: "服务可用", tone: "success" },
-  single_failure: { primary: "密钥已保存", secondary: "服务可用 · 单次生成失败", tone: "warning" },
-};
+/** Status copy derived from the server slot view — never hardcoded Figma preview sentences. */
+export function mediaKeyStatus(slot: AdminMediaKeySlotView | undefined): {
+  title: string;
+  detail: string;
+  tone: "neutral" | "success" | "warning" | "danger";
+} {
+  if (!slot || slot.serviceState === "unconfigured") {
+    return {
+      title: "尚未配置密钥",
+      detail: "填写并保存服务密钥后，才能用于对应能力。保存不会调用真实供应商。",
+      tone: "neutral",
+    };
+  }
+  if (slot.status === "pending_restart" || slot.serviceState === "saved_not_ready") {
+    const gaps: string[] = [];
+    if (!slot.priceConfigured) gaps.push("单价尚未配置");
+    if (slot.status === "pending_restart") gaps.push("进程尚未加载新密钥");
+    if (gaps.length === 0) gaps.push("服务尚未就绪");
+    return {
+      title: "配置还不完整",
+      detail: `密钥已保存。${gaps.join("；")}。未知项标记为待核验，不会伪报可用。`,
+      tone: "warning",
+    };
+  }
+  if (slot.serviceState === "single_failure") {
+    return {
+      title: "服务可用，最近有一次失败",
+      detail: "密钥与单价已就绪；单次生成失败可重试，不代表整项服务不可用。",
+      tone: "warning",
+    };
+  }
+  if (slot.serviceState === "ready") {
+    return {
+      title: "可以用于当前用途",
+      detail: "密钥已保存，服务检查通过。这不代表已发起付费生成。",
+      tone: "success",
+    };
+  }
+  return {
+    title: "状态待核验",
+    detail: "服务端未返回完整就绪信息，请重新读取后再判断。",
+    tone: "neutral",
+  };
+}
 
 function messageFor(error: unknown): string {
   if (!(error instanceof AdminApiError)) return "暂时无法完成请求，请重新读取配置后再试。";
@@ -42,9 +79,6 @@ function messageFor(error: unknown): string {
   return "网络连接或回执异常，操作结果尚未确认。请重新读取配置，不要直接重复提交。";
 }
 
-function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "success" | "warning" }) {
-  return <span className={`${styles.badge} ${styles[tone]}`}>{children}</span>;
-}
 function LockIcon() {
   return (
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -54,14 +88,31 @@ function LockIcon() {
   );
 }
 
+function StatusBanner({ title, detail, tone }: { title: string; detail: string; tone: "neutral" | "success" | "warning" | "danger" }) {
+  const className = tone === "success" ? styles.statusSuccess
+    : tone === "warning" ? styles.statusWarning
+      : tone === "danger" ? styles.statusDanger
+        : styles.statusNeutral;
+  const mark = tone === "success" ? "✓" : "!";
+  return (
+    <div className={className} role="status" data-testid="media-key-status">
+      <span className={styles.statusIcon} aria-hidden="true">{mark}</span>
+      <div>
+        <strong>{title}</strong>
+        <p>{detail}</p>
+      </div>
+    </div>
+  );
+}
+
 export function AdminMediaKeys() {
   const client = useMemo(() => createAdminMediaKeysClient(), []);
   const [auth, setAuth] = useState<AuthState>("checking");
   const [session, setSession] = useState<SiteSession | null>(null);
   const [loginError, setLoginError] = useState("");
   const [view, setView] = useState<AdminMediaKeysView | null>(null);
-  const [selected, setSelected] = useState<MediaKeySlot>("DASHSCOPE_MEDIA_API_KEY");
-  const [secretAction, setSecretAction] = useState<SecretAction>("keep");
+  const [selected, setSelected] = useState<MediaKeySlot>("MINIMAX_API_KEY");
+  const [mode, setMode] = useState<Mode>("view");
   const [apiKey, setApiKey] = useState("");
   const [clearConfirmed, setClearConfirmed] = useState(false);
   const [error, setError] = useState("");
@@ -84,7 +135,7 @@ export function AdminMediaKeys() {
   }
   function forgetSecrets() {
     setApiKey("");
-    setSecretAction("keep");
+    setMode("view");
     setClearConfirmed(false);
   }
   function endSession(message: string) {
@@ -159,7 +210,6 @@ export function AdminMediaKeys() {
       generation.current += 1;
       busyRef.current = "";
     };
-    // The initial authentication request owns this mount; actions start their own guarded requests.
   }, []);
 
   async function reload() {
@@ -172,7 +222,7 @@ export function AdminMediaKeys() {
       const next = await client.view();
       if (epoch !== generation.current) return;
       installView(next);
-      setNotice("已重新读取媒体密钥状态（不含完整密钥）。");
+      setNotice("已重新读取当前配置");
     } catch (caught) {
       if (epoch !== generation.current) return;
       if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已过期，请重新验证。");
@@ -182,11 +232,10 @@ export function AdminMediaKeys() {
     }
   }
 
-  async function saveSlot(event: FormEvent) {
-    event.preventDefault();
+  async function submit(secretAction: "replace" | "clear") {
     if (!session || !view || busyRef.current || mustReload) return;
     if (secretAction === "clear" && !clearConfirmed) {
-      setError("清除密钥前请勾选确认。清除后不会回退到服务器环境变量里的旧值。");
+      setError("清除密钥前请勾选确认。");
       return;
     }
     const parsed = adminMediaKeyUpdateSchema.safeParse({
@@ -207,13 +256,7 @@ export function AdminMediaKeys() {
       const next = await client.update(parsed.data);
       if (epoch !== generation.current) return;
       installView(next);
-      const slot = next.slots.find((item) => item.slot === selected);
-      const status = slot ? STATUS_LABEL[slot.status] : "已更新";
-      setNotice(
-        next.pendingRestart
-          ? `已保存（${status}）。当前 API 进程尚未加载新密钥，页面如实显示「等待重启」；重启只是加载配置，不是一次代码部署。`
-          : `已保存（${status}）。探测与新的出图 / 配音 / 成片调用会按各槽位使用后台密钥；单价仍可尚未计价，也不会自动发起付费生成。`,
-      );
+      setNotice(secretAction === "clear" ? "设置已保存" : "设置已保存");
     } catch (caught) {
       if (epoch !== generation.current) return;
       forgetSecrets();
@@ -227,45 +270,41 @@ export function AdminMediaKeys() {
     }
   }
 
+  function changeVendor(slot: MediaKeySlot) {
+    if (busyRef.current) return;
+    setSelected(slot);
+    forgetSecrets();
+    setError("");
+    setNotice("");
+  }
+
   const canEdit = auth === "signedin" && !!view && !mustReload && !busy;
   const current = view?.slots.find((item) => item.slot === selected);
+  const meta = VENDORS.find((item) => item.slot === selected)!;
+  const status = mediaKeyStatus(current);
 
   return (
     <div className={styles.app} data-embedded-admin="media-keys">
-      <a href="#admin-media-content" className={styles.skip}>
-        跳到正文
-      </a>
+      <a href="#admin-media-content" className={styles.skip}>跳到正文</a>
       <main id="admin-media-content" className={styles.main}>
         {auth !== "signedin" ? (
           <div className={styles.loginLayout}>
             <section className={styles.loginIntro}>
               <span className={styles.eyebrow}>红果 · 创作基础设施</span>
-              <h1>
-                媒体密钥，
-                <br />
-                放进网页设置。
-              </h1>
-              <p>管理员可在此填写正式出图、配音与视频密钥，不必再为填 key 走 Hermes 改服务器 .env。普通创作者看不到这些站点级密钥。</p>
+              <h1>媒体密钥，<br />放进网页设置。</h1>
+              <p>管理员可在此填写正式出图、配音与视频密钥。普通创作者看不到这些站点级密钥。</p>
             </section>
             <section className={styles.loginCard} aria-label="管理员登录">
-              <div className={styles.lock}>
-                <LockIcon />
-              </div>
+              <div className={styles.lock}><LockIcon /></div>
               <span className={styles.eyebrow}>受保护的管理入口</span>
               <h2>管理员登录</h2>
-              <p>与模型后台、站点登录使用同一套 SITE_AUTH / operator 账号，不另做口令。</p>
+              <p>与模型后台、站点登录使用同一套账号，不另做口令。</p>
               {auth === "checking" ? (
-                <p role="status" className={styles.loading}>
-                  正在检查登录状态…
-                </p>
+                <p role="status" className={styles.loading}>正在检查登录状态…</p>
               ) : auth === "unavailable" ? (
                 <>
-                  <div className={styles.warning} role="alert">
-                    {loginError || "管理员后台尚未就绪。"}
-                  </div>
-                  <button className={styles.secondary} disabled={!!busy} onClick={() => void checkSession()}>
-                    重新检查后台状态
-                  </button>
+                  <div className={styles.warning} role="alert">{loginError || "管理员后台尚未就绪。"}</div>
+                  <button className={styles.secondary} disabled={!!busy} onClick={() => void checkSession()}>重新检查后台状态</button>
                 </>
               ) : (
                 <>
@@ -279,219 +318,161 @@ export function AdminMediaKeys() {
           </div>
         ) : (
           <>
-            <div className={styles.pageHeading}>
-              <div>
-                <span className={styles.eyebrow}>管理控制台 / 媒体密钥</span>
-                <h1>
-                  媒体密钥<span className={styles.headingDot} />
-                </h1>
-                <p>三个独立槽位，均可留空。OpenAI 生图可一直不填。</p>
-              </div>
-              <Badge>
-                <LockIcon /> 管理员会话有效
-              </Badge>
+            <div className={styles.pageIntro}>
+              <h1>媒体密钥</h1>
+              <p>选择用途，查看或更换服务密钥。</p>
             </div>
-            {error && (
-              <div className={styles.error} role="alert">
-                {error}
+            {error ? <div className={styles.error} role="alert">{error}</div> : null}
+            {notice ? <div className={styles.success} role="status">{notice}</div> : null}
+            {mustReload ? (
+              <div className={styles.warning} role="status">
+                <strong>请重新读取最新配置</strong>
+                <p>本页草稿已保留。版本冲突后不会自动重试保存。</p>
               </div>
-            )}
-            {notice && (
-              <div className={styles.success} role="status">
-                {notice}
-              </div>
-            )}
+            ) : null}
             {!view ? (
               <section className={styles.card}>
                 <p>{busy ? "正在读取媒体密钥状态…" : "媒体密钥尚未读取。"}</p>
-                <button className={styles.secondary} onClick={() => void reload()} disabled={!!busy}>
-                  重新读取配置
-                </button>
+                <button className={styles.secondary} onClick={() => void reload()} disabled={!!busy}>重新读取</button>
               </section>
             ) : (
               <>
-                <section className={styles.overview} aria-label="密钥概况" data-testid="media-keys-overview">
-                  <div>
-                    <span>已保存版本</span>
-                    <strong>v{view.savedRevision}</strong>
-                    <small>{view.source === "managed" ? "后台已托管至少一个槽位" : "仍可回退进程环境变量"}</small>
-                  </div>
-                  <div>
-                    <span>生效方式</span>
-                    <strong className={styles.smallStrong}>{view.pendingRestart ? "等待重启" : "热更新"}</strong>
-                    <small>{view.pendingRestart ? "保存后需重启进程加载" : "保存后探测与新任务可读到"}</small>
-                  </div>
-                  <div>
-                    <span>校验</span>
-                    <strong className={styles.smallStrong}>仅本地</strong>
-                    <small>不调用真实供应商</small>
-                  </div>
-                  <div>
-                    <span>售价 / 支付</span>
-                    <strong className={styles.smallStrong}>不锁定</strong>
-                    <small>尚未计价仍可空</small>
-                  </div>
-                </section>
-                {view.pendingRestart && (
-                  <div className={styles.warning} role="status" data-testid="media-keys-pending-restart">
-                    <strong>密钥已保存，等待进程重启后生效</strong>
-                    <p>页面不会假装供应商已经接通。重启只是加载配置，不是一次代码部署；本页不会自行部署。</p>
-                  </div>
-                )}
-                <ul className={styles.railNote} data-testid="media-keys-notices" style={{ listStyle: "none", padding: "0 0 18px", margin: 0 }}>
-                  {view.notices.map((item) => (
-                    <li key={item} style={{ fontSize: 12, color: "var(--studio-muted)", lineHeight: 1.8, marginBottom: 6 }}>
-                      {item}
-                    </li>
+                <div className={styles.providerTabs} role="tablist" aria-label="媒体服务">
+                  {VENDORS.map((vendor) => (
+                    <button
+                      key={vendor.slot}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected === vendor.slot}
+                      className={`${styles.providerTab} ${selected === vendor.slot ? styles.providerTabSelected : ""}`}
+                      disabled={!!busy}
+                      data-testid={`media-key-slot-${vendor.slot}`}
+                      onClick={() => changeVendor(vendor.slot)}
+                    >
+                      <strong>{vendor.title}</strong>
+                      <span>{vendor.vendor}</span>
+                    </button>
                   ))}
-                </ul>
-                <div className={styles.workspace}>
-                  <aside className={styles.providerRail} aria-label="媒体密钥槽位">
-                    <div className={styles.railHeading}>
-                      <h2>密钥槽位</h2>
-                      <span>03</span>
-                    </div>
-                    {MEDIA_KEY_SLOTS.map((slot) => {
-                      const item = view.slots.find((entry) => entry.slot === slot)!;
-                      return (
-                        <button
-                          key={slot}
-                          type="button"
-                          className={`${styles.providerButton} ${selected === slot ? styles.providerSelected : ""}`}
-                          aria-pressed={selected === slot}
-                          disabled={!!busy}
-                          data-testid={`media-key-slot-${slot}`}
-                          onClick={() => {
-                            setSelected(slot);
-                            forgetSecrets();
-                            setError("");
-                          }}
-                        >
-                          <span className={styles.providerInfo}>
-                            <strong>{item.label}</strong>
-                            <small>{slot}</small>
-                            <span className={styles.providerState} data-service-state={item.serviceState}>
-                              {SERVICE_STATE_LABEL[item.serviceState].primary}
-                              {SERVICE_STATE_LABEL[item.serviceState].secondary
-                                ? ` · ${SERVICE_STATE_LABEL[item.serviceState].secondary}`
-                                : item.status === "pending_restart" ? ` · ${STATUS_LABEL.pending_restart}` : ""}
-                            </span>
-                          </span>
-                          <span className={styles.providerArrow} aria-hidden="true">
-                            ↗
-                          </span>
-                        </button>
-                      );
-                    })}
-                    <div className={styles.railNote}>
-                      <LockIcon />
-                      <strong>密钥不会回传</strong>
-                      <p>读回接口只返回是否已保存与脱敏状态，不返回完整密钥、前缀或末尾字符。</p>
-                    </div>
-                  </aside>
-                  <section className={styles.card} aria-label={`${current?.label ?? "媒体"}密钥`} data-testid="media-key-editor">
-                    <div className={styles.cardHeading}>
-                      <div>
-                        <span className={styles.eyebrow}>{selected}</span>
-                        <h2>{current?.label}</h2>
-                        <p>{current?.hint}</p>
-                      </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end" }}>
-                        {current?.keyConfigured ? <Badge tone="success">密钥已保存</Badge> : <Badge>尚未保存</Badge>}
-                        {current?.serviceState === "saved_not_ready" ? (
-                          <Badge tone="warning">服务尚未就绪{current.priceConfigured ? "" : " · 单价尚未配置"}</Badge>
-                        ) : null}
-                        {current?.serviceState === "ready" ? <Badge tone="success">服务可用</Badge> : null}
-                        {current?.serviceState === "single_failure" ? <Badge tone="warning">服务可用 · 单次生成失败</Badge> : null}
-                      </div>
-                    </div>
-                    <p className={styles.footnote} style={{ marginTop: 0, marginBottom: 12 }}>
-                      请先配置单价后再启用。保存密钥只做本地校验，不会调用真实供应商，也不会产生费用。
-                    </p>
-                    <div className={styles.activeSummary}>
-                      <span>当前来源</span>
-                      <strong>
-                        {current?.source === "managed" ? "后台已保存" : current?.source === "environment" ? "进程环境变量（尚未后台托管）" : "未配置"}
-                      </strong>
-                      <span>{current?.managed ? "该槽位已由后台管理；清除后不会回退旧环境变量。" : "从未在后台保存过时可继续使用进程环境变量。"}</span>
-                      <small>上传分镜图片不依赖这些密钥。「密钥已保存」不等于「服务可用」。</small>
-                    </div>
-                    <form onSubmit={(event) => void saveSlot(event)}>
-                      <fieldset className={styles.fieldset} disabled={!canEdit}>
-                        <div className={styles.secretBlock}>
-                          <div className={styles.sectionLabel}>
-                            <strong>API 密钥</strong>
-                            <Badge>{current?.keyConfigured ? "已保存 · 不可读取" : "尚未保存"}</Badge>
-                          </div>
-                          <fieldset className={styles.secretActions}>
-                            <legend>本次密钥操作</legend>
-                            {(
-                              [
-                                { value: "keep", label: "保留现有" },
-                                { value: "replace", label: "填写 / 替换" },
-                                { value: "clear", label: "清除密钥" },
-                              ] as const
-                            ).map((action) => (
-                              <label key={action.value} className={secretAction === action.value ? styles.radioSelected : ""}>
-                                <input
-                                  type="radio"
-                                  name="media-secret-action"
-                                  value={action.value}
-                                  checked={secretAction === action.value}
-                                  onChange={() => {
-                                    setSecretAction(action.value);
-                                    setApiKey("");
-                                    setClearConfirmed(false);
-                                  }}
-                                />
-                                {action.label}
-                              </label>
-                            ))}
-                          </fieldset>
-                          {secretAction === "replace" && (
-                            <label className={styles.field}>
-                              新的 API Key
-                              <input
-                                name="media-api-key"
-                                type="password"
-                                autoComplete="off"
-                                spellCheck={false}
-                                value={apiKey}
-                                onChange={(event) => setApiKey(event.target.value)}
-                                maxLength={512}
-                                placeholder="仅本次提交使用，保存后不会显示"
-                                data-testid="media-key-input"
-                              />
-                              <small>不会保存在浏览器本地存储。提交结束后输入框会清空。保存不会打真实供应商。</small>
-                            </label>
-                          )}
-                          {secretAction === "clear" && (
-                            <label className={styles.confirm}>
-                              <input type="checkbox" checked={clearConfirmed} onChange={(event) => setClearConfirmed(event.target.checked)} />
-                              确认清除该槽位密钥；清除后不会回退到服务器环境变量中的旧值。
-                            </label>
-                          )}
-                        </div>
-                        <div className={styles.formFooter}>
-                          <p>
-                            仅校验并保存配置
-                            <br />
-                            <span>不联网测试 · 不产生供应商费用</span>
-                          </p>
-                          <button type="submit" className={styles.primary} disabled={!canEdit || (secretAction === "replace" && !apiKey.trim()) || (secretAction === "clear" && !clearConfirmed)}>
-                            {busy === "save" ? "正在保存…" : "保存此槽位"}
-                            <span aria-hidden="true">→</span>
-                          </button>
-                        </div>
-                      </fieldset>
-                    </form>
-                    <p className={styles.footnote} style={{ marginTop: 16 }}>
-                      <button type="button" className={styles.secondary} onClick={() => void reload()} disabled={!!busy}>
-                        {busy === "reload" ? "正在读取…" : "重新读取最新配置"}
-                      </button>
-                    </p>
-                  </section>
                 </div>
+
+                <section className={styles.settingsCard} aria-label={`${meta.vendor}服务密钥`} data-testid="media-key-editor">
+                  {mode === "clear" ? (
+                    <>
+                      <StatusBanner
+                        title="清除后，这项服务会停用"
+                        detail="确认清除前，你可以随时取消。"
+                        tone="danger"
+                      />
+                      <h2>清除 {meta.vendor} 密钥</h2>
+                      <p className={styles.footnote}>此操作只清除当前服务的密钥，其他供应商不受影响。</p>
+                      <label className={styles.confirm}>
+                        <input
+                          type="checkbox"
+                          checked={clearConfirmed}
+                          onChange={(event) => setClearConfirmed(event.target.checked)}
+                        />
+                        我确认清除这项服务的密钥
+                      </label>
+                      <div className={styles.actions}>
+                        <button
+                          type="button"
+                          className={styles.danger}
+                          disabled={!canEdit || !clearConfirmed}
+                          onClick={() => void submit("clear")}
+                        >
+                          {busy === "save" ? "正在清除…" : "确认清除"}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.secondary}
+                          disabled={!!busy}
+                          onClick={() => { setMode("view"); setClearConfirmed(false); setError(""); }}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </>
+                  ) : mode === "replace" ? (
+                    <>
+                      <StatusBanner title={status.title} detail={status.detail} tone={status.tone === "danger" ? "warning" : status.tone} />
+                      <h2>{meta.vendor} 服务密钥</h2>
+                      <p className={styles.footnote}>填写新密钥以替换。保存只做本地校验，不会调用真实供应商。</p>
+                      <form onSubmit={(event: FormEvent) => { event.preventDefault(); void submit("replace"); }}>
+                        <fieldset className={styles.fieldset} disabled={!canEdit}>
+                          <label className={styles.field}>
+                            服务密钥
+                            <input
+                              name="media-api-key"
+                              type="password"
+                              autoComplete="off"
+                              spellCheck={false}
+                              value={apiKey}
+                              onChange={(event) => setApiKey(event.target.value)}
+                              maxLength={512}
+                              placeholder="仅本次提交使用，保存后不会显示"
+                              data-testid="media-key-input"
+                            />
+                          </label>
+                          <div className={styles.checks} data-testid="media-key-checks">
+                            <span>密钥：{current?.keyConfigured ? "已保存（掩码）" : "未填写"}</span>
+                            <span>单价：{current?.priceConfigured ? "已配置" : "待核验 / 未配置"}</span>
+                            <span>服务：{current?.serviceState === "ready" || current?.serviceState === "single_failure" ? "可用" : current?.serviceState === "saved_not_ready" ? "未就绪" : "待核验"}</span>
+                          </div>
+                          <div className={styles.actions}>
+                            <button className={styles.primary} type="submit" disabled={!canEdit || !apiKey.trim()}>
+                              {busy === "save" ? "正在保存…" : "保存密钥"}
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.textButton}
+                              disabled={!!busy}
+                              onClick={() => { setMode("view"); setApiKey(""); }}
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </fieldset>
+                      </form>
+                    </>
+                  ) : (
+                    <>
+                      <StatusBanner title={status.title} detail={status.detail} tone={status.tone === "danger" ? "warning" : status.tone} />
+                      <h2>{meta.vendor} 服务密钥</h2>
+                      <p className={styles.footnote}>已保存的密钥仅显示为圆点。</p>
+                      <div className={styles.maskedKey} aria-label={current?.keyConfigured ? "已保存的密钥（掩码）" : "尚未保存密钥"}>
+                        {current?.keyConfigured ? "••••  ••••  ••••  ••••" : "尚未填写"}
+                      </div>
+                      <div className={styles.checks} data-testid="media-key-checks">
+                        <span>密钥：{current?.keyConfigured ? "已保存" : "未填写"}</span>
+                        <span>单价：{current?.priceConfigured ? "已配置" : "待核验 / 未配置"}</span>
+                        <span>服务：{current?.serviceState === "ready" || current?.serviceState === "single_failure" ? "可用" : current?.serviceState === "saved_not_ready" ? "未就绪" : "待核验"}</span>
+                      </div>
+                      <div className={styles.actions}>
+                        <button
+                          type="button"
+                          className={styles.primary}
+                          disabled={!canEdit}
+                          onClick={() => { setMode("replace"); setApiKey(""); setError(""); }}
+                        >
+                          {current?.keyConfigured ? "更换密钥" : "填写密钥"}
+                        </button>
+                        <button type="button" className={styles.textButton} onClick={() => void reload()} disabled={!!busy}>
+                          {busy === "reload" ? "正在读取…" : "重新读取"}
+                        </button>
+                        {current?.keyConfigured ? (
+                          <button
+                            type="button"
+                            className={styles.dangerText}
+                            disabled={!canEdit}
+                            onClick={() => { setMode("clear"); setClearConfirmed(false); setError(""); }}
+                          >
+                            清除密钥
+                          </button>
+                        ) : null}
+                      </div>
+                    </>
+                  )}
+                </section>
               </>
             )}
           </>
