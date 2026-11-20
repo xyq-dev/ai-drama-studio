@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AdminMediaKeysView } from "@ai-drama/contracts";
+import { mediaKeyStatus } from "./admin-media-keys";
 
 let AdminMediaKeys: typeof import("./admin-media-keys")["AdminMediaKeys"];
 
@@ -41,13 +42,13 @@ function mediaView(overrides: Partial<AdminMediaKeysView> = {}): AdminMediaKeysV
       {
         slot: "MINIMAX_API_KEY",
         label: "MiniMax 正式配音",
-        hint: "仅用于正式配音",
-        keyConfigured: false,
-        status: "empty",
-        managed: false,
-        source: "none",
+        hint: "仅用于正式配音 MiniMax speech-2.8-hd",
+        keyConfigured: true,
+        status: "saved",
+        managed: true,
+        source: "managed",
         priceConfigured: false,
-        serviceState: "unconfigured",
+        serviceState: "saved_not_ready",
       },
     ],
     ...overrides,
@@ -92,6 +93,8 @@ function server(handler?: (call: Call) => Response | undefined) {
                 keyConfigured: parsed.secretAction !== "clear",
                 status: parsed.secretAction === "clear" ? ("empty" as const) : ("saved" as const),
                 source: parsed.secretAction === "clear" ? ("none" as const) : ("managed" as const),
+                serviceState: parsed.secretAction === "clear" ? ("unconfigured" as const) : ("saved_not_ready" as const),
+                priceConfigured: false,
               }
             : slot,
         );
@@ -104,7 +107,7 @@ function server(handler?: (call: Call) => Response | undefined) {
 }
 
 async function ready() {
-  await waitFor(() => expect(screen.getByTestId("media-keys-overview")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("media-key-editor")).toBeTruthy());
 }
 
 let assign: ReturnType<typeof vi.fn<(url: string | URL) => void>>;
@@ -120,113 +123,120 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  window.localStorage.clear();
-  window.sessionStorage.clear();
   document.cookie = "ads_csrf=; Max-Age=0; Path=/";
 });
 
-describe("administrator media key settings", () => {
-  it("sends a signed-out visitor to login and never shows key inputs", async () => {
-    server((call) => (call.url.endsWith("/auth/session") ? json({ error: { code: "AUTH_REQUIRED" } }, 401) : undefined));
+describe("admin media keys console V2", () => {
+  it("sends guests to login", async () => {
+    const calls = server((call) => call.url.endsWith("/auth/session") ? json({ error: { code: "AUTH_REQUIRED" } }, 401) : undefined);
     render(<AdminMediaKeys />);
     expect(await screen.findByRole("link", { name: /前往登录/ })).toBeTruthy();
-    expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fadmin%2Fmedia-keys&reason=expired");
-    expect(screen.queryByTestId("media-key-input")).toBeNull();
+    expect(calls.map((call) => call.url)).toEqual(["/api/v1/auth/session"]);
   });
 
-  it("reads only redacted status and never asks to reveal a key", async () => {
+  it("rejects creator sessions client-side", async () => {
+    server((call) => call.url.endsWith("/auth/session")
+      ? json({ enabled: true, authenticated: true, role: "creator", csrfToken: CSRF, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+      : undefined);
+    render(<AdminMediaKeys />);
+    expect(await screen.findByText(/当前账号不是管理员/)).toBeTruthy();
+    expect(screen.queryByTestId("media-key-editor")).toBeNull();
+  });
+
+  it("defaults to MiniMax, shows masked key, and derives status from the server", async () => {
     const calls = server();
     render(<AdminMediaKeys />);
     await ready();
-    expect(screen.getAllByText("未填写").length).toBeGreaterThan(0);
-    expect(screen.getByTestId("media-keys-notices").textContent).toContain("填写密钥不等于自动发起付费生成");
-    expect(document.body.textContent).not.toContain(KEY);
     expect(calls.map((call) => call.url)).toEqual(["/api/v1/auth/session", "/api/v1/admin/media-keys"]);
+    expect(screen.getByRole("tab", { name: /角色配音/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("配置还不完整")).toBeTruthy();
+    expect(screen.getByLabelText("已保存的密钥（掩码）").textContent).toMatch(/••••/);
+    expect(document.body.textContent).not.toContain("密钥已保存，请在服务端设置每字单价");
+    expect(screen.getByTestId("media-key-checks").textContent).toMatch(/单价：待核验/);
   });
 
-  it("saves replace/clear with keep/replace/clear radios and clears the password input", async () => {
+  it("clears unsubmitted key input when switching vendors", async () => {
+    server();
+    render(<AdminMediaKeys />);
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "更换密钥" }));
+    fireEvent.change(screen.getByTestId("media-key-input"), { target: { value: KEY } });
+    fireEvent.click(screen.getByRole("tab", { name: /图像生成/ }));
+    expect(screen.queryByDisplayValue(KEY)).toBeNull();
+    expect(screen.getByRole("heading", { name: "OpenAI 服务密钥" })).toBeTruthy();
+  });
+
+  it("replaces a key and reports save success without echoing plaintext", async () => {
     const calls = server();
     render(<AdminMediaKeys />);
     await ready();
-    fireEvent.click(screen.getByTestId("media-key-slot-MINIMAX_API_KEY"));
-    fireEvent.click(screen.getByRole("radio", { name: "填写 / 替换" }));
+    fireEvent.click(screen.getByRole("button", { name: "更换密钥" }));
     fireEvent.change(screen.getByTestId("media-key-input"), { target: { value: KEY } });
-    fireEvent.click(screen.getByRole("button", { name: /保存此槽位/ }));
-    await waitFor(() => expect(calls.some((call) => call.method === "PUT")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "保存密钥" }));
+    expect(await screen.findByText("设置已保存")).toBeTruthy();
     const put = calls.find((call) => call.method === "PUT")!;
-    expect(JSON.parse(put.body!)).toMatchObject({
+    expect(JSON.parse(put.body ?? "{}")).toMatchObject({
       slot: "MINIMAX_API_KEY",
       secretAction: "replace",
       apiKey: KEY,
     });
-    await waitFor(() => expect(screen.queryByTestId("media-key-input")).toBeNull());
-    expect(window.localStorage.length).toBe(0);
-    expect(window.sessionStorage.length).toBe(0);
+    expect(screen.queryByDisplayValue(KEY)).toBeNull();
+    expect(document.body.textContent).not.toContain(KEY);
   });
 
-  it("shows waiting-for-restart honestly when the API reports pendingRestart", async () => {
-    server((call) => {
-      if (call.url.endsWith("/admin/media-keys") && call.method === "GET") {
-        return json(
-          mediaView({
-            pendingRestart: true,
-            slots: mediaView().slots.map((slot) =>
-              slot.slot === "DASHSCOPE_MEDIA_API_KEY"
-                ? { ...slot, managed: true, status: "pending_restart", keyConfigured: false, source: "managed" }
-                : slot,
-            ),
-          }),
-        );
-      }
-      return undefined;
-    });
+  it("requires confirmation before clear and cancels back to the prior state", async () => {
+    const calls = server();
     render(<AdminMediaKeys />);
     await ready();
-    expect(screen.getByTestId("media-keys-pending-restart").textContent).toContain("等待进程重启");
-    expect(screen.getByTestId("media-key-slot-DASHSCOPE_MEDIA_API_KEY").textContent).toContain("等待重启");
+    fireEvent.click(screen.getByRole("button", { name: "清除密钥" }));
+    expect(screen.getByRole("heading", { name: "清除 MiniMax 密钥" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "确认清除" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.getByRole("heading", { name: "MiniMax 服务密钥" })).toBeTruthy();
+    expect(screen.getByLabelText("已保存的密钥（掩码）")).toBeTruthy();
+    expect(calls.some((call) => call.method === "PUT")).toBe(false);
   });
 
-  it("distinguishes key-saved from service-ready using real serviceState fields", async () => {
-    server((call) => {
-      if (call.url.endsWith("/admin/media-keys") && call.method === "GET") {
-        return json(
-          mediaView({
-            slots: mediaView().slots.map((slot) => {
-              if (slot.slot === "MINIMAX_API_KEY") {
-                return {
-                  ...slot,
-                  keyConfigured: true,
-                  status: "saved" as const,
-                  managed: true,
-                  source: "managed" as const,
-                  priceConfigured: false,
-                  serviceState: "saved_not_ready" as const,
-                };
-              }
-              if (slot.slot === "OPENAI_MEDIA_API_KEY") {
-                return {
-                  ...slot,
-                  keyConfigured: true,
-                  status: "saved" as const,
-                  managed: true,
-                  source: "managed" as const,
-                  priceConfigured: true,
-                  serviceState: "ready" as const,
-                };
-              }
-              return slot;
-            }),
-          }),
-        );
-      }
-      return undefined;
-    });
+  it("clears a key after confirmation", async () => {
+    const calls = server();
     render(<AdminMediaKeys />);
     await ready();
-    expect(screen.getByTestId("media-key-slot-MINIMAX_API_KEY").textContent).toContain("服务尚未就绪");
-    expect(screen.getByTestId("media-key-slot-OPENAI_MEDIA_API_KEY").textContent).toContain("服务可用");
-    fireEvent.click(screen.getByTestId("media-key-slot-MINIMAX_API_KEY"));
-    expect(screen.getByText("服务尚未就绪 · 单价尚未配置")).toBeTruthy();
-    expect(screen.getByText(/「密钥已保存」不等于「服务可用」/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "清除密钥" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /我确认清除这项服务的密钥/ }));
+    fireEvent.click(screen.getByRole("button", { name: "确认清除" }));
+    expect(await screen.findByText("设置已保存")).toBeTruthy();
+    const put = calls.find((call) => call.method === "PUT")!;
+    expect(JSON.parse(put.body ?? "{}")).toMatchObject({ slot: "MINIMAX_API_KEY", secretAction: "clear" });
+  });
+
+  it("re-reads status without changing the key", async () => {
+    const calls = server();
+    render(<AdminMediaKeys />);
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+    expect(await screen.findByText("已重新读取当前配置")).toBeTruthy();
+    expect(calls.filter((call) => call.url.endsWith("/admin/media-keys") && call.method === "GET")).toHaveLength(2);
+    expect(calls.some((call) => call.method === "PUT")).toBe(false);
+  });
+
+  it("shows empty OpenAI state without faking success", async () => {
+    server();
+    render(<AdminMediaKeys />);
+    await ready();
+    fireEvent.click(screen.getByRole("tab", { name: /图像生成/ }));
+    expect(screen.getByText("尚未配置密钥")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "填写密钥" })).toBeTruthy();
+    expect(screen.queryByText("可以用于当前用途")).toBeNull();
+  });
+});
+
+describe("mediaKeyStatus", () => {
+  it("never hardcodes the Figma voiceover example and marks unknown gaps as 待核验", () => {
+    const saved = mediaView().slots.find((slot) => slot.slot === "MINIMAX_API_KEY")!;
+    const status = mediaKeyStatus(saved);
+    expect(status.detail).not.toContain("请在服务端设置每字单价");
+    expect(status.detail).toMatch(/单价尚未配置|未就绪|待核验/);
+    expect(mediaKeyStatus(undefined).title).toBe("尚未配置密钥");
+    expect(mediaKeyStatus({ ...saved, serviceState: "ready", priceConfigured: true, status: "saved" }).tone).toBe("success");
   });
 });

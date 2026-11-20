@@ -64,7 +64,16 @@ async function capture(page, name) {
 async function signIn(page) {
   await page.getByLabel("密码", { exact: true }).fill(password);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await page.getByRole("button", { name: "校验并保存配置", exact: true }).waitFor();
+  await page.getByRole("button", { name: "保存设置", exact: true }).waitFor();
+}
+async function signOut(page) {
+  const logout = page.getByRole("button", { name: "退出", exact: true });
+  // On narrow viewports the admin footer lives in the drawer; open it before signing out.
+  if (!(await logout.isVisible())) {
+    await page.getByRole("button", { name: "打开导航" }).click();
+    await page.getByRole("dialog", { name: "管理导航" }).waitFor();
+  }
+  await logout.click();
 }
 async function readView(page) {
   const result = await page.evaluate(async () => {
@@ -110,31 +119,31 @@ try {
   const before = await readView(page);
   assert.equal(before.savedRevision, 0);
   // Exactly three providers: DeepSeek, Claude and OpenAI. The retired Qwen has no entry at all.
-  assert.equal(await page.getByRole("button", { name: /^千问/ }).count(), 0);
-  assert.equal(await page.getByRole("button", { name: /^DeepSeek DeepSeek Chat Completions API/ }).count(), 1);
+  assert.equal(await page.getByRole("tab", { name: /^千问/ }).count(), 0);
+  assert.equal(await page.getByRole("tab", { name: /^DeepSeek/ }).count(), 1);
   // DeepSeek quick setup: only the key; saving it makes DeepSeek the default for new requests; an impossible key is
   // refused on the page without saving anything.
-  assert.equal(await page.getByTestId("deepseek-status").getAttribute("data-state"), "key_missing");
-  await page.getByTestId("deepseek-default-notice").filter({ hasText: "保存 DeepSeek 快速配置会将 DeepSeek 设为新创作的默认供应商；只影响新发起的请求，不改变已有任务" }).waitFor();
+  assert.equal(await page.getByTestId("writing-status").getAttribute("data-state"), "key_missing");
+  await page.getByTestId("deepseek-default-notice").filter({ hasText: "保存 DeepSeek 会将 DeepSeek 设为新创作的默认供应商；只影响新发起的请求，不改变已有任务" }).waitFor();
   await page.getByLabel(/^DeepSeek API Key/).fill("short-key");
-  await page.getByRole("button", { name: /保存 DeepSeek API Key/ }).click();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: /DeepSeek API Key 的格式不受支持/ }).waitFor();
   assert.equal(await page.getByLabel(/^DeepSeek API Key/).inputValue(), "");
   // Claude quick setup: says the key is missing, and refuses a Claude Code / subscription token without saving anything.
-  assert.equal(await page.getByTestId("claude-status").getAttribute("data-state"), "key_missing");
+  await page.getByRole("tab", { name: /^Claude/ }).click();
+  assert.equal(await page.getByTestId("writing-status").getAttribute("data-state"), "key_missing");
   await page.getByLabel(/^Claude API Key/).fill("sk-ant-oat01-claude-code-oauth-token-not-real");
-  await page.getByRole("button", { name: /保存 Claude API Key/ }).click();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: /不能用于调用 Claude API 的凭据/ }).waitFor();
   assert.equal(await page.getByText(/sk-ant-api 开头/).count(), 0);
+  await page.getByText("高级设置（可不填）：Workspace ID").click();
   await page.getByTestId("claude-workspace-hint").filter({ hasText: "通常只需填写 API Key。若密钥未限定 Workspace，请在高级设置填写 Workspace ID，或创建限定 Workspace 的密钥。" }).waitFor();
   assert.equal((await readView(page)).savedRevision, 0);
   assert.equal(await page.getByLabel(/^Claude API Key/).inputValue(), "");
-  await page.getByRole("button", { name: /^Claude/ }).click();
-  await page.getByRole("region", { name: "Claude设置" }).waitFor();
-  assert.equal(await page.getByLabel(/^服务端点/).getAttribute("readonly"), "");
-  assert.equal(await page.getByLabel(/^服务端点/).inputValue(), "https://api.anthropic.com/v1/messages");
+  await page.getByRole("region", { name: "Claude写作设置" }).waitFor();
   // Model picker by keyboard: search, Tab to the matching candidate, Space to select; Enter adds a custom ID
   // without submitting the form; the default is chosen explicitly and saved as the first entry.
+  await page.getByRole("button", { name: "管理可用模型" }).click();
   const search = page.getByRole("searchbox", { name: "搜索可用模型" });
   await search.fill("haiku");
   await search.press("Tab");
@@ -146,13 +155,12 @@ try {
   await page.getByLabel(/^添加自定义模型 ID/).press("Enter");
   assert.equal(await page.getByRole("checkbox", { name: /browser-test-model/ }).isChecked(), true);
   assert.equal((await readView(page)).savedRevision, 0);
-  await page.getByRole("combobox", { name: /^默认模型/ }).selectOption("browser-test-model");
+  await page.getByRole("combobox", { name: /^默认模型/ }).first().selectOption("browser-test-model");
   await capture(page, "desktop-model-picker");
-  await page.getByRole("radio", { name: "填写 / 替换", exact: true }).check();
-  await page.getByLabel(/^新的 API Key/).fill(fakeKey);
-  await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: /^Claude配置已保存/ }).waitFor();
-  assert.equal(await page.getByLabel(/^新的 API Key/).count(), 0);
+  await page.getByLabel(/^Claude API Key/).fill(fakeKey);
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: /^设置已保存$/ }).waitFor();
+  assert.equal(await page.getByLabel(/^Claude API Key/).count(), 0);
   const saved = await readView(page);
   assert.equal(saved.savedRevision, 1); assert.equal(saved.activeRevision, 0); assert.equal(saved.pendingRestart, true);
   assert.deepEqual(saved.saved.providers.map((provider) => provider.providerKey), ["openai", "anthropic", "deepseek"]);
@@ -161,7 +169,7 @@ try {
   assert.equal(saved.active.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, false);
   await capture(page, "desktop-models-saved");
   await page.reload();
-  await page.getByRole("button", { name: "校验并保存配置", exact: true }).waitFor();
+  await page.getByRole("button", { name: "保存设置", exact: true }).waitFor();
   assert.equal((await readView(page)).savedRevision, 1);
   const storage = await page.evaluate(() => ({ local: Object.values(localStorage), session: Object.values(sessionStorage), cookie: document.cookie }));
   assert.equal(JSON.stringify(storage).includes(fakeKey), false);
@@ -170,7 +178,7 @@ try {
   assert.match(storage.cookie, /^ads_csrf=[A-Za-z0-9_-]{43}$/);
   assert.equal(storage.cookie.includes(session.value), false);
   evidence.checks.refresh = { sameSavedRevision: true, httpOnlySession: true, noSecretsInBrowserStorage: true };
-  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await signOut(page);
   await page.waitForURL(/\/login\?returnTo=%2Fadmin%2Fmodels&reason=signed-out$/);
   const afterLogout = await context.request.get(`${origin}/api/v1/admin/models`);
   assert.equal(afterLogout.status(), 401);
@@ -178,19 +186,21 @@ try {
   assert.equal((await readView(page)).savedRevision, 1);
   await page.setViewportSize({ width: 390, height: 844 });
   await capture(page, "mobile-models-saved");
-  await page.getByRole("button", { name: /^OpenAI/ }).click();
-  await page.getByRole("region", { name: "OpenAI设置" }).waitFor();
-  assert.equal(await page.getByLabel(/^服务端点/).getAttribute("readonly"), "");
+  await page.getByRole("tab", { name: /^OpenAI/ }).click();
+  await page.getByRole("region", { name: "OpenAI写作设置" }).waitFor();
   // OpenAI shows only its own candidates; a selection without a default is shown as still needing one.
+  await page.getByRole("button", { name: "管理可用模型" }).click();
   assert.equal(await page.getByRole("checkbox", { name: /claude/ }).count(), 0);
   await page.getByRole("checkbox", { name: /gpt-6-luna/ }).check();
   await page.getByText("请从已选的可用模型中选择默认模型。").waitFor();
   await capture(page, "mobile-openai");
-  await page.getByRole("button", { name: /^Claude/ }).click();
-  await page.getByRole("radio", { name: "清除密钥", exact: true }).check();
-  assert.equal(await page.getByRole("button", { name: "校验并保存配置", exact: true }).isDisabled(), true);
+  await page.getByRole("tab", { name: /^Claude/ }).click();
+  await page.getByRole("button", { name: "清除密钥", exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: "确认清除", exact: true }).isDisabled(), true);
   await page.getByRole("checkbox", { name: /我确认清除/ }).check();
-  // The form is now submittable (valid models, confirmed clear): Enter in the search box must still only filter.
+  // After confirmation the clear form is submittable; model search is on the settings form, not the clear form.
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.getByRole("button", { name: "管理可用模型" }).click();
   const clearSearch = page.getByRole("searchbox", { name: "搜索可用模型" });
   await clearSearch.fill("fable");
   await clearSearch.press("Enter");
@@ -198,17 +208,20 @@ try {
   assert.equal((await readView(page)).savedRevision, 1, "Enter in the model search must not submit the form");
   assert.equal(requests.filter((request) => request.method === "PUT").length, 1);
   await clearSearch.fill("");
-  await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: /^Claude配置已保存/ }).waitFor();
+  await page.getByRole("button", { name: "清除密钥", exact: true }).click();
+  await page.getByRole("checkbox", { name: /我确认清除/ }).check();
+  await page.getByRole("button", { name: "确认清除", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: /^设置已保存$/ }).waitFor();
   const cleared = await readView(page);
   assert.equal(cleared.savedRevision, 2);
   assert.equal(cleared.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, false);
+  await page.getByRole("button", { name: "调用限制" }).click();
   assert.deepEqual(await page.getByRole("combobox", { name: /^默认供应商/ }).locator("option").evaluateAll((options) => options.map((option) => option.value)),
     ["", "deepseek", "anthropic", "openai"]);
   await page.getByRole("combobox", { name: /^默认供应商/ }).selectOption("anthropic");
-  await page.getByLabel(/^每日最多调用次数/).fill("8");
-  await page.getByRole("button", { name: "保存调用规则", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: /^调用规则已保存/ }).waitFor();
+  await page.getByLabel(/^每天最多调用/).fill("8");
+  await page.getByRole("button", { name: "保存限制", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: /^设置已保存$/ }).waitFor();
   const limits = await readView(page);
   assert.equal(limits.savedRevision, 3); assert.equal(limits.saved.maxCallsPerDay, 8); assert.equal(limits.activeRevision, 0);
   assert.equal(limits.titleWriting.enabled, false);
@@ -216,21 +229,22 @@ try {
   await page.getByLabel(/^Claude API Key/).fill(fakeServiceKey);
   await page.getByText("高级设置（可不填）：Workspace ID").click();
   await page.getByLabel(/^Workspace ID/).fill(fakeWorkspace);
-  await page.getByRole("button", { name: /保存 Claude API Key/ }).click();
-  await page.getByRole("status").filter({ hasText: /^Claude API Key 已保存。/ }).waitFor();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: /^设置已保存$/ }).waitFor();
   const workspaceSaved = await readView(page);
   assert.equal(workspaceSaved.savedRevision, 4); assert.equal(workspaceSaved.activeRevision, 0);
   assert.equal(workspaceSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").workspaceId, fakeWorkspace);
   assert.equal(workspaceSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, true);
-  assert.equal(await page.getByTestId("claude-status").getAttribute("data-state"), "pending_restart");
+  assert.equal(await page.getByTestId("writing-status").getAttribute("data-state"), "pending_restart");
   await page.getByTestId("claude-workspace-current").filter({ hasText: fakeWorkspace }).waitFor();
   assert.equal((await page.content()).includes(fakeServiceKey), false);
   await capture(page, "mobile-claude-workspace");
   evidence.checks.workspace = { keyKind: "sk-ant-svc", workspaceSaved: true, savedRevision: 4, activeRevision: 0, pendingRestart: true };
   // DeepSeek quick setup at 390 px: the key alone; DeepSeek becomes the saved default; Claude's key and workspace stay.
+  await page.getByRole("tab", { name: /^DeepSeek/ }).click();
   await page.getByLabel(/^DeepSeek API Key/).fill(fakeDeepseekKey);
-  await page.getByRole("button", { name: /保存 DeepSeek API Key/ }).click();
-  await page.getByRole("status").filter({ hasText: /^DeepSeek API Key 已保存，DeepSeek 已设为新创作的默认供应商。/ }).waitFor();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: /^设置已保存$/ }).waitFor();
   const deepseekSaved = await readView(page);
   assert.equal(deepseekSaved.savedRevision, 5); assert.equal(deepseekSaved.activeRevision, 0); assert.equal(deepseekSaved.pendingRestart, true);
   assert.equal(deepseekSaved.saved.defaultProvider, "deepseek");
@@ -238,13 +252,13 @@ try {
   assert.equal(deepseekEntry.keyConfigured, true); assert.deepEqual(deepseekEntry.models, ["deepseek-flash"]);
   assert.equal(deepseekEntry.baseUrl, "https://api.deepseek.com/chat/completions");
   assert.equal(deepseekSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").workspaceId, fakeWorkspace);
-  assert.equal(await page.getByTestId("deepseek-status").getAttribute("data-state"), "pending_restart");
-  assert.equal(await page.getByLabel(/^DeepSeek API Key/).inputValue(), "");
+  assert.equal(await page.getByTestId("writing-status").getAttribute("data-state"), "pending_restart");
+  assert.equal(await page.getByLabel(/^DeepSeek API Key/).count(), 0);
   assert.equal((await page.content()).includes(fakeDeepseekKey), false);
   assert.equal(JSON.stringify(deepseekSaved).includes(fakeDeepseekKey), false);
   await capture(page, "mobile-deepseek-quick-setup");
   evidence.checks.deepseek = { savedRevision: 5, activeRevision: 0, pendingRestart: true, defaultProvider: "deepseek", model: "deepseek-flash", secretNotReturned: true };
-  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await signOut(page);
   await page.waitForURL(/\/login\?/);
   await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
   await capture(page, "mobile-login");
