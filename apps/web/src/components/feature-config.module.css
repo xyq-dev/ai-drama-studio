@@ -1,0 +1,199 @@
+.page {
+  min-width: 0;
+  padding: 28px 32px 48px;
+  color: var(--admin-ink, #101828);
+}
+.intro h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 700;
+}
+.intro p, .state p, .footnote, .hint, .empty, .scope {
+  margin: 8px 0 0;
+  color: var(--admin-muted, #53637b);
+  font-size: 14px;
+  line-height: 22px;
+}
+.state, .editor, .records, .filters, .totals article {
+  border: 1px solid var(--admin-line, #dce2ea);
+  border-radius: 12px;
+  background: #fff;
+}
+.state {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 28px 32px 36px;
+}
+.state h2, .editor h2, .records h2, .dialog h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 700;
+}
+.state img { width: 28px; height: 28px; margin-bottom: 8px; }
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+.card, .cardOn, .vendor, .vendorOn, .tab, .tabOn, .primary, .secondary, .quiet, .record {
+  min-height: 44px;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+.card, .cardOn {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 16px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid var(--admin-line, #dce2ea);
+}
+.card img, .cardOn img { grid-row: 1; }
+.card strong, .cardOn strong { grid-column: 2; font-size: 16px; }
+.card small, .cardOn small, .card span, .cardOn span { grid-column: 2; }
+.card small, .cardOn small { color: var(--admin-muted, #53637b); font-size: 12px; }
+.cardOn { border-color: #465fff; box-shadow: 0 0 0 1px #465fff; }
+.cardOn span { color: #3448bc; font-weight: 600; }
+.tabs { display: none; }
+.editor { margin-top: 16px; padding: 20px 24px 24px; }
+.editorHead, .recordHeadLine, .keyRow, .vendors, .actions, .dialogActions, .filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.editorHead { justify-content: space-between; }
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #f1f4f8;
+  color: #53637b;
+  font-size: 12px;
+}
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #12b76a; }
+.live { margin: 16px 0 0; font-size: 14px; }
+.live span { display: block; color: var(--admin-muted, #53637b); font-size: 13px; }
+.live strong { font-size: 16px; }
+.vendorLabel { margin: 16px 0 8px; color: var(--admin-muted, #53637b); font-size: 13px; }
+.vendor, .vendorOn, .tab, .tabOn, .secondary, .primary, .quiet {
+  padding: 0 16px;
+  border: 1px solid var(--admin-line, #dce2ea);
+  background: #fff;
+  color: #101828;
+}
+.vendorOn, .tabOn { border-color: #465fff; background: #eef2ff; color: #3448bc; }
+.primary { border-color: #465fff; background: #465fff; color: #fff; }
+.quiet { background: #f2f4f7; color: #98a2b3; }
+.primary:disabled, .secondary:disabled, .quiet:disabled { cursor: not-allowed; }
+.primary:disabled { opacity: .45; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.field { display: grid; gap: 6px; font-size: 14px; }
+.field input, .field select, .filters select, .keyRow {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--admin-line, #dce2ea);
+  border-radius: 8px;
+  background: #fff;
+  font: inherit;
+}
+.keyRow { justify-content: space-between; }
+.keyRow button { border: 0; background: transparent; color: #344054; font: inherit; min-height: 44px; cursor: pointer; }
+.banner, .fail {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 22px;
+}
+.banner { background: #fff4d6; color: #87530a; }
+.banner strong { margin-right: 8px; }
+.fail { background: #fff0ee; color: #bb3439; }
+.actions { margin-top: 16px; }
+.actions button { flex: 0 0 auto; }
+.dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 24px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgb(16 24 40 / .18);
+}
+.modal {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(16 24 40 / .38);
+}
+.dialog p { margin: 8px 0 0; line-height: 22px; }
+.dialogActions { margin-top: 16px; }
+.dialogActions button { flex: 1 1 120px; }
+.filters { margin-top: 16px; padding: 16px; }
+.filters label { display: grid; gap: 6px; flex: 1 1 180px; font-size: 14px; }
+.scope { margin: 0 0 0 auto; }
+.totals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.totals article { padding: 16px; }
+.totals h2 { margin: 0; font-size: 14px; font-weight: 500; color: #53637b; }
+.totals strong { display: block; margin-top: 8px; font-size: 28px; line-height: 36px; }
+.totals span { color: var(--admin-muted, #53637b); font-size: 13px; }
+.records { margin-top: 16px; padding: 8px 8px 4px; }
+.recordHeadLine { justify-content: space-between; padding: 8px 8px 0; }
+.columns, .record {
+  display: grid;
+  grid-template-columns: 1fr .9fr .9fr 1.2fr .8fr .6fr;
+  gap: 8px;
+  align-items: center;
+}
+.columns { padding: 12px; color: #53637b; font-size: 13px; }
+.record {
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  border-top: 1px solid var(--admin-line, #dce2ea);
+  background: transparent;
+  text-align: left;
+}
+.records ul { list-style: none; margin: 0; padding: 0; }
+.pillOk, .pillFail, .pillUnknown {
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+.pillOk { background: #eaf8f0; color: #096549; }
+.pillFail { background: #fff4d6; color: #87530a; }
+.pillUnknown { background: #f1f4f8; color: #53637b; }
+.detail { display: grid; gap: 8px; margin: 12px 0 0; }
+.detail div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; }
+.detail dt { color: var(--admin-muted, #53637b); }
+.detail dd { margin: 0; overflow-wrap: anywhere; }
+.footnote { margin-top: 12px; }
+@media (max-width: 1023px) {
+  .page { padding: 16px; }
+  .cards, .columns { display: none; }
+  .tabs { display: flex; margin-top: 16px; }
+  .tab, .tabOn { flex: 1 1 0; padding: 0 8px; }
+  .fields, .totals, .record { grid-template-columns: 1fr 1fr; }
+  .actions { flex-wrap: nowrap; }
+  .actions button { flex: 1 1 0; padding: 0 8px; }
+  .scope { margin: 8px 0 0; width: 100%; }
+  .filters { align-items: stretch; }
+}

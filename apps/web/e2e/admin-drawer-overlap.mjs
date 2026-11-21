@@ -20,13 +20,13 @@ const evidence = { kind: "chromium-admin-shell-drawer-overlap", externalRequests
 // The planned heading is a label. Its rows expand one at a time.
 const PLANNED = [
   { name: "创作内容", items: ["作品管理", "素材库"] },
-  { name: "任务与用量", items: ["生成任务", "调用记录"] },
   { name: "系统管理", items: ["用户与权限", "操作日志"] },
 ];
 const ALWAYS_VISIBLE = [
   { role: "text", name: "模型与 API" },
-  { role: "link", name: "文本模型" },
-  { role: "link", name: "媒体密钥" },
+  { role: "link", name: "功能配置" },
+  { role: "text", name: "任务与用量" },
+  { role: "link", name: "调用记录" },
   { role: "text", name: "规划中的栏目" },
   ...PLANNED.map(({ name }) => ({ role: "button", name })),
 ];

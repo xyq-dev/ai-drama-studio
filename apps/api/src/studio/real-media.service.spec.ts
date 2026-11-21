@@ -7,6 +7,27 @@ function options(){
     authorize:vi.fn(),createQuote:vi.fn()},jobs:{createAndQueueWorkflowJob:vi.fn()},assets:{},configurationFor:vi.fn(async()=>null)};
   return {raw,typed:raw as unknown as RealMediaServiceOptions};
 }
+describe("enabled feature configuration",()=>{
+  it("uses the enabled storyboard vendor instead of the browser choice",async()=>{
+    const o=options();
+    const configurationForImageProvider=vi.fn(async()=>null);
+    const service=new RealMediaService({...o.typed,objects:{readVerified:vi.fn()},configurationForImageProvider,
+      featureImageProvider:async()=>"dashscope-media"} as unknown as RealMediaServiceOptions);
+    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:"11111111-1111-4111-8111-111111111111",imageProvider:"openai-media"}))
+      .rejects.toMatchObject({code:"AUTO_STORYBOARD_IMAGE_UNAVAILABLE"});
+    expect(configurationForImageProvider).toHaveBeenCalledWith("dashscope-media",undefined);
+    expect(o.raw.store.createQuote).not.toHaveBeenCalled();
+  });
+  it("does not fall back from MiniMax to Bailian when voice is not explicitly enabled",async()=>{
+    const o=options();
+    const configurationFor=vi.fn(async()=>({providerKey:"dashscope-media",model:"qwen3-tts-flash",capability:"audio.tts",enabled:true}));
+    const minimaxTtsConfigurationFor=vi.fn(async()=>null);
+    const service=new RealMediaService({...o.typed,configurationFor,minimaxTtsConfigurationFor,featureVoiceVendor:async()=>null} as unknown as RealMediaServiceOptions);
+    await expect(service.speechPort().quote({workspaceId:"workspace"} as never)).rejects.toMatchObject({code:"REAL_MEDIA_PROVIDER_DISABLED"});
+    expect(minimaxTtsConfigurationFor).toHaveBeenCalled();
+    expect(configurationFor).not.toHaveBeenCalled();
+  });
+});
 describe("explicit real-media budget API",()=>{
   it("projects the same retained OpenAI candidate in both readers once the shot is approved", async () => {
     const o = options();

@@ -1,6 +1,6 @@
-/** Vite fixture stub. Admin drawer acceptance opens the media-keys console. */
+/** Vite fixture stub. Admin drawer acceptance opens the feature-config console. */
 export function usePathname() {
-  return "/admin/media-keys";
+  return "/admin/features";
 }
 
 export function redirect() {}

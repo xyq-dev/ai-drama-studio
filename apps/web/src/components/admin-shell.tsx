@@ -11,11 +11,14 @@ type PlannedItem = { label: string; icon: string; purpose: string };
 type PlannedGroup = { id: string; label: string; icon: string; items: PlannedItem[] };
 
 const LIVE_LINKS: LiveLink[] = [
-  { href: "/admin/models", label: "文本模型", icon: "/design/tailadmin-v2/icon-sliders-horizontal.svg" },
-  { href: "/admin/media-keys", label: "媒体密钥", icon: "/design/tailadmin-v2/icon-key-round.svg" },
+  { href: "/admin/features", label: "功能配置", icon: "/design/tailadmin-v2/icon-sliders-horizontal.svg" },
 ];
 
-/** Planned columns from Figma 12:2717 — expandable purpose list only, not product pages. */
+const USAGE_LINK: LiveLink = {
+  href: "/admin/usage", label: "调用记录", icon: "/design/tailadmin-v2/icon-chart.svg",
+};
+
+/** Planned columns stay expandable purpose lists. 调用记录 is a real page under 任务与用量. */
 const PLANNED_GROUPS: PlannedGroup[] = [
   {
     id: "creation",
@@ -24,15 +27,6 @@ const PLANNED_GROUPS: PlannedGroup[] = [
     items: [
       { label: "作品管理", icon: "/design/tailadmin-v2/icon-clapperboard.svg", purpose: "查看作品及所属工作区，定位剧集和当前制作阶段。" },
       { label: "素材库", icon: "/design/tailadmin-v2/icon-images.svg", purpose: "按作品查找角色参考图、配音、分镜和成片素材。" },
-    ],
-  },
-  {
-    id: "tasks",
-    label: "任务与用量",
-    icon: "/design/tailadmin-v2/icon-list-video.svg",
-    items: [
-      { label: "生成任务", icon: "/design/tailadmin-v2/icon-list-video.svg", purpose: "查看生成进度和失败原因，定位对应作品及任务。" },
-      { label: "调用记录", icon: "/design/tailadmin-v2/icon-chart.svg", purpose: "按供应商或作品查看模型调用记录和用量。" },
     ],
   },
   {
@@ -47,26 +41,32 @@ const PLANNED_GROUPS: PlannedGroup[] = [
 ];
 
 function crumbFor(pathname: string): { group: string; page: string } {
-  if (pathname.startsWith("/admin/media-keys")) return { group: "模型与 API", page: "媒体密钥" };
+  if (pathname.startsWith("/admin/usage")) return { group: "任务与用量", page: "调用记录" };
   if (pathname.startsWith("/settings/storage")) return { group: "系统管理", page: "对象存储" };
   if (pathname.startsWith("/admin/works")) return { group: "运维", page: "作品列表" };
-  return { group: "模型与 API", page: "文本模型" };
+  return { group: "模型与 API", page: "功能配置" };
+}
+
+function isCurrent(pathname: string, href: string): boolean {
+  if (pathname === href || pathname.startsWith(`${href}/`)) return true;
+  if (href === "/admin/features" && (pathname === "/admin" || pathname.startsWith("/admin/models") || pathname.startsWith("/admin/media-keys"))) return true;
+  return false;
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
-    <a className={styles.brand} href="/admin/models">
+    <a className={styles.brand} href="/admin/features">
       <img className={styles.brandMark} src="/design/tailadmin-v2/brand-hongguo.svg" width={42} height={42} alt="" />
       <span>
         {compact ? "后台导航" : "红果"}
-        <small>{compact ? "红果 AI Drama Studio" : "AI DRAMA STUDIO"}</small>
+        <small>{compact ? "红果 AI Drama Studio" : "运营管理后台"}</small>
       </span>
     </a>
   );
 }
 
 export function AdminShell({ children }: { children: ReactNode }) {
-  const pathname = usePathname() ?? "/admin/models";
+  const pathname = usePathname() ?? "/admin/features";
   const crumb = crumbFor(pathname);
   const [open, setOpen] = useState(false);
   const [wide, setWide] = useState(true);
@@ -107,7 +107,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
     setBusy(true);
     try {
       await logout();
-      window.location.assign(loginUrl("/admin/models", "signed-out"));
+      window.location.assign(loginUrl("/admin/features", "signed-out"));
     } catch {
       setBusy(false);
     }
@@ -124,7 +124,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
       <span className={styles.navSection}>模型与 API</span>
       <ul className={styles.navList}>
         {LIVE_LINKS.map((link) => {
-          const current = pathname === link.href || (link.href === "/admin/models" && pathname === "/admin");
+          const current = isCurrent(pathname, link.href);
           return (
             <li key={link.href}>
               <a className={styles.navLink} href={link.href} aria-current={current ? "page" : undefined}>
@@ -134,6 +134,15 @@ export function AdminShell({ children }: { children: ReactNode }) {
             </li>
           );
         })}
+      </ul>
+      <span className={styles.navSection}>任务与用量</span>
+      <ul className={styles.navList}>
+        <li>
+          <a className={styles.navLink} href={USAGE_LINK.href} aria-current={isCurrent(pathname, USAGE_LINK.href) ? "page" : undefined}>
+            <img src={USAGE_LINK.icon} width={20} height={20} alt="" />
+            {USAGE_LINK.label}
+          </a>
+        </li>
       </ul>
 
       <div className={styles.navDivider} aria-hidden="true" />
@@ -243,17 +252,20 @@ export function AdminShell({ children }: { children: ReactNode }) {
             {wide ? (
               <nav className={styles.breadcrumbs} aria-label="面包屑">
                 <img src="/design/tailadmin-v2/icon-panels-top-left.svg" width={20} height={20} alt="" />
-                <span>管理控制台</span>
+                <span>管理后台</span>
                 <img src="/design/tailadmin-v2/icon-chevron-right.svg" width={14} height={14} alt="" />
                 <span>{crumb.group}</span>
                 <img src="/design/tailadmin-v2/icon-chevron-right.svg" width={14} height={14} alt="" />
                 <strong>{crumb.page}</strong>
               </nav>
             ) : (
-              <a className={styles.mobileBrand} href="/admin/models">
-                <img src="/design/tailadmin-v2/brand-hongguo.svg" width={28} height={28} alt="" />
-                <span>红果管理控制台</span>
-              </a>
+              <>
+                <a className={styles.mobileBrand} href="/admin/features">
+                  <img src="/design/tailadmin-v2/brand-hongguo.svg" width={28} height={28} alt="" />
+                  <span>红果运营后台</span>
+                </a>
+                <span className={styles.mobileCrumb}>{crumb.group}</span>
+              </>
             )}
           </div>
         </header>

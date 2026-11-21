@@ -1,7 +1,6 @@
-import { AdminMediaKeys } from "../../../components/admin-media-keys";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "媒体密钥 · 红果管理控制台" };
-
+/** Old media-key entry. Storyboard configuration replaces it. */
 export default function AdminMediaKeysPage() {
-  return <AdminMediaKeys />;
+  redirect("/admin/features?feature=storyboard");
 }

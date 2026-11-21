@@ -35,6 +35,9 @@ function setup(options: {
   /** Episode plans by project; a project without one is a three-episode project with no target. */
   plans?: Record<string, { episodeCount: number; targetEpisodeSeconds: number }>;
   planReady?: boolean;
+  featureWritingLock?: () => Promise<{ providerKey: "openai" | "anthropic" | "deepseek"; model: string; configVersion: string; credentialRef?: string; apiKey?: string } | null>;
+  featureWritingCommit?: (input: { runId: string; projectId: string; providerKey: "openai" | "anthropic" | "deepseek"; model: string; configVersion: string; credentialRef: string }) => Promise<void>;
+  featureCredential?: (run: { id: string; providerKey: string; model: string }) => Promise<{ apiKey: string; url: string; models: readonly string[] } | null>;
 } = {}) {
   const store = new InMemoryTitleWritingStore();
   store.ready = options.storageReady ?? true;
@@ -44,7 +47,8 @@ function setup(options: {
   const seen: FixtureExchange[] = [];
   const providers = titleWritingProviderConfigs(options.env ?? CONFIGURED);
   const transport: WritingTransport = fixtureChatTransport("夜班证词", { seen, ...(options.override ? { override: options.override } : {}) });
-  const engine = new TitleWritingEngine({ workspaceId: WS, store, providers, transport, maxCallsPerDay: 30, timeoutMs: 20 });
+  const engine = new TitleWritingEngine({ workspaceId: WS, store, providers, transport, maxCallsPerDay: 30, timeoutMs: 20,
+    ...(options.featureCredential ? { featureCredential: options.featureCredential } : {}) });
   const pending: Array<Promise<void>> = [];
   const service = new TitleWritingService({
     workspaceId: WS,
@@ -71,6 +75,8 @@ function setup(options: {
     maxCallsPerDay: 30,
     maxActiveRuns: 1,
     schedule: (work) => { pending.push(work()); },
+    ...(options.featureWritingLock ? { featureWritingLock: options.featureWritingLock } : {}),
+    ...(options.featureWritingCommit ? { featureWritingCommit: options.featureWritingCommit } : {}),
   });
   const settle = async () => { while (pending.length > 0) await pending.shift(); };
   return { store, service, seen, settle };
@@ -198,6 +204,34 @@ describe("starting a run", () => {
     expect((await service.start(P1, { title: "x", premise: "not accepted here" }, TOKEN, CONTEXT("k"))).status).toBe(400);
     expect((await service.start(P1, { title: "x", settings: { episodeCount: 5 } }, TOKEN, CONTEXT("k"))).status).toBe(400);
     expect(store.runs).toHaveLength(0);
+  });
+
+  it("sends the enabled writing credential when the process provider has no key, and a replay keeps that provider", async () => {
+    const featureKey = "synthetic-feature-openai-key-zzz";
+    const creds = new Map<string, { apiKey: string; url: string; models: readonly string[] }>();
+    const { service, settle, seen } = setup({
+      env: { ANTHROPIC_API_KEY: SECRET, TITLE_WRITING_ANTHROPIC_MODELS: "q-1" },
+      featureWritingLock: async () => ({ providerKey: "openai", model: "gpt-6-astra", configVersion: "ver_feature", credentialRef: "fc_test", apiKey: featureKey }),
+      featureWritingCommit: async (input) => { creds.set(input.runId, { apiKey: featureKey, url: "https://api.openai.com/v1/responses", models: [input.model] }); },
+      featureCredential: async (run) => creds.get(run.id) ?? null,
+    });
+    const started = await service.start(P1, { title: "夜班证词", providerKey: "anthropic", model: "q-1" }, TOKEN, CONTEXT("feature-key"));
+    expect(started.status).toBe(201);
+    await settle();
+    expect(seen[0]).toMatchObject({ url: "https://api.openai.com/v1/responses", authorization: `Bearer ${featureKey}` });
+    expect(seen.some((item) => item.body.model === "q-1")).toBe(false);
+    const replay = await service.start(P1, { title: "夜班证词", providerKey: "anthropic", model: "q-1" }, TOKEN, CONTEXT("feature-key"));
+    expect(replay.status).toBe(200);
+  });
+
+  it("uses the enabled writing configuration and ignores a client provider", async () => {
+    const lock = async () => ({ providerKey: "openai" as const, model: "d-1", configVersion: "ver_locked" });
+    const { service, settle, seen } = setup({ featureWritingLock: lock });
+    const result = await service.start(P1, { title: "夜班证词", providerKey: "anthropic", model: "q-1" }, TOKEN, CONTEXT("locked"));
+    expect(result.status).toBe(201);
+    await settle();
+    expect(seen.every((item) => item.url === "https://api.openai.com/v1/responses" && item.body.model === "d-1")).toBe(true);
+    expect(seen.some((item) => item.body.model === "q-1")).toBe(false);
   });
 
   it("uses a chosen provider and model from the allowlist", async () => {

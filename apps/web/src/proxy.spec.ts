@@ -57,17 +57,21 @@ describe("page proxy", () => {
     const response = await proxy(new NextRequest("https://drama.example.test/studio", { headers: { cookie: "__Host-ads_session=ok" } }));
     expect(response.headers.get("x-middleware-next")).toBe("1");
   });
-  it("redirects a creator away from /admin and /settings/storage without serving admin HTML", async () => {
+  it("lets a creator load /admin so the page can refuse access, and still blocks storage settings", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({
       enabled: true, authenticated: true, role: "creator", username: "creator-a",
     })));
-    for (const path of ["/admin", "/admin/models", "/admin/media-keys", "/settings/storage"]) {
+    for (const path of ["/admin", "/admin/features", "/admin/models", "/admin/media-keys", "/admin/usage"]) {
       const response = await proxy(new NextRequest(`https://drama.example.test${path}`, {
         headers: { cookie: "__Host-ads_session=creator" },
       }));
-      expect(response.status, path).toBe(307);
-      expect(response.headers.get("location"), path).toBe("https://drama.example.test/studio");
+      expect(response.headers.get("x-middleware-next"), path).toBe("1");
     }
+    const storage = await proxy(new NextRequest("https://drama.example.test/settings/storage", {
+      headers: { cookie: "__Host-ads_session=creator" },
+    }));
+    expect(storage.status).toBe(307);
+    expect(storage.headers.get("location")).toBe("https://drama.example.test/studio");
   });
   it("allows an operator session into /admin", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({

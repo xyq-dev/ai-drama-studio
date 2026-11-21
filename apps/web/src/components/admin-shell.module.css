@@ -256,6 +256,7 @@
   overflow: hidden;
 }
 .breadcrumbs strong { color: var(--admin-ink); font-weight: 500; }
+.mobileCrumb { margin-left: auto; color: var(--admin-muted); font-size: 14px; white-space: nowrap; }
 .mobileBrand {
   display: inline-flex;
   align-items: center;

@@ -19,9 +19,9 @@ import {
   openStorageSettingsStore, storageSettingsOptions,
   type PostgresPool,
 } from "@ai-drama/database";
-import { sampleVideoGenerationEnabled, realMediaAccessAllowed, type ComfyUiAdminCheck, type TitleRunKind } from "@ai-drama/contracts";
+import { sampleVideoGenerationEnabled, realMediaAccessAllowed, storyboardProviderForVendor, writingProviderForVendor, type ComfyUiAdminCheck, type TitleRunKind } from "@ai-drama/contracts";
 import {
-  AutoCreationEngine, SeriesWritingEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
+  ANTHROPIC_MESSAGES_URL, AutoCreationEngine, DEEPSEEK_CHAT_COMPLETIONS_URL, OPENAI_RESPONSES_URL, SeriesWritingEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
 import { AUTO_CREATION_DEFAULT_ALLOWED_HOSTS, OCEAN_ENGINE_ENTRY_URLS } from "@ai-drama/domain";
 import { AutoCreationService } from "./auto-creation.service";
@@ -39,11 +39,15 @@ import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
 import { AdminMediaKeysService } from "../admin/admin-media-keys.service";
+import { FeatureConfigService } from "../admin/feature-config.service";
+import { FeatureConfigVault, featureVaultPath } from "../admin/feature-config-vault";
+import { FeatureUsageStore, featureUsagePath } from "../admin/feature-usage-store";
+import { legacyLiveFor, legacySecretFor } from "../admin/feature-config.legacy";
 import {
   PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
   UploadSessionStore,
 } from "@ai-drama/database";
-import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject, readVerifiedUploadObject, canonicalMiniMaxTtsBaseUrl } from "@ai-drama/providers";
+import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject, readVerifiedUploadObject, canonicalMiniMaxTtsBaseUrl, applyManagedMediaKeys } from "@ai-drama/providers";
 import { StorageSettingsService } from "../admin/storage-settings.service";
 import { VimaxPlanningService } from "./vimax-planning.service";
 import { RealMediaService } from "./real-media.service";
@@ -97,6 +101,8 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly shortSequelAi: ShortSequelAiService | null = null,
     /** Image uploads for storyboard/source; uses object storage without image-provider keys. */
     readonly assetUpload: AssetUploadService | null = null,
+    /** Per-feature drafts. Null when the encrypted admin directory is not configured. */
+    readonly featureConfig: FeatureConfigService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -201,6 +207,54 @@ export class StudioRuntime implements OnModuleDestroy {
       await closePostgresPool(pool);
       throw error;
     }
+    const legacySnapshots = async () => {
+      const settings = adminModels?.runtimeSettings() ?? null;
+      const managedKeys = adminMediaKeys ? await adminMediaKeys.runtimeSettings() : null;
+      const effective = applyManagedMediaKeys(processMediaEnv, managedKeys);
+      const present = (value: string | undefined) => typeof value === "string" && value.length >= 8 && value.length <= 512 && !/\s/.test(value) ? value : null;
+      return {
+        models: settings ? { defaultProvider: settings.defaultProvider, providers: settings.providers } : null,
+        media: {
+          dashscopeApiKey: present(effective.DASHSCOPE_MEDIA_API_KEY),
+          openaiMediaApiKey: present(effective.OPENAI_MEDIA_API_KEY),
+          minimaxApiKey: present(effective.MINIMAX_API_KEY),
+        },
+      };
+    };
+    let featureConfig: FeatureConfigService | null = null;
+    if (admin) {
+      try {
+        featureConfig = await FeatureConfigService.open({
+          vault: await FeatureConfigVault.open({ path: featureVaultPath(admin.path), masterKey: admin.masterKey }),
+          usage: new FeatureUsageStore(featureUsagePath(admin.path)),
+          homeWorkspaceId: workspaceId,
+          legacy: {
+            live: async () => {
+              const snapshot = await legacySnapshots();
+              return {
+                writing: legacyLiveFor("writing", snapshot.models, snapshot.media),
+                storyboard: legacyLiveFor("storyboard", snapshot.models, snapshot.media),
+                voice: legacyLiveFor("voice", snapshot.models, snapshot.media),
+              };
+            },
+            secret: async (feature, vendor) => {
+              const snapshot = await legacySnapshots();
+              return legacySecretFor(feature, vendor, snapshot.models, snapshot.media);
+            },
+          },
+          policy: {
+            writingAllowlist: async () => {
+              const settings = adminModels?.runtimeSettings();
+              if (!settings) return null;
+              return [...settings.providers.openai.models, ...settings.providers.deepseek.models, ...settings.providers.anthropic.models];
+            },
+          },
+        });
+      } catch (error) {
+        await closePostgresPool(pool);
+        throw error;
+      }
+    }
     const managed = adminModels?.runtimeSettings();
     const titleProviders = managed ? managedProviderConfigs(managed) : titleWritingProviderConfigs(env);
     const maxCallsPerDay = managed?.maxCallsPerDay ?? env.TITLE_WRITING_MAX_CALLS_PER_DAY;
@@ -211,6 +265,7 @@ export class StudioRuntime implements OnModuleDestroy {
     if (scriptBreakdownEnabled) allowedRunKinds.push("script_breakdown");
     // Only the real fetch transport is wired. A missing configuration never falls back to a Mock answer. One engine
     // drives runs of both kinds, so recovery and the per-run in-process guard cover title writing and breakdowns alike.
+    const writingUrl = { openai: OPENAI_RESPONSES_URL, anthropic: ANTHROPIC_MESSAGES_URL, deepseek: DEEPSEEK_CHAT_COMPLETIONS_URL };
     const titleEngine = new TitleWritingEngine({
       workspaceId,
       store: titleStore,
@@ -218,6 +273,38 @@ export class StudioRuntime implements OnModuleDestroy {
       transport: createFetchTransport(),
       maxCallsPerDay,
       allowedRunKinds,
+      ...(featureConfig ? {
+        featureCredential: async (run) => {
+          const locked = await featureConfig!.credentialForTask("writing", workspaceId, run.id);
+          const providerKey = writingProviderForVendor(locked?.vendor ?? "");
+          if (!locked || !providerKey || providerKey !== run.providerKey || locked.model !== run.model) return null;
+          return { apiKey: locked.apiKey, url: writingUrl[providerKey], models: [locked.model] };
+        },
+        onProductionExchange: async (event) => {
+          const locked = await featureConfig!.credentialForTask("writing", workspaceId, event.runId);
+          const usage = event.usage.status === "present" && event.usage.totalTokens !== null
+            ? { status: "present" as const, amount: event.usage.totalTokens, unit: "token" as const }
+            : { status: "unknown" as const };
+          await featureConfig!.recordExecution({
+            feature: "writing",
+            workspaceId,
+            projectId: event.projectId,
+            projectLabel: event.projectId,
+            episodeId: null,
+            episodeLabel: "整部作品",
+            taskId: event.runId,
+            actorId: event.actorId,
+            vendor: locked?.vendor ?? event.providerKey,
+            model: event.model,
+            configVersion: locked?.versionId ?? null,
+            credentialRef: locked?.credentialRef ?? null,
+            vendorRequestId: event.vendorRequestId,
+            result: event.ok ? "succeeded" : "failed",
+            usage,
+            cost: { status: "pending" },
+          });
+        },
+      } : {}),
     });
     const defaultProvider = managed ? managed.defaultProvider : env.TITLE_WRITING_DEFAULT_PROVIDER ?? null;
     // Options say when the console holds saved settings this API has not applied yet (never a value, never a gate).
@@ -237,6 +324,27 @@ export class StudioRuntime implements OnModuleDestroy {
       maxCallsPerDay,
       maxActiveRuns,
       ...(configurationPending ? { configurationPending } : {}),
+      ...(featureConfig ? { featureWritingLock: async () => {
+        const binding = await featureConfig!.readBinding("writing");
+        if (!binding || binding.source !== "enabled") return null;
+        const providerKey = writingProviderForVendor(binding.vendor);
+        if (!providerKey) return null;
+        return { providerKey, model: binding.model, configVersion: binding.configVersion, credentialRef: binding.credentialRef, apiKey: binding.secret };
+      }, featureWritingCommit: async (input) => {
+        const binding = await featureConfig!.readBinding("writing");
+        if (!binding || binding.source !== "enabled" || binding.credentialRef !== input.credentialRef) return;
+        await featureConfig!.rememberLock({
+          workspaceId,
+          taskId: input.runId,
+          feature: "writing",
+          versionId: input.configVersion,
+          credentialRef: input.credentialRef,
+          vendor: binding.vendor,
+          model: input.model,
+          projectId: input.projectId,
+          episodeId: null,
+        });
+      } } : {}),
     });
     const scriptBreakdown = new ScriptBreakdownService({
       workspaceId,
@@ -444,16 +552,66 @@ export class StudioRuntime implements OnModuleDestroy {
         return configuration?.enabled && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
       },
       comfyUiReadiness: () => realRuntime.checkComfyUi(),
+      ...(featureConfig ? {
+        featureImageProvider: async () => {
+          const binding = await featureConfig!.readBinding("storyboard");
+          if (!binding || binding.source !== "enabled") return null;
+          return storyboardProviderForVendor(binding.vendor);
+        },
+        featureVoiceVendor: async () => {
+          const binding = await featureConfig!.readBinding("voice");
+          if (!binding || binding.source !== "enabled") return null;
+          if (binding.vendor === "bailian") return "bailian" as const;
+          if (binding.vendor === "minimax") return "minimax" as const;
+          return null;
+        },
+        onFeatureMediaTask: async (input) => {
+          const execution = await mediaStore.loadExecution(workspaceId, input.jobId);
+          const capability = execution?.inputSnapshot.capability;
+          const feature = capability === "image.generate" ? "storyboard" as const : capability === "audio.tts" ? "voice" as const : null;
+          if (!feature) return;
+          const binding = await featureConfig!.readBinding(feature);
+          if (!binding || binding.source !== "enabled") return;
+          const found = await pool.query(
+            `SELECT e.id AS episode_id, e.episode_no
+               FROM shot_revision r
+               JOIN shot sh ON sh.id = r.shot_id AND sh.workspace_id = r.workspace_id
+               JOIN episode e ON e.id = sh.episode_id AND e.workspace_id = sh.workspace_id
+              WHERE r.id = $1 AND r.workspace_id = $2 AND r.project_id = $3`,
+            [input.shotRevisionId, workspaceId, input.projectId],
+          ) as { rows: Array<{ episode_id: string }> };
+          const episode = found.rows[0];
+          await featureConfig!.rememberLock({
+            workspaceId,
+            taskId: input.jobId,
+            feature,
+            versionId: binding.configVersion,
+            credentialRef: binding.credentialRef,
+            vendor: binding.vendor,
+            model: binding.model,
+            projectId: input.projectId,
+            episodeId: episode?.episode_id ?? null,
+          });
+        },
+      } : {}),
       minimaxTtsConfigurationFor: async client => {
         const configuration = await realRuntime.minimaxTtsConfiguration();
         return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
       },
       speechCatalog: async () => {
-        // Official website voice is MiniMax speech-2.8-hd only — never Bailian qwen3-tts-flash.
+        const binding = featureConfig ? await featureConfig.readBinding("voice") : null;
+        const bailian = binding?.source === "enabled" && binding.vendor === "bailian";
+        if (bailian) {
+          const configuration = await realRuntime.configurationFor("audio.tts");
+          return configuration && await mediaStore.configurationStillEnabled(configuration)
+            ? realRuntime.speechCatalog()
+            : { available: false, reasonCode: "SPEECH_PROVIDER_NOT_CONFIGURED" as const, catalogVersion: "none", voices: [] };
+        }
+        // Official website voice is MiniMax speech-2.8-hd. Bailian is used only after an explicit enable.
         const configuration = await realRuntime.minimaxTtsConfiguration();
         return configuration && await mediaStore.configurationStillEnabled(configuration)
           ? realRuntime.minimaxSpeechCatalog()
-          : { available: false, reasonCode: "SPEECH_PROVIDER_NOT_CONFIGURED", catalogVersion: "none", voices: [] };
+          : { available: false, reasonCode: "SPEECH_PROVIDER_NOT_CONFIGURED" as const, catalogVersion: "none", voices: [] };
       },
       ...(objectStore ? { objects: {
         // Generated media reads still prefer the receipt-gated client; uploads work without image keys / receipt cipher.
@@ -482,7 +640,7 @@ export class StudioRuntime implements OnModuleDestroy {
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),
       vimaxPlanning, realMedia, speech, voiceCompose, () => objectStore.destroy(), storageSettings, checkComfyUi,
-      shortSequelAi, assetUpload);
+      shortSequelAi, assetUpload, featureConfig);
   }
 
   async onModuleDestroy(): Promise<void> {

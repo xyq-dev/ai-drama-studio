@@ -72,6 +72,7 @@ import {
   validateTitleWritingOutput,
   type TitleWritingContext,
 } from "@ai-drama/domain";
+import { isScriptBreakdownRun } from "./script-breakdown-run";
 import {
   TEXT_WRITING_MAX_OUTPUT_TOKENS,
   TEXT_WRITING_TIMEOUT_MS,
@@ -342,6 +343,23 @@ export interface TitleWritingEngineDeps {
   leaseMs?: number;
   timeoutMs?: number;
   send?: typeof sendWriting;
+  /**
+   * Enabled feature credential for this run. When it returns a key, that key is sent instead of the process
+   * provider key, including when the process provider is not configured. Null keeps the process provider.
+   */
+  featureCredential?: (run: { id: string; providerKey: string; model: string }) => Promise<{ apiKey: string; url: string; models: readonly string[] } | null>;
+  /** Records a finished provider exchange. Must not receive the API key. Failures here do not change the run. */
+  onProductionExchange?: (event: {
+    runId: string;
+    projectId: string;
+    actorId: string;
+    providerKey: string;
+    model: string;
+    stepKey: string;
+    vendorRequestId: string;
+    ok: boolean;
+    usage: { status: "present"; inputTokens: number | null; outputTokens: number | null; totalTokens: number | null } | { status: "unknown" };
+  }) => Promise<void>;
 }
 
 function sha256(value: string): string {
@@ -434,8 +452,12 @@ export class TitleWritingEngine {
     }
     // A run of a retired provider (qwen) has no configuration or adapter: it stops here before any reservation or send,
     // and is never moved to another provider or model. Nor is a run whose frozen model is no longer allowed.
-    const provider = providerConfigFor(this.deps.providers, run.input.providerKey);
-    const adapter = provider ? (this.deps.adapters ?? WRITING_ADAPTERS)[provider.providerKey] : undefined;
+    const listed = providerConfigFor(this.deps.providers, run.input.providerKey);
+    const adapter = listed ? (this.deps.adapters ?? WRITING_ADAPTERS)[listed.providerKey] : undefined;
+    const feature = adapter ? await this.deps.featureCredential?.({ id: run.id, providerKey: run.input.providerKey, model: run.input.model }) ?? null : null;
+    const provider = feature && adapter && feature.models.includes(run.input.model)
+      ? { providerKey: adapter.providerKey, ok: true as const, url: feature.url, apiKey: feature.apiKey, models: [...feature.models], missing: [] as string[], workspaceId: null }
+      : listed;
     if (!provider || !adapter || !provider.ok || !provider.models.includes(run.input.model)) {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
@@ -535,7 +557,26 @@ export class TitleWritingEngine {
       };
     }
     // A fenced executor's late answer is dropped: recovery already recorded the call as unknown.
-    return this.deps.store.finishCall(this.deps.workspaceId, call.id, this.executorId, patch, this.now().toISOString());
+    const finished = await this.deps.store.finishCall(this.deps.workspaceId, call.id, this.executorId, patch, this.now().toISOString());
+    if (this.deps.onProductionExchange && !isScriptBreakdownRun(run)) {
+      const vendorRequestId = exchange.providerRequestId && exchange.providerRequestId.length >= 8
+        ? exchange.providerRequestId
+        : `title-${runId}-${call.id}`.slice(0, 200);
+      await this.deps.onProductionExchange({
+        runId,
+        projectId: run.projectId,
+        actorId: run.actorId,
+        providerKey: run.input.providerKey,
+        model: run.input.model,
+        stepKey: next.stepKey,
+        vendorRequestId,
+        ok: patch.state === "completed",
+        usage: exchange.usage.status === "present"
+          ? { status: "present", inputTokens: exchange.usage.inputTokens, outputTokens: exchange.usage.outputTokens, totalTokens: exchange.usage.totalTokens }
+          : { status: "unknown" },
+      }).catch(() => undefined);
+    }
+    return finished;
   }
 
   private async saveAndComplete(bundle: TitleRunBundle): Promise<false> {

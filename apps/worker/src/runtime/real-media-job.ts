@@ -5,6 +5,7 @@ import { PersistenceError, commitSpeechTake, assertAutoStoryboardSource, assertS
   isComfyUiMediaJob, type ComfyUiCancelDenial, type JobPersistenceService, type MediaAssetRecord, type MediaAssetStore,
   type RealMediaExecution, type RealMediaStore, type RealMediaReceiptOutput } from "@ai-drama/database";
 import { MediaSubmissionUnknownError, OPENAI_IMAGE_SIZE, assertComfyUiSourceImage, type MediaProviderAdapter, type MediaProviderObservation, type MediaProviderOutput } from "@ai-drama/providers";
+import { noteFeatureUsage } from "./feature-usage-note";
 import type { RealMediaMaterializer } from "./real-media-materializer";
 import type { RealMediaObjectStore } from "./real-media-objects";
 export interface RealMediaWorkerDependencies {
@@ -82,6 +83,12 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
       generationJobId:execution.jobId,jobAttemptId:acquired.attemptId,providerConfigurationId:snapshot.configuration.id,
       clientRequestKey:`${execution.jobId}:${acquired.attemptNo}`,inputHash:execution.inputHash,inputSnapshot:snapshot,
       traceId:`real-media:${execution.jobId}`,capability:snapshot.capability,...(image?{resolvedSourceImage:image}:{})});
+    const vendorRequestId=result.providerRequestId&&result.providerRequestId.length>=8?result.providerRequestId:`media-${execution.jobId}-${acquired.attemptNo}`;
+    const reported=result.accounting?.costs.find((line)=>line.basis==="PROVIDER_REPORTED"&&(line.currency==="CNY"||line.currency==="USD"));
+    await noteFeatureUsage({workspaceId:execution.workspaceId,projectId:execution.projectId,jobId:execution.jobId,
+      actorId:"worker",capability:snapshot.capability,providerKey:snapshot.configuration.providerKey,
+      model:snapshot.configuration.model,vendorRequestId,ok:result.kind==="succeeded",usage:result.accounting?.usage,
+      ...(reported?{costAmount:reported.amountDecimal,costCurrency:reported.currency}:{})});
     await runningHeartbeat.stop();
     if(!result.providerRequestId&&(result.kind==="failed"||result.kind==="canceled")){
       await dependencies.store.rejectSubmission(execution.workspaceId,acquired.attemptId);

@@ -15,6 +15,7 @@ import {
 } from "./tokens";
 import { ADMIN_COMFYUI_CHECK, ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 import { ADMIN_MEDIA_KEYS_SERVICE, AdminMediaKeysController } from "../admin/admin-media-keys.controller";
+import { FEATURE_CONFIG_SERVICE, FeatureConfigController } from "../admin/feature-config.controller";
 import { VIMAX_PLANNING_SERVICE, VimaxPlanningController } from "./vimax-planning.controller";
 import { REAL_MEDIA_SERVICE, RealMediaController } from "./real-media.controller";
 import { SPEECH_SERVICE, SpeechController } from "./speech.controller";
@@ -38,7 +39,7 @@ export class StudioModule {
       module: StudioModule,
       controllers: [
         StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
-        AdminModelsController, AdminMediaKeysController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
+        AdminModelsController, AdminMediaKeysController, FeatureConfigController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
         ProjectLibraryController, StorageSettingsController, ScriptWorkbenchController, ProductionStateReadonlyController,
         ShortSequelController, ShortSequelAiController, AssetUploadController,
@@ -117,6 +118,11 @@ export class StudioModule {
           inject: [STUDIO_RUNTIME],
           // Same console gate as writing models; vault still loads when path/master are set even if the UI is closed.
           useFactory: (runtime: StudioRuntime) => (runtime.adminConsoleEnabled ? runtime.adminMediaKeys : null),
+        },
+        {
+          provide: FEATURE_CONFIG_SERVICE,
+          inject: [STUDIO_RUNTIME],
+          useFactory: (runtime: StudioRuntime) => (runtime.adminConsoleEnabled ? runtime.featureConfig : null),
         },
       ],
     };
