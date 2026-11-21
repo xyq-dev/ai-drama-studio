@@ -73,6 +73,8 @@ jobs:
         run: |
           node scripts/project-library-ui-check.mjs
           node scripts/storage-settings-ui-check.mjs
+      - name: Check the admin drawer does not cover navigation on short viewports
+        run: node apps/web/e2e/admin-drawer-overlap.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -81,4 +83,5 @@ jobs:
             test-results/real-production-ui
             test-results/project-library-ui
             test-results/storage-settings-ui
+            test-results/admin-drawer-overlap
           if-no-files-found: ignore
