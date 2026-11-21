@@ -42,6 +42,7 @@ import { AdminMediaKeysService } from "../admin/admin-media-keys.service";
 import { FeatureConfigService } from "../admin/feature-config.service";
 import { FeatureConfigVault, featureVaultPath } from "../admin/feature-config-vault";
 import { FeatureUsageStore, featureUsagePath } from "../admin/feature-usage-store";
+import { OperationLogStore, operationLogPath, setOperationJournal } from "../admin/operation-log-store";
 import { legacyLiveFor, legacySecretFor } from "../admin/feature-config.legacy";
 import {
   PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
@@ -625,6 +626,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const voiceCompose = new VoiceComposeService({ workspaceId,
       enabled: realComposeAllowed && env.M4_LOCAL_COMPOSE_ENABLED && Boolean(composeObjectDir), jobs,
       store: new PostgresVoiceComposeStore(pool, jobs), speech: speechStore });
+    if (admin) setOperationJournal(new OperationLogStore(operationLogPath(admin.path)));
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
         mockImageEnabled, absoluteDir, mockAvEnabled, mockSmEnabled, localComposeEnabled, composeObjectDir, episodeComposeEnabled,

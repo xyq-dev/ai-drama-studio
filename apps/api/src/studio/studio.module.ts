@@ -20,7 +20,7 @@ import { VIMAX_PLANNING_SERVICE, VimaxPlanningController } from "./vimax-plannin
 import { REAL_MEDIA_SERVICE, RealMediaController } from "./real-media.controller";
 import { SPEECH_SERVICE, SpeechController } from "./speech.controller";
 import { VOICE_COMPOSE_SERVICE, VoiceComposeController } from "./voice-compose.controller";
-import { ProjectLibraryStore, ShortSequelStore } from "@ai-drama/database";
+import { AdminOpsStore, ProjectLibraryStore, ShortSequelStore, type CreatorAccountStore } from "@ai-drama/database";
 import { ProjectLibraryService } from "./project-library.service";
 import { PROJECT_LIBRARY_SERVICE, ProjectLibraryController } from "./project-library.controller";
 import { STORAGE_SETTINGS_SERVICE, StorageSettingsController } from "../admin/storage-settings.controller";
@@ -31,6 +31,10 @@ import { ProductionStateReadonlyService } from "./production-state-readonly.serv
 import { SHORT_SEQUEL_STORE, SHORT_SEQUEL_WORKSPACE, ShortSequelController } from "./short-sequel.controller";
 import { SHORT_SEQUEL_AI_SERVICE, ShortSequelAiController } from "./short-sequel-ai.controller";
 import { ASSET_UPLOAD_SERVICE, AssetUploadController } from "./asset-upload.controller";
+import { ADMIN_DIRECTORY_SERVICE, AdminDirectoryController } from "../admin/admin-directory.controller";
+import { AdminDirectoryService } from "../admin/admin-directory.service";
+import { CREATOR_ACCOUNT_STORE, AUTH_WORKSPACE_ID } from "../auth/auth.tokens";
+import { operationJournal } from "../admin/operation-log-store";
 
 @Module({})
 export class StudioModule {
@@ -42,7 +46,7 @@ export class StudioModule {
         AdminModelsController, AdminMediaKeysController, FeatureConfigController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
         ProjectLibraryController, StorageSettingsController, ScriptWorkbenchController, ProductionStateReadonlyController,
-        ShortSequelController, ShortSequelAiController, AssetUploadController,
+        ShortSequelController, ShortSequelAiController, AssetUploadController, AdminDirectoryController,
       ],
       providers: [
         { provide: PRODUCTION_STATE_READONLY_SERVICE, useFactory: () => new ProductionStateReadonlyService(env.PRODUCTION_STATE_ROOT) },
@@ -123,6 +127,18 @@ export class StudioModule {
           provide: FEATURE_CONFIG_SERVICE,
           inject: [STUDIO_RUNTIME],
           useFactory: (runtime: StudioRuntime) => (runtime.adminConsoleEnabled ? runtime.featureConfig : null),
+        },
+        {
+          provide: ADMIN_DIRECTORY_SERVICE,
+          inject: [STUDIO_RUNTIME, CREATOR_ACCOUNT_STORE, AUTH_WORKSPACE_ID],
+          useFactory: (runtime: StudioRuntime, creators: CreatorAccountStore | null, workspaceId: string) => new AdminDirectoryService({
+            store: new AdminOpsStore(runtime.pool),
+            creators,
+            workspaceId,
+            logs: operationJournal(),
+            retry: (jobId, context) => runtime.service.retryJob(jobId, context),
+            readContent: (assetId) => runtime.service.readMockAssetContent(assetId),
+          }),
         },
       ],
     };

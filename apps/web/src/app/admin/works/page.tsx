@@ -1,5 +1,7 @@
-import { OpsWorks } from "../../../components/ops-works";
+"use client";
+
+import { AdminDirectory } from "../../../components/admin-directory";
 
 export default function AdminWorksPage() {
-  return <OpsWorks />;
+  return <AdminDirectory kind="works" />;
 }

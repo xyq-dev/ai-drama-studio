@@ -1,11 +1,15 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Put, Query, Res } from "@nestjs/common";
 import {
   FEATURE_KEYS,
+  FEATURE_LABELS,
+  FEATURE_VENDOR_LABELS,
   featureDraftSaveSchema,
   featureEnableRequestSchema,
   featureTestRequestSchema,
   type FeatureKey,
+  type FeatureVendor,
 } from "@ai-drama/contracts";
+import { noteCredentialChange, noteOperation } from "./operation-log-store";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
 import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
 import { FeatureConfigError, type FeatureConfigService } from "./feature-config.service";
@@ -44,14 +48,21 @@ export class FeatureConfigController {
     @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
-    return this.send(response, () => {
+    return this.send(response, async () => {
       const { auth, backend } = this.configured();
       this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       const key = this.feature(feature);
       const input = featureDraftSaveSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
-      return backend.saveDraft(key, input.data);
+      const view = await backend.saveDraft(key, input.data);
+      const label = `${FEATURE_LABELS[key]} · ${vendorLabel(input.data.vendor)}`;
+      if (input.data.secretAction === "replace" && input.data.apiKey) {
+        await noteCredentialChange({ action: "保存功能密钥", label, status: "已保存", secret: input.data.apiKey, source: "管理后台 /admin/features" });
+      } else if (input.data.secretAction === "clear") {
+        await noteCredentialChange({ action: "清除功能密钥", label, status: "已清除", source: "管理后台 /admin/features" });
+      }
+      return view;
     });
   }
 
@@ -62,13 +73,22 @@ export class FeatureConfigController {
     @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
-    return this.send(response, () => {
+    return this.send(response, async () => {
       const { auth, backend } = this.configured();
       this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       const input = featureTestRequestSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
-      return backend.testDraft(this.feature(feature), input.data);
+      const key = this.feature(feature);
+      const result = await backend.testDraft(key, input.data);
+      await noteOperation({
+        action: "测试功能配置",
+        target: `${FEATURE_LABELS[key]} · ${vendorLabel(input.data.vendor)}`,
+        result: result.probe?.ok === false ? "failed" : "success",
+        source: "管理后台 /admin/features",
+        detail: "测试结果已记录。完整密钥未写入。",
+      });
+      return result;
     });
   }
 
@@ -79,13 +99,22 @@ export class FeatureConfigController {
     @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
-    return this.send(response, () => {
+    return this.send(response, async () => {
       const { auth, backend } = this.configured();
       this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       const input = featureEnableRequestSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
-      return backend.enable(this.feature(feature), input.data);
+      const key = this.feature(feature);
+      const view = await backend.enable(key, input.data);
+      await noteOperation({
+        action: "启用功能配置",
+        target: `${FEATURE_LABELS[key]} · ${vendorLabel(input.data.vendor)}`,
+        result: "success",
+        source: "管理后台 /admin/features",
+        detail: "已启用刚刚测试通过的草稿。完整密钥未写入。",
+      });
+      return view;
     });
   }
 
@@ -151,6 +180,10 @@ export class FeatureConfigController {
       return { error: { code: error.code, message: error.message } };
     }
   }
+}
+
+function vendorLabel(vendor: FeatureVendor): string {
+  return FEATURE_VENDOR_LABELS[vendor];
 }
 
 function authorizeJsonWrite(auth: SiteAuth, headers: RequestHeaders): void {

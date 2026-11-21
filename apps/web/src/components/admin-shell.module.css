@@ -267,6 +267,40 @@
   font-weight: 700;
   min-width: 0;
 }
+.sampleBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--admin-soft);
+  color: var(--admin-muted);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.sampleBadge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #98a2b3;
+}
+.directory {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 4px 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--admin-blue);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
 .menu {
   display: inline-grid;
   place-items: center;
