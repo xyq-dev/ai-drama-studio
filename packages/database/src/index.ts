@@ -213,6 +213,7 @@ export * from "./speech-batch-store";
 export * from "./real-media-store";
 export * from "./voice-compose-store";
 export * from "./project-library";
+export { AdminOpsStore, type AdminPageQuery, type WorkSignalRow, type AssetSignalRow, type JobSignalRow, type OwnerFacetRow } from "./admin-ops-store";
 export * from "./storage-settings-store";
 export * from "./upload-session-store";
 export {

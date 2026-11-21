@@ -54,6 +54,16 @@ export class AuthController {
     return this.send(response, async () => {
       const result = await this.auth().login(headers, body);
       response.setHeader("Set-Cookie", result.cookies);
+      if (result.session.role === "operator") {
+        const { noteOperation } = await import("../admin/operation-log-store");
+        await noteOperation({
+          action: "登录后台",
+          target: "/admin",
+          result: "success",
+          source: "管理后台 /admin",
+          detail: "管理员登录。日志不记录密码。",
+        });
+      }
       return result.session;
     });
   }

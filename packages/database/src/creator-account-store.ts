@@ -67,6 +67,49 @@ export class CreatorAccountStore {
     }
   }
 
+  /** Operator directory: active and disabled creators. LEGACY is not a login-able account. Never returns password hashes. */
+  async listManaged(workspaceId: string, limit = 100): Promise<CreatorAccountRecord[]> {
+    const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 100);
+    const client = await this.pool.connect();
+    try {
+      if (!await this.tablesPresent(client)) return [];
+      const result = await client.query<QueryResultRow>(
+        `SELECT id, workspace_id, username, status, created_at, updated_at
+           FROM creator_account
+          WHERE workspace_id = $1 AND status IN ('ACTIVE', 'DISABLED')
+          ORDER BY created_at ASC, username ASC
+          LIMIT $2`,
+        [workspaceId, safeLimit],
+      );
+      return result.rows.map(mapAccount);
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Reuses the existing status column. LEGACY rows cannot be enabled or disabled here. */
+  async setStatus(workspaceId: string, id: string, status: "ACTIVE" | "DISABLED"): Promise<CreatorAccountRecord> {
+    if (status !== "ACTIVE" && status !== "DISABLED") {
+      throw new PersistenceError("VALIDATION_ERROR", "账号状态无效");
+    }
+    const client = await this.pool.connect();
+    try {
+      if (!await this.tablesPresent(client)) throw new PersistenceError("NOT_FOUND", "Creator accounts are not migrated");
+      const result = await client.query<QueryResultRow>(
+        `UPDATE creator_account
+            SET status = $3, updated_at = now()
+          WHERE id = $1 AND workspace_id = $2 AND status IN ('ACTIVE', 'DISABLED')
+          RETURNING id, workspace_id, username, status, created_at, updated_at`,
+        [id, workspaceId, status],
+      );
+      const row = result.rows[0];
+      if (!row) throw new PersistenceError("NOT_FOUND", "创作者账号不存在");
+      return mapAccount(row);
+    } finally {
+      client.release();
+    }
+  }
+
   /** Minimal operator listing for provisioning checks. Never returns password hashes. */
   async listActive(workspaceId: string, limit = 50): Promise<CreatorAccountRecord[]> {
     const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 100);

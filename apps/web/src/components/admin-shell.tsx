@@ -7,43 +7,47 @@ import { loginUrl, logout } from "../lib/site-session";
 import styles from "./admin-shell.module.css";
 
 type LiveLink = { href: string; label: string; icon: string };
-type PlannedItem = { label: string; icon: string; purpose: string };
-type PlannedGroup = { id: string; label: string; icon: string; items: PlannedItem[] };
+type NavGroup = { label: string; items: LiveLink[] };
 
-const LIVE_LINKS: LiveLink[] = [
-  { href: "/admin/features", label: "功能配置", icon: "/design/tailadmin-v2/icon-sliders-horizontal.svg" },
-];
-
-const USAGE_LINK: LiveLink = {
-  href: "/admin/usage", label: "调用记录", icon: "/design/tailadmin-v2/icon-chart.svg",
-};
-
-/** Planned columns stay expandable purpose lists. 调用记录 is a real page under 任务与用量. */
-const PLANNED_GROUPS: PlannedGroup[] = [
+/** Formal operator navigation. Order matches board 37:6162. */
+const NAV_GROUPS: NavGroup[] = [
   {
-    id: "creation",
-    label: "创作内容",
-    icon: "/design/tailadmin-v2/icon-clapperboard.svg",
+    label: "模型与 API",
     items: [
-      { label: "作品管理", icon: "/design/tailadmin-v2/icon-clapperboard.svg", purpose: "查看作品及所属工作区，定位剧集和当前制作阶段。" },
-      { label: "素材库", icon: "/design/tailadmin-v2/icon-images.svg", purpose: "按作品查找角色参考图、配音、分镜和成片素材。" },
+      { href: "/admin/features", label: "功能配置", icon: "/design/tailadmin-v2/icon-sliders-horizontal.svg" },
     ],
   },
   {
-    id: "system",
-    label: "系统管理",
-    icon: "/design/tailadmin-v2/icon-users-round.svg",
+    label: "创作内容",
     items: [
-      { label: "用户与权限", icon: "/design/tailadmin-v2/icon-users-round.svg", purpose: "管理管理员、创作者及其工作区访问范围。" },
-      { label: "操作日志", icon: "/design/tailadmin-v2/icon-clipboard-list.svg", purpose: "追踪后台配置变更，查看操作人、时间与结果。" },
+      { href: "/admin/works", label: "作品管理", icon: "/design/tailadmin-v2/icon-clapperboard.svg" },
+      { href: "/admin/assets", label: "素材库", icon: "/design/tailadmin-v2/icon-images.svg" },
+    ],
+  },
+  {
+    label: "任务与用量",
+    items: [
+      { href: "/admin/jobs", label: "生成任务", icon: "/design/tailadmin-v2/icon-list-video.svg" },
+      { href: "/admin/usage", label: "调用记录", icon: "/design/tailadmin-v2/icon-chart.svg" },
+    ],
+  },
+  {
+    label: "系统管理",
+    items: [
+      { href: "/admin/users", label: "用户与权限", icon: "/design/tailadmin-v2/icon-users-round.svg" },
+      { href: "/admin/logs", label: "操作日志", icon: "/design/tailadmin-v2/icon-clipboard-list.svg" },
     ],
   },
 ];
 
 function crumbFor(pathname: string): { group: string; page: string } {
+  if (pathname.startsWith("/admin/works")) return { group: "创作内容", page: "作品管理" };
+  if (pathname.startsWith("/admin/assets")) return { group: "创作内容", page: "素材库" };
+  if (pathname.startsWith("/admin/jobs")) return { group: "任务与用量", page: "生成任务" };
   if (pathname.startsWith("/admin/usage")) return { group: "任务与用量", page: "调用记录" };
+  if (pathname.startsWith("/admin/users")) return { group: "系统管理", page: "用户与权限" };
+  if (pathname.startsWith("/admin/logs")) return { group: "系统管理", page: "操作日志" };
   if (pathname.startsWith("/settings/storage")) return { group: "系统管理", page: "对象存储" };
-  if (pathname.startsWith("/admin/works")) return { group: "运维", page: "作品列表" };
   return { group: "模型与 API", page: "功能配置" };
 }
 
@@ -53,13 +57,13 @@ function isCurrent(pathname: string, href: string): boolean {
   return false;
 }
 
-function Brand({ compact = false }: { compact?: boolean }) {
+function Brand() {
   return (
     <a className={styles.brand} href="/admin/features">
       <img className={styles.brandMark} src="/design/tailadmin-v2/brand-hongguo.svg" width={42} height={42} alt="" />
       <span>
-        {compact ? "后台导航" : "红果"}
-        <small>{compact ? "红果 AI Drama Studio" : "运营管理后台"}</small>
+        红果
+        <small>运营管理后台</small>
       </span>
     </a>
   );
@@ -71,7 +75,6 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [wide, setWide] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [expanded, setExpanded] = useState<string | null>(null);
   const opener = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLElement>(null);
   const wasOpen = useRef(false);
@@ -121,72 +124,24 @@ export function AdminShell({ children }: { children: ReactNode }) {
         if (drawerOpen && event.target instanceof Element && event.target.closest("a[href]")) setOpen(false);
       }}
     >
-      <span className={styles.navSection}>模型与 API</span>
-      <ul className={styles.navList}>
-        {LIVE_LINKS.map((link) => {
-          const current = isCurrent(pathname, link.href);
-          return (
-            <li key={link.href}>
-              <a className={styles.navLink} href={link.href} aria-current={current ? "page" : undefined}>
-                <img src={link.icon} width={20} height={20} alt="" />
-                {link.label}
-              </a>
-            </li>
-          );
-        })}
-      </ul>
-      <span className={styles.navSection}>任务与用量</span>
-      <ul className={styles.navList}>
-        <li>
-          <a className={styles.navLink} href={USAGE_LINK.href} aria-current={isCurrent(pathname, USAGE_LINK.href) ? "page" : undefined}>
-            <img src={USAGE_LINK.icon} width={20} height={20} alt="" />
-            {USAGE_LINK.label}
-          </a>
-        </li>
-      </ul>
-
-      <div className={styles.navDivider} aria-hidden="true" />
-      <span className={styles.navSection}>规划中的栏目</span>
-      <ul className={styles.navList}>
-        {PLANNED_GROUPS.map((group) => {
-          const isOpen = expanded === group.id;
-          return (
-            <li key={group.id}>
-              <button
-                type="button"
-                className={styles.plannedToggle}
-                aria-expanded={isOpen}
-                onClick={() => setExpanded(isOpen ? null : group.id)}
-              >
-                <img src={group.icon} width={20} height={20} alt="" />
-                <span>{group.label}</span>
-                <img
-                  className={`${styles.chevron} ${isOpen ? styles.chevronOpen : ""}`}
-                  src="/design/tailadmin-v2/icon-chevron-right.svg"
-                  width={14}
-                  height={14}
-                  alt=""
-                />
-              </button>
-              {isOpen ? (
-                <ul className={styles.plannedItems}>
-                  {group.items.map((item) => (
-                    <li key={item.label}>
-                      <div className={styles.plannedItem} role="group" aria-label={item.label}>
-                        <div className={styles.plannedItemHead}>
-                          <img src={item.icon} width={18} height={18} alt="" />
-                          <strong>{item.label}</strong>
-                        </div>
-                        <p>{item.purpose}</p>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
+      {NAV_GROUPS.map((group) => (
+        <div key={group.label}>
+          <span className={styles.navSection}>{group.label}</span>
+          <ul className={styles.navList}>
+            {group.items.map((link) => {
+              const current = isCurrent(pathname, link.href);
+              return (
+                <li key={link.href}>
+                  <a className={styles.navLink} href={link.href} aria-current={current ? "page" : undefined}>
+                    <img src={link.icon} width={20} height={20} alt="" />
+                    {link.label}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
     </nav>
   );
 
@@ -225,7 +180,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
         aria-label={drawerOpen ? "管理导航" : undefined}
       >
         <div className={styles.sidebarHead}>
-          <Brand compact={drawerOpen} />
+          <Brand />
           {drawerOpen ? (
             <button className={styles.close} type="button" aria-label="关闭菜单" onClick={() => setOpen(false)}>
               <img src="/design/tailadmin-v2/icon-x.svg" width={20} height={20} alt="" />
@@ -238,17 +193,6 @@ export function AdminShell({ children }: { children: ReactNode }) {
       <div className={styles.page}>
         <header className={styles.topbar} aria-label="管理控制台页眉">
           <div className={styles.headerMain}>
-            <button
-              ref={opener}
-              type="button"
-              className={styles.menu}
-              aria-controls={sidebarId}
-              aria-label={wide ? "导航" : "打开导航"}
-              aria-expanded={wide ? true : open}
-              onClick={() => { if (!wide) setOpen(true); }}
-            >
-              <img src="/design/tailadmin-v2/icon-menu.svg" width={20} height={20} alt="" />
-            </button>
             {wide ? (
               <nav className={styles.breadcrumbs} aria-label="面包屑">
                 <img src="/design/tailadmin-v2/icon-panels-top-left.svg" width={20} height={20} alt="" />
@@ -259,15 +203,26 @@ export function AdminShell({ children }: { children: ReactNode }) {
                 <strong>{crumb.page}</strong>
               </nav>
             ) : (
-              <>
-                <a className={styles.mobileBrand} href="/admin/features">
-                  <img src="/design/tailadmin-v2/brand-hongguo.svg" width={28} height={28} alt="" />
-                  <span>红果运营后台</span>
-                </a>
-                <span className={styles.mobileCrumb}>{crumb.group}</span>
-              </>
+              <a className={styles.mobileBrand} href="/admin/features">
+                <img src="/design/tailadmin-v2/brand-hongguo.svg" width={28} height={28} alt="" />
+                <span>红果运营后台</span>
+              </a>
             )}
           </div>
+          {wide ? <span className={styles.sampleBadge}>运营示例</span> : (
+            <button
+              ref={opener}
+              type="button"
+              className={styles.directory}
+              aria-controls={sidebarId}
+              aria-label="目录"
+              aria-expanded={open}
+              onClick={() => setOpen(true)}
+            >
+              目录
+              <img src="/design/tailadmin-v2/icon-chevron-right.svg" width={14} height={14} alt="" />
+            </button>
+          )}
         </header>
         <div className={styles.content}>{children}</div>
       </div>

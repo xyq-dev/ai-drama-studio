@@ -253,6 +253,17 @@ export class SiteAuth {
     found.value.lastSeenAt = this.now();
   }
 
+  /**
+   * Drops every in-memory session for this account. Disabling a creator must not leave a cookie usable
+   * until the 12-hour absolute lifetime. Operator sessions use a different account id and are left alone.
+   */
+  revokeAccount(accountId: string): void {
+    if (!accountId) return;
+    for (const [key, value] of this.sessions) {
+      if (value.accountId === accountId) this.sessions.delete(key);
+    }
+  }
+
   /** Revokes the server-side session (when there is one) and clears every login cookie. */
   logout(headers: RequestHeaders): string[] {
     const found = this.lookup(headers);

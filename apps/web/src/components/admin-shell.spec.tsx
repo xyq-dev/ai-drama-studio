@@ -2,8 +2,9 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+const navState = vi.hoisted(() => ({ pathname: "/admin/features" }));
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/admin/features",
+  usePathname: () => navState.pathname,
 }));
 
 const CSRF = "c".repeat(43);
@@ -21,6 +22,7 @@ let assign: ReturnType<typeof vi.fn<(url: string | URL) => void>>;
 
 beforeEach(async () => {
   vi.resetModules();
+  navState.pathname = "/admin/features";
   viewport(true);
   document.cookie = `ads_csrf=${CSRF}; Path=/`;
   assign = vi.fn<(url: string | URL) => void>();
@@ -42,51 +44,62 @@ afterEach(() => {
   document.cookie = "ads_csrf=; Max-Age=0; Path=/";
 });
 
-it("shows live model/API links, planned columns, and Hongguo admin branding", () => {
+it("shows the four formal groups and Hongguo admin branding", () => {
   render(<AdminShell><main>正文</main></AdminShell>);
   const nav = screen.getByRole("navigation", { name: "管理菜单" });
   expect(within(nav).getAllByRole("link").map((link) => [link.getAttribute("href"), link.textContent])).toEqual([
     ["/admin/features", "功能配置"],
+    ["/admin/works", "作品管理"],
+    ["/admin/assets", "素材库"],
+    ["/admin/jobs", "生成任务"],
     ["/admin/usage", "调用记录"],
+    ["/admin/users", "用户与权限"],
+    ["/admin/logs", "操作日志"],
   ]);
   expect(within(nav).getByRole("link", { name: "功能配置" }).getAttribute("aria-current")).toBe("page");
   expect(within(nav).getByText("模型与 API")).toBeTruthy();
+  expect(within(nav).getByText("创作内容")).toBeTruthy();
   expect(within(nav).getByText("任务与用量")).toBeTruthy();
-  expect(within(nav).getByText("规划中的栏目")).toBeTruthy();
-  expect(within(nav).getByRole("button", { name: /创作内容/ })).toBeTruthy();
-  expect(within(nav).getByRole("button", { name: /系统管理/ })).toBeTruthy();
-  expect(within(nav).queryByRole("button", { name: /生成任务/ })).toBeNull();
+  expect(within(nav).getByText("系统管理")).toBeTruthy();
+  expect(within(nav).queryByText("规划中的栏目")).toBeNull();
+  expect(within(nav).queryByText("所属工作区")).toBeNull();
   expect(within(nav).queryByRole("link", { name: "文本模型" })).toBeNull();
   expect(within(nav).queryByRole("link", { name: "媒体密钥" })).toBeNull();
-  expect(within(nav).queryByRole("link", { name: "作品管理" })).toBeNull();
   expect(within(nav).queryByText("充值")).toBeNull();
   expect(within(nav).queryByText("会员")).toBeNull();
   expect(screen.getByText("红果")).toBeTruthy();
   expect(screen.getByText("运营管理后台")).toBeTruthy();
+  expect(screen.getByText("运营示例")).toBeTruthy();
   expect(screen.getByText("平台管理员")).toBeTruthy();
   expect(screen.getByText("已登录")).toBeTruthy();
   expect(screen.getByRole("link", { name: "返回创作中心" }).getAttribute("href")).toBe("/studio");
   expect(screen.getByRole("button", { name: "退出" })).toBeTruthy();
-  expect(screen.getByRole("navigation", { name: "面包屑" }).textContent).toContain("功能配置");
+  const crumb = screen.getByRole("navigation", { name: "面包屑" });
+  expect(crumb.textContent).toContain("管理后台");
+  expect(crumb.textContent).toContain("模型与 API");
+  expect(crumb.textContent).toContain("功能配置");
+  expect(crumb.textContent).not.toContain("运维");
 });
 
-it("expands a planned group to show purpose copy without inventing routes", () => {
+it("uses the works breadcrumb instead of the old ops label", async () => {
+  navState.pathname = "/admin/works";
+  ({ AdminShell } = await import("./admin-shell"));
   render(<AdminShell><main>正文</main></AdminShell>);
-  const nav = screen.getByRole("navigation", { name: "管理菜单" });
-  fireEvent.click(within(nav).getByRole("button", { name: /创作内容/ }));
-  expect(within(nav).getByText("作品管理")).toBeTruthy();
-  expect(within(nav).getByText("查看作品及所属工作区，定位剧集和当前制作阶段。")).toBeTruthy();
-  expect(within(nav).getByText("素材库")).toBeTruthy();
-  expect(within(nav).queryByRole("link", { name: "作品管理" })).toBeNull();
+  const crumb = screen.getByRole("navigation", { name: "面包屑" });
+  expect(crumb.textContent).toContain("创作内容");
+  expect(crumb.textContent).toContain("作品管理");
+  expect(crumb.textContent).not.toContain("作品列表");
+  expect(within(screen.getByRole("navigation", { name: "管理菜单" })).queryByText("规划中")).toBeNull();
 });
 
 it("opens a mobile drawer below 1024px with 44px touch targets and closes after selecting a live link", () => {
   viewport(false);
   render(<AdminShell><main>正文</main></AdminShell>);
   expect(screen.queryByRole("navigation", { name: "管理菜单" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
+  fireEvent.click(screen.getByRole("button", { name: "目录" }));
   const dialog = screen.getByRole("dialog", { name: "管理导航" });
-  expect(within(dialog).getByText("后台导航")).toBeTruthy();
+  expect(within(dialog).getByText("红果")).toBeTruthy();
+  expect(within(dialog).getByText("运营管理后台")).toBeTruthy();
   expect(within(dialog).getByRole("link", { name: "功能配置" })).toBeTruthy();
   const close = within(dialog).getByRole("button", { name: "关闭菜单" });
   expect(getComputedStyle(close).minHeight === "44px" || close.className.length > 0).toBe(true);
@@ -97,7 +110,7 @@ it("opens a mobile drawer below 1024px with 44px touch targets and closes after 
 it("keeps the selected item after the short mobile drawer closes", () => {
   viewport(false);
   render(<AdminShell><main>正文</main></AdminShell>);
-  fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
+  fireEvent.click(screen.getByRole("button", { name: "目录" }));
   const dialog = screen.getByRole("dialog", { name: "管理导航" });
   expect(within(dialog).getByRole("link", { name: "功能配置" }).getAttribute("aria-current")).toBe("page");
   fireEvent.click(within(dialog).getByRole("link", { name: "功能配置" }));
