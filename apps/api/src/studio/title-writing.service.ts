@@ -59,6 +59,11 @@ export interface TitleWritingDependencies {
   clock?: () => Date;
   /** Starts server-side work without holding the HTTP request. Tests may run it inline. */
   schedule?: (work: () => Promise<void>) => void;
+  /**
+   * When a feature-config version is enabled, new tasks use that provider and model.
+   * A null result leaves the existing server choice unchanged. Client provider keys are ignored while a lock is present.
+   */
+  featureWritingLock?: () => Promise<{ providerKey: TitleWritingProviderKey; model: string; configVersion: string } | null>;
 }
 
 export interface TitleWritingResult {
@@ -223,9 +228,10 @@ export class TitleWritingService {
     // provider or model to the server, the stored run's own choice is used. No gate below writes or sends for a replay.
     const previous = await this.deps.store.findRunByKey(this.deps.workspaceId, context.actorId, context.idempotencyKey);
     const replayed = previous && previous.run.projectId === projectId && !isScriptBreakdownRun(previous.run) ? previous.run.input : null;
-    const providerKey = parsed.data.providerKey ?? replayed?.providerKey ?? this.deps.defaultProvider
+    const locked = previous ? null : await this.deps.featureWritingLock?.() ?? null;
+    const providerKey = locked?.providerKey ?? parsed.data.providerKey ?? replayed?.providerKey ?? this.deps.defaultProvider
       ?? TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => this.deps.providers[key].ok) ?? TITLE_WRITING_PROVIDER_PREFERENCE[0]!;
-    let model = parsed.data.model ?? replayed?.model;
+    let model = locked?.model ?? parsed.data.model ?? replayed?.model;
     if (!previous) {
       // New requests only: a retired provider is refused here, never moved to another provider.
       if (!isActiveTitleWritingProvider(providerKey)) {

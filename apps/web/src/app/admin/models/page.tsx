@@ -1,5 +1,6 @@
-import { AdminModels } from "../../../components/admin-models";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "文本模型 · 红果管理控制台" };
-
-export default function AdminModelsPage() { return <AdminModels />; }
+/** Old text-model entry. The feature card is the only configuration surface. */
+export default function AdminModelsPage() {
+  redirect("/admin/features?feature=writing");
+}

@@ -1,5 +1,5 @@
 import { createHash, randomInt } from "node:crypto";
-import { comfyUiShotSelectionSchema,realMediaAuthorizationSchema,realMediaGenerateSchema,realMediaQuoteRequestSchema,type AutoStoryboardImageProviderKey,type ComfyUiAvailability,type RealMediaConfiguration,
+import { comfyUiShotSelectionSchema,officialVoiceRoute,realMediaAuthorizationSchema,realMediaGenerateSchema,realMediaQuoteRequestSchema,type AutoStoryboardImageProviderKey,type ComfyUiAvailability,type RealMediaConfiguration,
   type RealMediaCapability,type SpeechCapabilities,type SpeechGenerationInput,type SpeechGenerationPort,type SpeechBatchDispatchRef } from "@ai-drama/contracts";
 import { passesAutoStoryboardDashScopeImageRuntimeGate,passesAutoStoryboardImageRuntimeGate,realMediaInputHash,realMediaJobKind } from "@ai-drama/domain";
 import { assertComfyUiImageInput, assertComfyUiPromptText, canonicalOpenAiImageBaseUrl } from "@ai-drama/providers";
@@ -28,6 +28,10 @@ export interface RealMediaServiceOptions {
   comfyUiConfigurationFor?(client?:MediaTransactionClient):Promise<RealMediaConfiguration|null>;
   comfyUiReadiness?():Promise<ComfyUiAvailability>;
   speechCatalog?(workspaceId:string,projectId:string):Promise<SpeechCapabilities>;
+  /** Enabled storyboard vendor. Null keeps the existing page choice. */
+  featureImageProvider?:()=>Promise<AutoStoryboardImageProviderKey|null>;
+  /** Explicit Bailian voice enablement. Null or MiniMax never falls back to Bailian, ElevenLabs, or qwen. */
+  featureVoiceVendor?:()=>Promise<"minimax"|"bailian"|null>;
   objects?:RealMediaContentReader;
   characterReferenceGate?:"legacy"|"strict";
 }
@@ -118,8 +122,9 @@ export class RealMediaService {
       if(parsed.data.capability!=="image.generate"||parsed.data.comfyui||parsed.data.sourceImageAssetId){
         throw new PersistenceError("VALIDATION_ERROR","Auto storyboards accept only the saved shot image request");
       }
-      // Page choice wins; default openai-media preserves the prior frozen path when the client omits it.
-      const imageProvider=parsed.data.imageProvider ?? "openai-media";
+      // An enabled feature configuration wins. Otherwise the page choice, then openai-media, is unchanged.
+      const locked=await this.options.featureImageProvider?.()??null;
+      const imageProvider=locked ?? parsed.data.imageProvider ?? "openai-media";
       return this.quoteAutoStoryboard(projectId,shotRevisionId,parsed.data.autoStoryboardRunId,actorId,imageProvider);
     }
     await this.ready();
@@ -309,7 +314,23 @@ export class RealMediaService {
       },
       quote:async(input)=>{
         await this.ready();if(input.workspaceId!==this.options.workspaceId)throw new PersistenceError("NOT_FOUND","Workspace not found");
-        // Official website TTS is MiniMax only — never quote Bailian or ElevenLabs here.
+        const voiceRoute=officialVoiceRoute(this.options.featureVoiceVendor?await this.options.featureVoiceVendor():null);
+        if(voiceRoute==="bailian"){
+          const config=await this.configuration("audio.tts");
+          if(config.providerKey!=="dashscope-media"||config.model!=="qwen3-tts-flash"){
+            throw new PersistenceError("REAL_MEDIA_PROVIDER_DISABLED","Enabled Bailian voice is not the qwen3-tts-flash adapter");
+          }
+          const maxChars=input.voice.capabilities.maxTextCharacters??2_000;
+          if(input.emotion!=="neutral"||input.speed!==1||[...input.spokenText].length>maxChars){
+            throw new PersistenceError("SPEECH_VOICE_UNSUPPORTED","Enabled Bailian voice supports neutral delivery at normal speed within the catalog limit");
+          }
+          await this.options.store.transaction(client=>assertSpeechGenerationInputInTransaction(client,input));
+          const quote=await this.options.store.createQuote({workspaceId:input.workspaceId,projectId:input.projectId,actorId:storeActorId(),
+            frozen:{schema:"real-media.v1",shotRevisionId:input.shotRevisionId,capability:"audio.tts",sourceText:input.spokenText,
+              sourceHash:createHash("sha256").update(input.spokenText).digest("hex"),configuration:config,speech:input}});
+          return {...quote,inputHash:input.inputHash};
+        }
+        // Official website TTS is MiniMax speech-2.8-hd only — never quote Bailian or ElevenLabs as a fallback.
         const config=await this.minimaxTtsConfiguration();
         const maxChars=input.voice.capabilities.maxTextCharacters??2_000;
         if(input.voice.providerKey!=="minimax-tts"||input.voice.model!=="speech-2.8-hd"

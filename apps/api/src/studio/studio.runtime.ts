@@ -19,7 +19,7 @@ import {
   openStorageSettingsStore, storageSettingsOptions,
   type PostgresPool,
 } from "@ai-drama/database";
-import { sampleVideoGenerationEnabled, realMediaAccessAllowed, type ComfyUiAdminCheck, type TitleRunKind } from "@ai-drama/contracts";
+import { sampleVideoGenerationEnabled, realMediaAccessAllowed, storyboardProviderForVendor, writingProviderForVendor, type ComfyUiAdminCheck, type TitleRunKind } from "@ai-drama/contracts";
 import {
   AutoCreationEngine, SeriesWritingEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
@@ -39,11 +39,15 @@ import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
 import { AdminMediaKeysService } from "../admin/admin-media-keys.service";
+import { FeatureConfigService } from "../admin/feature-config.service";
+import { FeatureConfigVault, featureVaultPath } from "../admin/feature-config-vault";
+import { FeatureUsageStore, featureUsagePath } from "../admin/feature-usage-store";
+import { legacyLiveFor, legacySecretFor } from "../admin/feature-config.legacy";
 import {
   PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
   UploadSessionStore,
 } from "@ai-drama/database";
-import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject, readVerifiedUploadObject, canonicalMiniMaxTtsBaseUrl } from "@ai-drama/providers";
+import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject, readVerifiedUploadObject, canonicalMiniMaxTtsBaseUrl, applyManagedMediaKeys } from "@ai-drama/providers";
 import { StorageSettingsService } from "../admin/storage-settings.service";
 import { VimaxPlanningService } from "./vimax-planning.service";
 import { RealMediaService } from "./real-media.service";
@@ -97,6 +101,8 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly shortSequelAi: ShortSequelAiService | null = null,
     /** Image uploads for storyboard/source; uses object storage without image-provider keys. */
     readonly assetUpload: AssetUploadService | null = null,
+    /** Per-feature drafts. Null when the encrypted admin directory is not configured. */
+    readonly featureConfig: FeatureConfigService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -201,6 +207,54 @@ export class StudioRuntime implements OnModuleDestroy {
       await closePostgresPool(pool);
       throw error;
     }
+    const legacySnapshots = async () => {
+      const settings = adminModels?.runtimeSettings() ?? null;
+      const managedKeys = adminMediaKeys ? await adminMediaKeys.runtimeSettings() : null;
+      const effective = applyManagedMediaKeys(processMediaEnv, managedKeys);
+      const present = (value: string | undefined) => typeof value === "string" && value.length >= 8 && value.length <= 512 && !/\s/.test(value) ? value : null;
+      return {
+        models: settings ? { defaultProvider: settings.defaultProvider, providers: settings.providers } : null,
+        media: {
+          dashscopeApiKey: present(effective.DASHSCOPE_MEDIA_API_KEY),
+          openaiMediaApiKey: present(effective.OPENAI_MEDIA_API_KEY),
+          minimaxApiKey: present(effective.MINIMAX_API_KEY),
+        },
+      };
+    };
+    let featureConfig: FeatureConfigService | null = null;
+    if (admin) {
+      try {
+        featureConfig = await FeatureConfigService.open({
+          vault: await FeatureConfigVault.open({ path: featureVaultPath(admin.path), masterKey: admin.masterKey }),
+          usage: new FeatureUsageStore(featureUsagePath(admin.path)),
+          homeWorkspaceId: workspaceId,
+          legacy: {
+            live: async () => {
+              const snapshot = await legacySnapshots();
+              return {
+                writing: legacyLiveFor("writing", snapshot.models, snapshot.media),
+                storyboard: legacyLiveFor("storyboard", snapshot.models, snapshot.media),
+                voice: legacyLiveFor("voice", snapshot.models, snapshot.media),
+              };
+            },
+            secret: async (feature, vendor) => {
+              const snapshot = await legacySnapshots();
+              return legacySecretFor(feature, vendor, snapshot.models, snapshot.media);
+            },
+          },
+          policy: {
+            writingAllowlist: async () => {
+              const settings = adminModels?.runtimeSettings();
+              if (!settings) return null;
+              return [...settings.providers.openai.models, ...settings.providers.deepseek.models, ...settings.providers.anthropic.models];
+            },
+          },
+        });
+      } catch (error) {
+        await closePostgresPool(pool);
+        throw error;
+      }
+    }
     const managed = adminModels?.runtimeSettings();
     const titleProviders = managed ? managedProviderConfigs(managed) : titleWritingProviderConfigs(env);
     const maxCallsPerDay = managed?.maxCallsPerDay ?? env.TITLE_WRITING_MAX_CALLS_PER_DAY;
@@ -237,6 +291,13 @@ export class StudioRuntime implements OnModuleDestroy {
       maxCallsPerDay,
       maxActiveRuns,
       ...(configurationPending ? { configurationPending } : {}),
+      ...(featureConfig ? { featureWritingLock: async () => {
+        const binding = await featureConfig!.readBinding("writing");
+        if (!binding || binding.source !== "enabled") return null;
+        const providerKey = writingProviderForVendor(binding.vendor);
+        if (!providerKey) return null;
+        return { providerKey, model: binding.model, configVersion: binding.configVersion };
+      } } : {}),
     });
     const scriptBreakdown = new ScriptBreakdownService({
       workspaceId,
@@ -444,6 +505,20 @@ export class StudioRuntime implements OnModuleDestroy {
         return configuration?.enabled && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
       },
       comfyUiReadiness: () => realRuntime.checkComfyUi(),
+      ...(featureConfig ? {
+        featureImageProvider: async () => {
+          const binding = await featureConfig!.readBinding("storyboard");
+          if (!binding || binding.source !== "enabled") return null;
+          return storyboardProviderForVendor(binding.vendor);
+        },
+        featureVoiceVendor: async () => {
+          const binding = await featureConfig!.readBinding("voice");
+          if (!binding || binding.source !== "enabled") return null;
+          if (binding.vendor === "bailian") return "bailian" as const;
+          if (binding.vendor === "minimax") return "minimax" as const;
+          return null;
+        },
+      } : {}),
       minimaxTtsConfigurationFor: async client => {
         const configuration = await realRuntime.minimaxTtsConfiguration();
         return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
@@ -482,7 +557,7 @@ export class StudioRuntime implements OnModuleDestroy {
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),
       vimaxPlanning, realMedia, speech, voiceCompose, () => objectStore.destroy(), storageSettings, checkComfyUi,
-      shortSequelAi, assetUpload);
+      shortSequelAi, assetUpload, featureConfig);
   }
 
   async onModuleDestroy(): Promise<void> {

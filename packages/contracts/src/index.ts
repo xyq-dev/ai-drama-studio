@@ -1,6 +1,7 @@
 import { z } from "zod";
 export * from "./admin-models";
 export * from "./admin-media-keys";
+export * from "./feature-config";
 export * from "./auto-creation";
 export * from "./series-writing";
 

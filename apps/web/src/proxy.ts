@@ -8,8 +8,8 @@ import { loginUrl, type LoginReason } from "./lib/site-session";
  * service unavailable → /login as well (closed, never open). API routes are not handled here: the API checks every
  * request itself and answers 401 JSON. Only built static assets bypass this.
  *
- * Admin and object-storage pages additionally require role=operator. A creator opening /admin* or /settings/storage
- * is redirected to /studio — they must not receive admin HTML/config.
+ * Object-storage settings require role=operator. A creator opening /settings/storage is redirected to /studio.
+ * /admin* stays reachable so the page can show the no-permission state. Admin APIs still reject creators.
  */
 export type PageAccess = "allowed" | "signed-out" | "expired" | "unavailable";
 export type PageRole = "operator" | "creator";
@@ -24,10 +24,11 @@ export type PageSession = {
 
 const SESSION_COOKIES = ["__Host-ads_session", "ads_session"];
 
-const OPERATOR_ONLY_PREFIXES = ["/admin", "/settings/storage"];
+const STORAGE_SETTINGS_PREFIX = "/settings/storage";
 
-export function isOperatorOnlyPath(pathname: string): boolean {
-  return OPERATOR_ONLY_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+/** Object storage HTML stays operator-only. Admin HTML is allowed so creators see the refusal state, not a form. */
+export function isStorageSettingsPath(pathname: string): boolean {
+  return pathname === STORAGE_SETTINGS_PREFIX || pathname.startsWith(`${STORAGE_SETTINGS_PREFIX}/`);
 }
 
 export async function pageSession(cookie: string | null, fetchImpl: typeof fetch = fetch): Promise<PageSession> {
@@ -77,8 +78,8 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     return response;
   }
   const pathname = request.nextUrl.pathname;
-  // Site login on + authenticated creator must not receive admin / storage HTML.
-  if (session.siteLoginEnabled && isOperatorOnlyPath(pathname) && session.role !== "operator") {
+  // Creators may open /admin* and see the no-permission state. Storage settings stay operator-only.
+  if (session.siteLoginEnabled && isStorageSettingsPath(pathname) && session.role !== "operator") {
     const response = NextResponse.redirect(new URL("/studio", request.nextUrl.origin), 307);
     response.headers.set("Cache-Control", "private, no-store");
     return response;

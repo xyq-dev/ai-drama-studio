@@ -35,6 +35,7 @@ function setup(options: {
   /** Episode plans by project; a project without one is a three-episode project with no target. */
   plans?: Record<string, { episodeCount: number; targetEpisodeSeconds: number }>;
   planReady?: boolean;
+  featureWritingLock?: () => Promise<{ providerKey: "openai" | "anthropic" | "deepseek"; model: string; configVersion: string } | null>;
 } = {}) {
   const store = new InMemoryTitleWritingStore();
   store.ready = options.storageReady ?? true;
@@ -71,6 +72,7 @@ function setup(options: {
     maxCallsPerDay: 30,
     maxActiveRuns: 1,
     schedule: (work) => { pending.push(work()); },
+    ...(options.featureWritingLock ? { featureWritingLock: options.featureWritingLock } : {}),
   });
   const settle = async () => { while (pending.length > 0) await pending.shift(); };
   return { store, service, seen, settle };
@@ -198,6 +200,16 @@ describe("starting a run", () => {
     expect((await service.start(P1, { title: "x", premise: "not accepted here" }, TOKEN, CONTEXT("k"))).status).toBe(400);
     expect((await service.start(P1, { title: "x", settings: { episodeCount: 5 } }, TOKEN, CONTEXT("k"))).status).toBe(400);
     expect(store.runs).toHaveLength(0);
+  });
+
+  it("uses the enabled writing configuration and ignores a client provider", async () => {
+    const lock = async () => ({ providerKey: "openai" as const, model: "d-1", configVersion: "ver_locked" });
+    const { service, settle, seen } = setup({ featureWritingLock: lock });
+    const result = await service.start(P1, { title: "夜班证词", providerKey: "anthropic", model: "q-1" }, TOKEN, CONTEXT("locked"));
+    expect(result.status).toBe(201);
+    await settle();
+    expect(seen.every((item) => item.url === "https://api.openai.com/v1/responses" && item.body.model === "d-1")).toBe(true);
+    expect(seen.some((item) => item.body.model === "q-1")).toBe(false);
   });
 
   it("uses a chosen provider and model from the allowlist", async () => {
