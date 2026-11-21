@@ -2,10 +2,14 @@ import type { ReactNode } from "react";
 import { AdminShell } from "../../components/admin-shell";
 
 /**
- * Operator-only admin console shell (phase 1).
- * Page-level role gate lives in proxy.ts; APIs enforce operator separately.
- * Sidebar: 功能配置 and 调用记录. Planned groups stay collapsed lists. No Pro / recharge / membership routes.
+ * Operator admin console. Creators can open these pages and see the no-permission card.
+ * APIs still require role=operator. Noto Sans SC is loaded for this shell only.
  */
 export default function AdminLayout({ children }: { children: ReactNode }) {
-  return <AdminShell>{children}</AdminShell>;
+  return (
+    <>
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" />
+      <AdminShell>{children}</AdminShell>
+    </>
+  );
 }

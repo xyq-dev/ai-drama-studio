@@ -190,7 +190,7 @@ async function main() {
       await page.goto(`http://127.0.0.1:${WEB_PORT}${shot.path}`, { waitUntil: "networkidle", timeout: 120_000 });
       await page.waitForSelector("h1", { timeout: 60_000 });
       if (shot.mobileMenu) {
-        await page.getByRole("button", { name: "打开导航" }).click();
+        await page.getByRole("button", { name: "目录" }).click();
         await page.getByRole("dialog", { name: "管理导航" }).waitFor();
       }
       const file = path.join(outDir, `${shot.name}.png`);

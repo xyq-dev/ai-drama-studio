@@ -70,7 +70,7 @@ async function signOut(page) {
   const logout = page.getByRole("button", { name: "退出", exact: true });
   // On narrow viewports the admin footer lives in the drawer; open it before signing out.
   if (!(await logout.isVisible())) {
-    await page.getByRole("button", { name: "打开导航" }).click();
+    await page.getByRole("button", { name: "目录" }).click();
     await page.getByRole("dialog", { name: "管理导航" }).waitFor();
   }
   await logout.click();
@@ -152,7 +152,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("heading", { name: "功能配置", exact: true }).waitFor();
   await capture(page, "mobile-models-saved");
-  await page.getByRole("button", { name: "打开导航" }).click();
+  await page.getByRole("button", { name: "目录" }).click();
   const drawer = page.getByRole("dialog", { name: "管理导航" });
   await drawer.waitFor();
   assert.equal(await drawer.getByRole("link", { name: "功能配置", exact: true }).getAttribute("href"), "/admin/features");

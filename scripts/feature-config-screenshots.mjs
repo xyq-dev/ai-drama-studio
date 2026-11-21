@@ -230,7 +230,7 @@ async function main() {
     { name: "desktop-test-confirm.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "功能配置", action: async (page) => { await page.getByRole("button", { name: "测试配置" }).click(); await page.getByRole("dialog", { name: "确认测试费用" }).waitFor(); } },
     { name: "desktop-test-failed.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "功能配置", action: async (page) => { await page.getByRole("button", { name: "测试配置" }).click(); await page.getByRole("button", { name: "确认测试" }).click(); await page.getByRole("dialog", { name: "测试没有通过" }).waitFor(); } },
     { name: "desktop-enable-confirm.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "功能配置", features: "passed", action: async (page) => { await page.getByRole("button", { name: "启用配置" }).click(); await page.getByRole("dialog", { name: "确认启用" }).waitFor(); } },
-    { name: "mobile-menu.png", path: "/admin/features", width: 390, height: 844, heading: "功能配置", action: async (page) => { await page.getByRole("button", { name: "打开导航" }).click(); await page.getByRole("dialog", { name: "管理导航" }).waitFor(); } },
+    { name: "mobile-menu.png", path: "/admin/features", width: 390, height: 844, heading: "功能配置", action: async (page) => { await page.getByRole("button", { name: "目录" }).click(); await page.getByRole("dialog", { name: "管理导航" }).waitFor(); } },
   ];
   try {
     await waitForUrl(`http://127.0.0.1:${WEB_PORT}/login`);

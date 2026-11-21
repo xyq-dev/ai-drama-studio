@@ -76,7 +76,7 @@ try {
     await page.getByText("当前已启用", { exact: true }).waitFor(); assert.equal(writes.length, 3);
     await page.reload(); await page.getByText("当前已启用", { exact: true }).waitFor(); assert.equal(writes.length, 3);
     if (width === 390) {
-      await page.getByRole("button", { name: "打开导航" }).click();
+      await page.getByRole("button", { name: "目录" }).click();
       const dialog = page.getByRole("dialog", { name: "管理导航" });
       await dialog.waitFor();
       assert.equal(await dialog.getByRole("link", { name: "功能配置", exact: true }).getAttribute("href"), "/admin/features");

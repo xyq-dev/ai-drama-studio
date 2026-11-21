@@ -74,6 +74,14 @@ export class AdminCreatorsController {
           passwordHash,
         });
         await this.plans?.ensureDefaultEntitlement(this.workspaceId, account.id);
+        const { noteOperation } = await import("./operation-log-store");
+        await noteOperation({
+          action: "创建创作者",
+          target: account.username,
+          result: "success",
+          source: "管理后台 /admin/users",
+          detail: "已创建创作者账号。密码未写入日志。对方只能进入 /studio，不能访问 /admin。",
+        }, [password]);
         // Never echo password or passwordHash.
         return { id: account.id, username: account.username, status: account.status, role: "creator" as const };
       } catch (error) {

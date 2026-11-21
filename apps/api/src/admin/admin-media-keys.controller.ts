@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Put, Res } from "@nestjs/common";
-import { adminMediaKeyUpdateSchema } from "@ai-drama/contracts";
+import { adminMediaKeyUpdateSchema, type MediaKeySlot } from "@ai-drama/contracts";
+import { noteCredentialChange } from "./operation-log-store";
 import type { AdminMediaKeysView } from "@ai-drama/contracts";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
 import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
@@ -38,13 +39,30 @@ export class AdminMediaKeysController {
     @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
-    return this.send(response, () => {
+    return this.send(response, async () => {
       const { auth, backend } = this.configured();
       this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       const input = adminMediaKeyUpdateSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
-      return backend.updateSlot(input.data);
+      const view = await backend.updateSlot(input.data);
+      if (input.data.secretAction === "replace" && input.data.apiKey) {
+        await noteCredentialChange({
+          action: "保存媒体密钥",
+          label: MEDIA_LOG_LABEL[input.data.slot],
+          status: "已保存",
+          secret: input.data.apiKey,
+          source: "管理后台 /admin/media-keys",
+        });
+      } else if (input.data.secretAction === "clear") {
+        await noteCredentialChange({
+          action: "清除媒体密钥",
+          label: MEDIA_LOG_LABEL[input.data.slot],
+          status: "已清除",
+          source: "管理后台 /admin/media-keys",
+        });
+      }
+      return view;
     });
   }
 
@@ -75,6 +93,12 @@ export class AdminMediaKeysController {
     }
   }
 }
+
+const MEDIA_LOG_LABEL: Record<MediaKeySlot, string> = {
+  OPENAI_MEDIA_API_KEY: "OpenAI",
+  DASHSCOPE_MEDIA_API_KEY: "阿里云",
+  MINIMAX_API_KEY: "MiniMax",
+};
 
 function authorizeJsonWrite(auth: SiteAuth, headers: RequestHeaders): void {
   auth.authorizeWrite(headers);

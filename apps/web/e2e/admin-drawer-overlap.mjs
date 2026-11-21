@@ -17,19 +17,7 @@ const entry = `import React from 'react';import{createRoot}from'react-dom/client
 const navigationStub = resolve(import.meta.dirname, "admin-drawer-navigation-stub.mjs");
 const evidence = { kind: "chromium-admin-shell-drawer-overlap", externalRequests: 0, checks: [], errors: [] };
 
-// The planned heading is a label. Its rows expand one at a time.
-const PLANNED = [
-  { name: "创作内容", items: ["作品管理", "素材库"] },
-  { name: "系统管理", items: ["用户与权限", "操作日志"] },
-];
-const ALWAYS_VISIBLE = [
-  { role: "text", name: "模型与 API" },
-  { role: "link", name: "功能配置" },
-  { role: "text", name: "任务与用量" },
-  { role: "link", name: "调用记录" },
-  { role: "text", name: "规划中的栏目" },
-  ...PLANNED.map(({ name }) => ({ role: "button", name })),
-];
+const NAV_LINKS = ["功能配置", "作品管理", "素材库", "生成任务", "调用记录", "用户与权限", "操作日志"];
 
 function intersects(a, b) {
   return a.x < b.right - 0.5 && a.right > b.x + 0.5 && a.y < b.bottom - 0.5 && a.bottom > b.y + 0.5;
@@ -109,42 +97,33 @@ try {
       return route.continue();
     });
     await page.goto("http://127.0.0.1:3866/");
-    await page.getByRole("button", { name: "打开导航", exact: true }).click();
+    await page.getByRole("button", { name: "目录", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "管理导航" });
     await dialog.waitFor();
     const nav = dialog.getByRole("navigation", { name: "管理菜单" });
     const account = dialog.locator("div").filter({ hasText: "平台管理员" }).filter({ hasText: "已登录" }).filter({ hasText: "返回创作中心" }).filter({ hasText: "退出" });
     assert.equal(await account.count(), 1, "account block should be the single footer");
-    await expandPlanned(nav, "创作内容");
-    const heading = nav.getByText("规划中的栏目", { exact: true });
-    const creationRow = nav.getByRole("button", { name: "创作内容", exact: true });
+    assert.equal(await nav.getByText("规划中的栏目", { exact: true }).count(), 0);
+    const creationRow = nav.getByRole("link", { name: "作品管理", exact: true });
     await page.screenshot({ path: resolve(output, `drawer-${viewport.width}x${viewport.height}.png`) });
 
     const accountBox = await box(account);
-    const headingBox = await box(heading);
     const creationBox = await box(creationRow);
     const label = `${viewport.width}x${viewport.height}`;
-    assert.equal(intersects(accountBox, headingBox), false, `${label}: account block intersects 规划中的栏目 ${JSON.stringify({ accountBox, headingBox })}`);
-    assert.equal(intersects(accountBox, creationBox), false, `${label}: account block intersects 创作内容 ${JSON.stringify({ accountBox, creationBox })}`);
+    assert.equal(intersects(accountBox, creationBox), false, `${label}: account block intersects 作品管理 ${JSON.stringify({ accountBox, creationBox })}`);
     assert.ok(contains(await box(dialog), accountBox), `${label}: account block is clipped by the drawer`);
 
     const visible = [];
-    for (const group of PLANNED) {
-      await expandPlanned(nav, group.name);
-      const items = [...ALWAYS_VISIBLE, ...group.items.map((name) => ({ role: "group", name }))];
-      for (const item of items) {
-        const locator = item.role === "text"
-          ? nav.getByText(item.name, { exact: true })
-          : nav.getByRole(item.role, { name: item.name, exact: true });
-        assert.equal(await locator.count(), 1, `${label}: missing nav item ${item.name}`);
-        await locator.evaluate((el) => el.scrollIntoView({ block: "nearest", inline: "nearest" }));
-        const itemBox = await box(locator);
-        const navBox = await box(nav);
-        const footerBox = await box(account);
-        const inView = contains(navBox, itemBox) && !intersects(footerBox, itemBox);
-        assert.equal(inView, true, `${label}: ${item.name} cannot scroll into view ${JSON.stringify({ itemBox, navBox, footerBox })}`);
-        visible.push({ name: item.name, inView });
-      }
+    for (const name of NAV_LINKS) {
+      const locator = nav.getByRole("link", { name, exact: true });
+      assert.equal(await locator.count(), 1, `${label}: missing nav item ${name}`);
+      await locator.evaluate((el) => el.scrollIntoView({ block: "nearest", inline: "nearest" }));
+      const itemBox = await box(locator);
+      const navBox = await box(nav);
+      const footerBox = await box(account);
+      const inView = contains(navBox, itemBox) && !intersects(footerBox, itemBox);
+      assert.equal(inView, true, `${label}: ${name} cannot scroll into view ${JSON.stringify({ itemBox, navBox, footerBox })}`);
+      visible.push({ name, inView });
     }
     await page.screenshot({ path: resolve(output, `drawer-${viewport.width}x${viewport.height}-scrolled.png`) });
     evidence.checks.push({ viewport: label, headingClear: true, creationRowClear: true, accountInDrawer: true, items: visible });
@@ -158,12 +137,6 @@ try {
   await server.close();
   await mkdir(output, { recursive: true });
   await writeFile(resolve(output, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`);
-}
-
-async function expandPlanned(nav, name) {
-  const toggle = nav.getByRole("button", { name, exact: true });
-  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
-  assert.equal(await toggle.getAttribute("aria-expanded"), "true", `${name} did not expand`);
 }
 
 process.stdout.write("Admin drawer: account block stays clear of navigation at 390x844 and 390x600. External requests: 0.\n");
