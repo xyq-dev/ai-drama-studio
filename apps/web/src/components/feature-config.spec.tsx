@@ -78,6 +78,33 @@ function install(session: unknown, config?: FeatureConfigView, write?: (url: str
   }));
 }
 
+function featureCards() {
+  return screen.getByRole("group", { name: "功能卡" });
+}
+
+function cardButton(label: string) {
+  return within(featureCards()).getByRole("button", { name: new RegExp(label) });
+}
+
+function expectFeatureSelected(label: string) {
+  for (const name of ["剧本编写", "分镜生图", "角色配音"]) {
+    expect(cardButton(name).getAttribute("aria-pressed")).toBe(name === label ? "true" : "false");
+  }
+  const tabs = within(screen.getByRole("tablist", { name: "功能" }));
+  expect(tabs.getByRole("tab", { name: label }).getAttribute("aria-selected")).toBe("true");
+}
+
+function liveWritingView() {
+  return view((next) => {
+    const writing = card(next, "writing");
+    writing.firstTime = false;
+    writing.live = {
+      source: "legacy", vendor: "deepseek", vendorLabel: "DeepSeek",
+      model: "deepseek-flash", modelLabel: "DeepSeek Flash", version: null,
+    };
+  });
+}
+
 it("shows a loading state with no primary actions while the session is unread", () => {
   vi.stubGlobal("fetch", () => new Promise(() => undefined));
   render(<FeatureConfig />);
@@ -97,14 +124,108 @@ it("shows the no-permission state to a creator and does not request configuratio
   expect(calls.some((call) => call.url.includes("/admin/features"))).toBe(false);
 });
 
-it("opens the unconnected state from a first-time writing card", async () => {
+it("opens the unconnected state from a first-time writing card without hiding the feature cards", async () => {
   window.history.replaceState(null, "", "/admin/features?feature=writing");
   install(operatorSession(), view());
   render(<FeatureConfig />);
   expect(await screen.findByRole("heading", { name: "尚未配置剧本编写" })).toBeTruthy();
+  expectFeatureSelected("剧本编写");
+  expect(within(featureCards()).getAllByText("尚未配置")).toHaveLength(3);
   fireEvent.click(screen.getByRole("button", { name: "配置阿里云编剧" }));
   expect(await screen.findByRole("heading", { name: "该服务商尚未接入" })).toBeTruthy();
   expect(screen.getByText(/阿里云百炼文本适配器已退役/)).toBeTruthy();
+  expectFeatureSelected("剧本编写");
+  expect(screen.getByRole("button", { name: "返回已接入服务商" })).toBeTruthy();
+});
+
+it("shows three cards and selects live writing when the feature query is absent", async () => {
+  install(operatorSession(), liveWritingView());
+  render(<FeatureConfig />);
+  expect(await screen.findByRole("heading", { name: "剧本编写配置" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置分镜生图" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "尚未配置角色配音" })).toBeNull();
+  expectFeatureSelected("剧本编写");
+  expect(cardButton("剧本编写").textContent).toContain("DeepSeek · DeepSeek Flash");
+  expect(cardButton("分镜生图").textContent).toContain("尚未配置");
+  expect(cardButton("角色配音").textContent).toContain("尚未配置");
+  expect(window.location.pathname).toBe("/admin/features");
+  expect(window.location.search).toBe("");
+});
+
+it("keeps the three cards on a first-time storyboard or voice empty state and returns to writing", async () => {
+  install(operatorSession(), liveWritingView());
+  render(<FeatureConfig />);
+  expect(await screen.findByRole("heading", { name: "剧本编写配置" })).toBeTruthy();
+
+  fireEvent.click(cardButton("分镜生图"));
+  expect(screen.getByRole("heading", { name: "尚未配置分镜生图" })).toBeTruthy();
+  expect(screen.getByText("选择生图服务商，填写密钥并测试后即可启用。")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "配置阿里云生图" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "剧本编写配置" })).toBeNull();
+  expectFeatureSelected("分镜生图");
+  expect(cardButton("剧本编写").textContent).toContain("DeepSeek · DeepSeek Flash");
+
+  fireEvent.click(cardButton("剧本编写"));
+  expect(screen.getByRole("heading", { name: "剧本编写配置" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置分镜生图" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "配置阿里云生图" })).toBeNull();
+  expectFeatureSelected("剧本编写");
+  expect(screen.getByText("DeepSeek / DeepSeek Flash")).toBeTruthy();
+
+  fireEvent.click(cardButton("角色配音"));
+  expect(screen.getByRole("heading", { name: "尚未配置角色配音" })).toBeTruthy();
+  expect(screen.getByText("选择配音服务商，填写密钥并测试后即可启用。")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "配置阿里云配音" })).toBeTruthy();
+  expectFeatureSelected("角色配音");
+  expect(within(featureCards()).getAllByRole("button")).toHaveLength(3);
+
+  fireEvent.click(cardButton("剧本编写"));
+  expect(screen.getByRole("heading", { name: "剧本编写配置" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置角色配音" })).toBeNull();
+  expectFeatureSelected("剧本编写");
+  expect(window.location.search).toBe("?feature=writing");
+});
+
+it("keeps an explicit storyboard query instead of switching to live writing", async () => {
+  window.history.replaceState(null, "", "/admin/features?feature=storyboard");
+  install(operatorSession(), liveWritingView());
+  render(<FeatureConfig />);
+  expect(await screen.findByRole("heading", { name: "尚未配置分镜生图" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "剧本编写配置" })).toBeNull();
+  expectFeatureSelected("分镜生图");
+  expect(cardButton("剧本编写").textContent).toContain("DeepSeek · DeepSeek Flash");
+  expect(cardButton("分镜生图").textContent).toContain("尚未配置");
+  expect(cardButton("角色配音").textContent).toContain("尚未配置");
+  expect(window.location.search).toBe("?feature=storyboard");
+});
+
+it("defaults to writing when no feature is live and the query is absent", async () => {
+  install(operatorSession(), view());
+  render(<FeatureConfig />);
+  expect(await screen.findByRole("heading", { name: "尚未配置剧本编写" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置分镜生图" })).toBeNull();
+  expectFeatureSelected("剧本编写");
+  expect(within(featureCards()).getAllByText("尚未配置")).toHaveLength(3);
+  expect(window.location.search).toBe("");
+});
+
+it("selects the live feature when writing is still unconfigured", async () => {
+  const config = view((next) => {
+    const storyboard = card(next, "storyboard");
+    storyboard.firstTime = false;
+    storyboard.live = {
+      source: "enabled", vendor: "bailian", vendorLabel: "阿里云",
+      model: "qwen-image-3.0", modelLabel: "Qwen Image", version: "ver_live",
+    };
+  });
+  install(operatorSession(), config);
+  render(<FeatureConfig />);
+  expect(await screen.findByRole("heading", { name: "分镜生图配置" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置剧本编写" })).toBeNull();
+  expectFeatureSelected("分镜生图");
+  expect(cardButton("分镜生图").textContent).toContain("阿里云 · Qwen Image");
+  expect(cardButton("剧本编写").textContent).toContain("尚未配置");
+  expect(window.location.search).toBe("");
 });
 
 it("keeps a typed key on its own vendor and cancels a test without calling the vendor", async () => {

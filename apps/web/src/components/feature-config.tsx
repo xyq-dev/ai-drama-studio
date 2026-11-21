@@ -36,13 +36,14 @@ const FIRST_BODY: Record<FeatureKey, string> = {
   voice: "选择配音服务商，填写密钥并测试后即可启用。",
 };
 
-function readSelection(): { feature: FeatureKey; vendor: FeatureVendor | null } {
-  if (typeof window === "undefined") return { feature: "storyboard", vendor: null };
+/** URL only. Live state is unknown until the view arrives, so a missing feature stays unset. */
+function readSelection(): { feature: FeatureKey | null; vendor: FeatureVendor | null } {
+  if (typeof window === "undefined") return { feature: null, vendor: null };
   const params = new URLSearchParams(window.location.search);
   const featureValue = params.get("feature");
-  const feature = (FEATURE_KEYS as readonly string[]).includes(featureValue ?? "") ? featureValue as FeatureKey : "storyboard";
+  const feature = (FEATURE_KEYS as readonly string[]).includes(featureValue ?? "") ? featureValue as FeatureKey : null;
   const vendorValue = params.get("vendor");
-  const vendor = (FEATURE_VENDOR_KEYS as readonly string[]).includes(vendorValue ?? "") ? vendorValue as FeatureVendor : null;
+  const vendor = feature && (FEATURE_VENDOR_KEYS as readonly string[]).includes(vendorValue ?? "") ? vendorValue as FeatureVendor : null;
   return { feature, vendor };
 }
 
@@ -59,7 +60,7 @@ export function FeatureConfig() {
   const client = useMemo(() => createFeatureConfigClient(), []);
   const { gate, reload } = useOperatorGate();
   const initial = readSelection();
-  const [feature, setFeature] = useState<FeatureKey>(initial.feature);
+  const [chosen, setChosen] = useState<FeatureKey | null>(initial.feature);
   const [vendor, setVendor] = useState<FeatureVendor | null>(initial.vendor);
   const [phase, setPhase] = useState<"overview" | "editor">(initial.vendor ? "editor" : "overview");
   const [view, setView] = useState<FeatureConfigView | null>(null);
@@ -83,6 +84,8 @@ export function FeatureConfig() {
     return () => { live = false; };
   }, [client, gate]);
 
+  // Explicit `?feature=` or a later click wins. Otherwise prefer a live feature, then 剧本编写.
+  const feature: FeatureKey = chosen ?? view?.features.find((item) => item.live)?.feature ?? "writing";
   const card = view?.features.find((item) => item.feature === feature) ?? null;
   const slot = (vendor ? card?.slots.find((item) => item.vendor === vendor) : null)
     ?? card?.slots.find((item) => item.connected && item.vendor === card.live?.vendor)
@@ -103,7 +106,7 @@ export function FeatureConfig() {
   const canEnable = Boolean(slot?.connected && slot.draftStatus === "passed" && slot.testToken && !dirtyKey && !dirtyModel && !busy);
 
   function selectFeature(next: FeatureKey) {
-    setFeature(next);
+    setChosen(next);
     setVendor(null);
     setPhase("overview");
     setDialog(null);
@@ -112,6 +115,7 @@ export function FeatureConfig() {
   }
 
   function selectVendor(next: FeatureVendor) {
+    setChosen(feature);
     setVendor(next);
     setPhase("editor");
     setDialog(null);
@@ -213,42 +217,12 @@ export function FeatureConfig() {
   const extra = vendor ? featureCapability(feature, vendor) : null;
   const showingUnconnected = phase === "editor" && extra !== null && !extra.connected;
   const showingFirst = card.firstTime && phase === "overview";
-
-  if (showingUnconnected && extra) {
-    const connected = card.slots.find((item) => item.connected);
-    return (
-      <AdminFrame>
-        <ConfigIntro />
-        <section className={styles.state} data-state="unconnected">
-          <img src="/design/tailadmin-v2/icon-key-round.svg" width={28} height={28} alt="" />
-          <h2>该服务商尚未接入</h2>
-          <p>{extra.gap ?? "该服务商尚未接入。"}</p>
-          <button type="button" className={styles.primary} onClick={() => connected ? selectVendor(connected.vendor) : selectFeature("storyboard")}>
-            返回已接入服务商
-          </button>
-        </section>
-      </AdminFrame>
-    );
-  }
-
-  if (showingFirst) {
-    return (
-      <AdminFrame>
-        <ConfigIntro />
-        <section className={styles.state} data-state="first-time">
-          <img src="/design/tailadmin-v2/icon-key-round.svg" width={28} height={28} alt="" />
-          <h2>尚未配置{FEATURE_LABELS[feature]}</h2>
-          <p>{FIRST_BODY[feature]}</p>
-          <button type="button" className={styles.primary} onClick={beginConfigure}>{CTA[feature]}</button>
-        </section>
-      </AdminFrame>
-    );
-  }
+  const connected = showingUnconnected ? card.slots.find((item) => item.connected) : null;
 
   return (
     <AdminFrame>
       <ConfigIntro />
-      <div className={styles.cards} data-state="editor">
+      <div className={styles.cards} role="group" aria-label="功能卡" data-state="editor">
         {view.features.map((item) => (
           <button key={item.feature} type="button" className={item.feature === feature ? styles.cardOn : styles.card} onClick={() => selectFeature(item.feature)} aria-pressed={item.feature === feature}>
             <img src={FEATURE_ICON[item.feature]} width={18} height={18} alt="" />
@@ -265,7 +239,23 @@ export function FeatureConfig() {
           </button>
         ))}
       </div>
-      {slot ? <Editor
+      {showingUnconnected && extra ? (
+        <section className={styles.state} data-state="unconnected">
+          <img src="/design/tailadmin-v2/icon-key-round.svg" width={28} height={28} alt="" />
+          <h2>该服务商尚未接入</h2>
+          <p>{extra.gap ?? "该服务商尚未接入。"}</p>
+          <button type="button" className={styles.primary} onClick={() => connected ? selectVendor(connected.vendor) : selectFeature("storyboard")}>
+            返回已接入服务商
+          </button>
+        </section>
+      ) : showingFirst ? (
+        <section className={styles.state} data-state="first-time">
+          <img src="/design/tailadmin-v2/icon-key-round.svg" width={28} height={28} alt="" />
+          <h2>尚未配置{FEATURE_LABELS[feature]}</h2>
+          <p>{FIRST_BODY[feature]}</p>
+          <button type="button" className={styles.primary} onClick={beginConfigure}>{CTA[feature]}</button>
+        </section>
+      ) : slot ? <Editor
         card={card}
         slot={slot}
         model={model}
