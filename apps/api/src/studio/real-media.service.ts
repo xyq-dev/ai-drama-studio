@@ -32,6 +32,8 @@ export interface RealMediaServiceOptions {
   featureImageProvider?:()=>Promise<AutoStoryboardImageProviderKey|null>;
   /** Explicit Bailian voice enablement. Null or MiniMax never falls back to Bailian, ElevenLabs, or qwen. */
   featureVoiceVendor?:()=>Promise<"minimax"|"bailian"|null>;
+  /** Locks the enabled feature version onto a queued media job. Bookkeeping only; a failure must not be thrown. */
+  onFeatureMediaTask?:(input:{jobId:string;projectId:string;shotRevisionId:string;actorId:string})=>Promise<void>;
   objects?:RealMediaContentReader;
   characterReferenceGate?:"legacy"|"strict";
 }
@@ -250,7 +252,7 @@ export class RealMediaService {
     if(!context.idempotencyKey||!/^[-A-Za-z0-9_.:]{1,200}$/.test(context.idempotencyKey))throw new PersistenceError("IDEMPOTENCY_KEY_REQUIRED","An idempotency key is required");
     const routeKey=speech?`/speech-plans/${speech.planRevisionId}/lines/${speech.lineId}/generate`:`/projects/${projectId}/shot-revisions/${shotRevisionId}/real-media/generate`;
     const requestIdentity=speech?{...input,lineInputRevisionId:speech.lineInputRevisionId,inputHash:speech.inputHash}:input;
-    return this.options.jobs.createAndQueueWorkflowJob({workspaceId:this.options.workspaceId,actorId:context.actorId,
+    const created=await this.options.jobs.createAndQueueWorkflowJob({workspaceId:this.options.workspaceId,actorId:context.actorId,
       httpMethod:"POST",routeKey,key:context.idempotencyKey,requestHash:realMediaInputHash(requestIdentity),expiresAt:new Date("9999-12-31T00:00:00Z")},async client=>{
       await this.ready(client);
       // Also inspect ordinary routes: a batch-owned quote cannot escape its cancellation/dispatch fence.
@@ -293,6 +295,8 @@ export class RealMediaService {
       await this.options.store.bindAuthorization(client,input.quoteId,created);
       if(batchOperation)await bindSpeechBatchJobInTransaction(client,batchOperation,created);
     });
+    if(created.body.jobId)await this.options.onFeatureMediaTask?.({jobId:created.body.jobId,projectId,shotRevisionId,actorId:context.actorId}).catch(()=>undefined);
+    return created;
   }
   private async configuration(capability:RealMediaCapability,client?:MediaTransactionClient,comfyui=false){
     const config=comfyui?await this.options.comfyUiConfigurationFor?.(client):await this.options.configurationFor(capability,client);

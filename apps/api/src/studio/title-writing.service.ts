@@ -60,10 +60,26 @@ export interface TitleWritingDependencies {
   /** Starts server-side work without holding the HTTP request. Tests may run it inline. */
   schedule?: (work: () => Promise<void>) => void;
   /**
-   * When a feature-config version is enabled, new tasks use that provider and model.
+   * When a feature-config version is enabled, new tasks use that provider, model, and API key.
    * A null result leaves the existing server choice unchanged. Client provider keys are ignored while a lock is present.
+   * apiKey is sent only to the writing engine. It is not stored on the run.
    */
-  featureWritingLock?: () => Promise<{ providerKey: TitleWritingProviderKey; model: string; configVersion: string } | null>;
+  featureWritingLock?: () => Promise<{
+    providerKey: TitleWritingProviderKey;
+    model: string;
+    configVersion: string;
+    credentialRef?: string;
+    apiKey?: string;
+  } | null>;
+  /** Persists the credential reference for a new run before the engine sends. */
+  featureWritingCommit?: (input: {
+    runId: string;
+    projectId: string;
+    providerKey: TitleWritingProviderKey;
+    model: string;
+    configVersion: string;
+    credentialRef: string;
+  }) => Promise<void>;
 }
 
 export interface TitleWritingResult {
@@ -229,18 +245,24 @@ export class TitleWritingService {
     const previous = await this.deps.store.findRunByKey(this.deps.workspaceId, context.actorId, context.idempotencyKey);
     const replayed = previous && previous.run.projectId === projectId && !isScriptBreakdownRun(previous.run) ? previous.run.input : null;
     const locked = previous ? null : await this.deps.featureWritingLock?.() ?? null;
-    const providerKey = locked?.providerKey ?? parsed.data.providerKey ?? replayed?.providerKey ?? this.deps.defaultProvider
-      ?? TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => this.deps.providers[key].ok) ?? TITLE_WRITING_PROVIDER_PREFERENCE[0]!;
-    let model = locked?.model ?? parsed.data.model ?? replayed?.model;
+    // A replay compares the stored effective provider and model. The client's original choice is not applied again.
+    const providerKey = previous
+      ? (replayed?.providerKey ?? this.deps.defaultProvider
+        ?? TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => this.deps.providers[key].ok) ?? TITLE_WRITING_PROVIDER_PREFERENCE[0]!)
+      : (locked?.providerKey ?? parsed.data.providerKey ?? replayed?.providerKey ?? this.deps.defaultProvider
+        ?? TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => this.deps.providers[key].ok) ?? TITLE_WRITING_PROVIDER_PREFERENCE[0]!);
+    let model = previous ? (replayed?.model ?? parsed.data.model) : (locked?.model ?? parsed.data.model ?? replayed?.model);
     if (!previous) {
       // New requests only: a retired provider is refused here, never moved to another provider.
       if (!isActiveTitleWritingProvider(providerKey)) {
         return failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey, label: TITLE_WRITING_PROVIDER_LABELS[providerKey] });
       }
       const provider = this.deps.providers[providerKey];
-      if (!provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
-      model ??= provider.models[0]!;
-      if (!provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
+      const featureKey = Boolean(locked?.apiKey);
+      if (!featureKey && !provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
+      if (!featureKey) model ??= provider.ok ? provider.models[0]! : undefined;
+      if (!featureKey && provider.ok && model && !provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
+      if (featureKey && !model) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.ok ? provider.missing : ["FEATURE_WRITING_MODEL"] });
       if (!await this.deps.store.providerStorageReady(providerKey)) {
         return failure(503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [PROVIDER_MIGRATION_GAP] });
       }
@@ -294,7 +316,19 @@ export class TitleWritingService {
         : failure(409, "TITLE_WRITING_RUN_ACTIVE", { runId: created.bundle.run.id });
     }
     if (created.bundle.run.projectId !== projectId || isScriptBreakdownRun(created.bundle.run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
-    if (created.kind === "created") this.schedule(created.bundle.run.id);
+    if (created.kind === "created") {
+      if (locked?.apiKey && locked.credentialRef && model) {
+        await this.deps.featureWritingCommit?.({
+          runId: created.bundle.run.id,
+          projectId,
+          providerKey: locked.providerKey,
+          model,
+          configVersion: locked.configVersion,
+          credentialRef: locked.credentialRef,
+        });
+      }
+      this.schedule(created.bundle.run.id);
+    }
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);
   }
 

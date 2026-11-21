@@ -99,7 +99,7 @@ export function FeatureConfig() {
   const dirtyKey = enteringKey && draftKey.length > 0;
   const needsKey = Boolean(slot?.connected && enteringKey && draftKey.trim().length < 8);
   const canSave = Boolean(slot?.connected && !busy && !needsKey);
-  const canTest = Boolean(slot?.connected && slot.keyConfigured && slot.draftStatus === "saved" && !dirtyKey && !dirtyModel && !busy);
+  const canTest = Boolean(slot?.connected && slot.keyConfigured && (slot.draftStatus === "saved" || slot.draftStatus === "failed") && !dirtyKey && !dirtyModel && !busy);
   const canEnable = Boolean(slot?.connected && slot.draftStatus === "passed" && slot.testToken && !dirtyKey && !dirtyModel && !busy);
 
   function selectFeature(next: FeatureKey) {

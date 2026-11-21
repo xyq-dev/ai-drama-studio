@@ -71,15 +71,13 @@ export function CallRecords() {
       <div className={styles.filters}>
         <label>
           <span>作品</span>
-          <select aria-label="作品" value={shownProject} onChange={(event) => { setProjectPick(event.target.value); setEpisodePick(""); }}>
-            <option value="">全部作品</option>
+          <select aria-label="作品" value={shownProject} onChange={(event) => { setProjectPick(event.target.value); setEpisodePick(null); }}>
             {summary.projects.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
         </label>
         <label>
           <span>分集</span>
           <select aria-label="分集" value={shownEpisode} onChange={(event) => setEpisodePick(event.target.value)}>
-            <option value="">全部剧集</option>
             {episodes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
         </label>

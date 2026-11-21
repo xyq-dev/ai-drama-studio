@@ -125,6 +125,7 @@ function emptySlot(): FeatureSlotRecord {
 
 export class FeatureConfigService {
   private readonly inflight = new Map<string, { revision: number; promise: Promise<FeatureMutationResult> }>();
+  private readonly productionFlights = new Map<string, Promise<{ ok: boolean; message: string; configVersion: string; vendor: string; model: string; credentialRef: string }>>();
 
   constructor(
     private readonly vault: FeatureConfigVault,
@@ -173,13 +174,14 @@ export class FeatureConfigService {
 
   async saveDraft(feature: FeatureKey, body: FeatureDraftSave): Promise<FeatureConfigView> {
     await this.assertChoice(feature, body.vendor, body.model);
+    const retained = new Set((await this.usage.read()).locks.map((item) => item.credentialRef));
     const doc = await this.vault.update((current) => {
       const slot = this.slot(current, feature, body.vendor);
       if (body.secretAction === "replace") {
         const ref = id("fc");
         current.credentials[ref] = body.apiKey!;
         slot.credentialRef = ref;
-        this.pruneCredentials(current);
+        this.pruneCredentials(current, retained);
       } else if (body.secretAction === "clear") {
         slot.credentialRef = null;
       }
@@ -267,7 +269,8 @@ export class FeatureConfigService {
 
   /**
    * Creator submission from an existing work. Locks the enabled version and calls only the injected probe.
-   * A repeated vendorRequestId does not call the probe again. A new id on the same task is a separate attempt.
+   * The vendor request id is reserved before the probe, so a second concurrent submission does not call again.
+   * A new id on the same task is a separate attempt.
    */
   async submitProduction(input: {
     feature: FeatureKey;
@@ -280,29 +283,57 @@ export class FeatureConfigService {
     episodeLabel: string;
     vendorRequestId: string;
   }): Promise<{ ok: boolean; message: string; configVersion: string; vendor: string; model: string; credentialRef: string }> {
-    const existing = (await this.usage.read()).records.find((item) => item.vendorRequestId === input.vendorRequestId);
-    if (existing) {
-      if (existing.workspaceId !== input.workspaceId) throw new FeatureConfigError(404, "FEATURE_USAGE_NOT_FOUND", "没有这条调用记录。");
-      return {
-        ok: existing.result === "succeeded",
-        message: existing.result === "succeeded" ? "供应商已回传过这一笔，没有重复调用。" : "这一笔已经记录，没有重复调用。",
-        configVersion: existing.configVersion ?? "unknown",
-        vendor: existing.vendor,
-        model: existing.model,
-        credentialRef: existing.credentialRef ?? "unknown",
-      };
+    const inflight = this.productionFlights.get(input.vendorRequestId);
+    if (inflight) return inflight;
+    const flight = this.executeProduction(input);
+    this.productionFlights.set(input.vendorRequestId, flight);
+    try {
+      return await flight;
+    } finally {
+      if (this.productionFlights.get(input.vendorRequestId) === flight) this.productionFlights.delete(input.vendorRequestId);
     }
-    const locked = await this.lockTask(input);
-    const secret = await this.secretFor(locked);
-    if (!secret) throw new FeatureConfigError(409, "FEATURE_NOT_CONFIGURED", "提交时锁定的配置已经不可用，没有改用其他服务商。");
-    const result = await this.callProbe({
-      feature: input.feature,
-      vendor: locked.vendor,
-      model: locked.model,
-      apiKey: secret,
-      vendorRequestId: input.vendorRequestId,
-      kind: "production",
-    }, secret);
+  }
+
+  /** Keeps the credential a new writing or media task locked, including after later key rotation. */
+  async rememberLock(lock: StoredLock): Promise<void> {
+    await this.usage.update((doc) => {
+      const again = doc.locks.find((item) => item.workspaceId === lock.workspaceId && item.taskId === lock.taskId && item.feature === lock.feature);
+      if (!again) doc.locks.push(lock);
+    });
+  }
+
+  async credentialForTask(feature: FeatureKey, workspaceId: string, taskId: string): Promise<{
+    apiKey: string; model: string; vendor: string; versionId: string; credentialRef: string;
+  } | null> {
+    const lock = (await this.usage.read()).locks.find((item) => item.feature === feature && item.workspaceId === workspaceId && item.taskId === taskId);
+    if (!lock) return null;
+    const apiKey = await this.secretFor(lock);
+    if (!apiKey) return null;
+    return { apiKey, model: lock.model, vendor: lock.vendor, versionId: lock.versionId, credentialRef: lock.credentialRef };
+  }
+
+  /**
+   * Records one real provider exchange. Duplicate vendorRequestId does not add a second row.
+   * The secret is never accepted here.
+   */
+  async recordExecution(input: {
+    feature: FeatureKey;
+    workspaceId: string;
+    projectId: string;
+    projectLabel: string;
+    episodeId: string | null;
+    episodeLabel: string;
+    taskId: string;
+    actorId: string;
+    vendor: string;
+    model: string;
+    configVersion: string | null;
+    credentialRef: string | null;
+    vendorRequestId: string;
+    result: "succeeded" | "failed" | "unknown";
+    usage?: UsageAmount;
+    cost?: UsageCost;
+  }): Promise<void> {
     await this.writeUsage({
       kind: "production",
       workspaceId: input.workspaceId,
@@ -313,23 +344,15 @@ export class FeatureConfigService {
       taskId: input.taskId,
       actorId: input.actorId,
       feature: input.feature,
-      vendor: locked.vendor,
-      model: locked.model,
-      configVersion: locked.versionId,
-      credentialRef: locked.credentialRef,
-      result: result.ok ? "succeeded" : "failed",
-      usage: normalizeUsage(result.usage),
-      cost: normalizeCost(result.cost),
+      vendor: input.vendor,
+      model: input.model,
+      configVersion: input.configVersion,
+      credentialRef: input.credentialRef,
+      result: input.result,
+      usage: normalizeUsage(input.usage),
+      cost: normalizeCost(input.cost),
       vendorRequestId: input.vendorRequestId,
-    }, [secret]);
-    return {
-      ok: result.ok,
-      message: publicMessage(result.message, secret, result.ok),
-      configVersion: locked.versionId,
-      vendor: locked.vendor,
-      model: locked.model,
-      credentialRef: locked.credentialRef,
-    };
+    }, []);
   }
 
   async recordCallback(input: {
@@ -368,6 +391,7 @@ export class FeatureConfigService {
     })));
     const episodeId = input.episodeId ?? episodes[0]?.id ?? null;
     const scoped = records.filter((item) => item.projectId === projectId && item.episodeId === episodeId);
+    const visible = records.filter((item) => item.projectId === projectId && (item.episodeId === episodeId || item.episodeId === null));
     return {
       scope: "episode_production",
       projectId,
@@ -380,7 +404,7 @@ export class FeatureConfigService {
         usageText: sumPresentUsage(scoped, feature),
         costText: sumPresentCost(scoped, feature),
       })),
-      records: scoped.map(toUsageView),
+      records: visible.map(toUsageView),
       footnote: USAGE_FOOTNOTE,
     };
   }
@@ -542,8 +566,102 @@ export class FeatureConfigService {
     return created;
   }
 
-  private pruneCredentials(doc: FeatureVaultDocument): void {
-    const used = new Set<string>();
+  private productionResult(row: StoredUsage): { ok: boolean; message: string; configVersion: string; vendor: string; model: string; credentialRef: string } {
+    return {
+      ok: row.result === "succeeded",
+      message: row.result === "succeeded" ? "供应商已回传过这一笔，没有重复调用。" : "这一笔已经记录，没有重复调用。",
+      configVersion: row.configVersion ?? "unknown",
+      vendor: row.vendor,
+      model: row.model,
+      credentialRef: row.credentialRef ?? "unknown",
+    };
+  }
+
+  private async executeProduction(input: {
+    feature: FeatureKey;
+    workspaceId: string;
+    projectId: string;
+    episodeId: string;
+    taskId: string;
+    actorId: string;
+    projectLabel: string;
+    episodeLabel: string;
+    vendorRequestId: string;
+  }): Promise<{ ok: boolean; message: string; configVersion: string; vendor: string; model: string; credentialRef: string }> {
+    const existing = (await this.usage.read()).records.find((item) => item.vendorRequestId === input.vendorRequestId);
+    if (existing) {
+      if (existing.workspaceId !== input.workspaceId) throw new FeatureConfigError(404, "FEATURE_USAGE_NOT_FOUND", "没有这条调用记录。");
+      return this.productionResult(existing);
+    }
+    const locked = await this.lockTask(input);
+    const secret = await this.secretFor(locked);
+    if (!secret) throw new FeatureConfigError(409, "FEATURE_NOT_CONFIGURED", "提交时锁定的配置已经不可用，没有改用其他服务商。");
+    let reserved = false;
+    await this.usage.update((doc) => {
+      const again = doc.records.find((item) => item.vendorRequestId === input.vendorRequestId);
+      if (again) return;
+      reserved = true;
+      const attempt = doc.records.filter((item) => item.workspaceId === input.workspaceId && item.taskId === input.taskId && item.feature === input.feature).length + 1;
+      const startedAt = this.now().toISOString();
+      doc.records.push({
+        id: randomUUID(),
+        kind: "production",
+        workspaceId: input.workspaceId,
+        projectId: input.projectId,
+        projectLabel: input.projectLabel,
+        episodeId: input.episodeId,
+        episodeLabel: input.episodeLabel,
+        taskId: input.taskId,
+        attempt,
+        actorId: input.actorId,
+        feature: input.feature,
+        vendor: locked.vendor,
+        vendorLabel: FEATURE_VENDOR_LABELS[locked.vendor as FeatureVendor] ?? locked.vendor,
+        model: locked.model,
+        modelLabel: featureModelLabel(locked.model),
+        configVersion: locked.versionId,
+        credentialRef: locked.credentialRef,
+        result: "unknown",
+        startedAt,
+        finishedAt: null,
+        usage: { status: "unknown" },
+        cost: { status: "unknown" },
+        vendorRequestId: input.vendorRequestId,
+      });
+    }, [secret]);
+    if (!reserved) {
+      const raced = (await this.usage.read()).records.find((item) => item.vendorRequestId === input.vendorRequestId);
+      if (!raced || raced.workspaceId !== input.workspaceId) throw new FeatureConfigError(404, "FEATURE_USAGE_NOT_FOUND", "没有这条调用记录。");
+      return this.productionResult(raced);
+    }
+    const result = await this.callProbe({
+      feature: input.feature,
+      vendor: locked.vendor,
+      model: locked.model,
+      apiKey: secret,
+      vendorRequestId: input.vendorRequestId,
+      kind: "production",
+    }, secret);
+    await this.usage.update((doc) => {
+      const row = doc.records.find((item) => item.vendorRequestId === input.vendorRequestId && item.workspaceId === input.workspaceId);
+      if (!row) return;
+      row.result = result.ok ? "succeeded" : "failed";
+      row.usage = normalizeUsage(result.usage);
+      row.cost = normalizeCost(result.cost);
+      row.finishedAt = this.now().toISOString();
+    }, [secret]);
+    return {
+      ok: result.ok,
+      message: publicMessage(result.message, secret, result.ok),
+      configVersion: locked.versionId,
+      vendor: locked.vendor,
+      model: locked.model,
+      credentialRef: locked.credentialRef,
+    };
+  }
+
+  private pruneCredentials(doc: FeatureVaultDocument, retained: ReadonlySet<string>): void {
+    const used = new Set<string>(retained);
     for (const feature of FEATURE_KEYS) {
       const live = doc.features[feature].live;
       if (live) used.add(live.credentialRef);

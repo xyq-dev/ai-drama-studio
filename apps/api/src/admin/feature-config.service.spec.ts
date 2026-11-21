@@ -283,4 +283,71 @@ describe("feature configuration", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(slot(tested.view, "voice", "minimax").draftStatus).toBe("failed");
   });
+
+  it("lets a failed draft be tested again without replacing the key", async () => {
+    let calls = 0;
+    const { service } = await open({ probe: async () => {
+      calls += 1;
+      return calls === 1
+        ? { ok: false, message: "transient" }
+        : { ok: true, message: "ok", usage: { status: "unknown" }, cost: { status: "unknown" } };
+    } });
+    let view = await service.view();
+    view = await service.saveDraft("voice", { expectedRevision: view.revision, vendor: "minimax", model: "speech-2.8-hd", secretAction: "replace", apiKey: KEYS.voice });
+    const failed = await service.testDraft("voice", { expectedRevision: view.revision, vendor: "minimax", confirmCost: true });
+    expect(slot(failed.view, "voice", "minimax").draftStatus).toBe("failed");
+    const again = await service.testDraft("voice", { expectedRevision: failed.view.revision, vendor: "minimax", confirmCost: true });
+    expect(again.probe?.ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it("calls the probe once when two submissions share a vendor request id", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    const { service } = await open({ probe: async (input) => {
+      if (input.kind === "production") {
+        calls += 1;
+        await gate;
+      }
+      return { ok: true, message: "ok", usage: { status: "present", amount: 1, unit: "image" }, cost: { status: "unknown" } };
+    } });
+    await enable(service, "storyboard", "openai", "gpt-image-2.5-sunburst", KEYS.image);
+    const input = {
+      feature: "storyboard" as const, workspaceId: WS_A, projectId: "work-1", episodeId: "ep-1", taskId: "task-race",
+      actorId: "creator", projectLabel: "作品", episodeLabel: "第 1 集", vendorRequestId: "vendor-request-same-01",
+    };
+    const first = service.submitProduction(input);
+    const second = service.submitProduction(input);
+    release();
+    const [left, right] = await Promise.all([first, second]);
+    expect(calls).toBe(1);
+    expect(left.ok).toBe(true);
+    expect(right).toEqual(left);
+  });
+
+  it("keeps a locked credential after later keys push the vault past the prune limit", async () => {
+    const { service } = await open();
+    await enable(service, "storyboard", "bailian", "qwen-image-3.0", KEYS.imageBailian);
+    await service.submitProduction({
+      feature: "storyboard", workspaceId: WS_A, projectId: "work-1", episodeId: "ep-1", taskId: "locked-task",
+      actorId: "creator", projectLabel: "作品", episodeLabel: "第 1 集", vendorRequestId: "vendor-request-lock-01",
+    });
+    const locked = await service.credentialForTask("storyboard", WS_A, "locked-task");
+    expect(locked?.apiKey).toBe(KEYS.imageBailian);
+    let view = await service.view();
+    view = await service.saveDraft("storyboard", { expectedRevision: view.revision, vendor: "openai", model: "gpt-image-2.5-sunburst", secretAction: "replace", apiKey: KEYS.image });
+    const tested = await service.testDraft("storyboard", { expectedRevision: view.revision, vendor: "openai", confirmCost: true });
+    const token = slot(tested.view, "storyboard", "openai").testToken;
+    if (!token) throw new Error("missing token");
+    await service.enable("storyboard", { expectedRevision: tested.view.revision, vendor: "openai", testToken: token });
+    for (let index = 0; index < 45; index += 1) {
+      const current = await service.view();
+      await service.saveDraft("voice", {
+        expectedRevision: current.revision, vendor: "minimax", model: "speech-2.8-hd", secretAction: "replace",
+        apiKey: `synthetic-rotated-voice-key-${String(index).padStart(2, "0")}-xxxx`,
+      });
+    }
+    expect((await service.credentialForTask("storyboard", WS_A, "locked-task"))?.apiKey).toBe(KEYS.imageBailian);
+  });
 });

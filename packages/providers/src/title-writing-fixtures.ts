@@ -93,6 +93,7 @@ export interface FixtureExchange {
   url: string;
   body: Record<string, unknown>;
   user: string;
+  authorization: string | null;
 }
 
 /**
@@ -112,7 +113,7 @@ export function fixtureChatTransport(title: string, options: {
     const step = fixtureStepOf(user);
     const attempt = (attempts.get(step) ?? 0) + 1;
     attempts.set(step, attempt);
-    options.seen?.push({ step, url: request.url, body, user });
+    options.seen?.push({ step, url: request.url, body, user, authorization: request.headers.Authorization ?? request.headers.authorization ?? null });
     const custom = options.override?.(step, attempt);
     if (custom === "throw") throw new TypeError("fetch failed");
     if (custom === "hang") {
