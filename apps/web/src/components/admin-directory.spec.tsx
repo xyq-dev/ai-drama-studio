@@ -177,6 +177,46 @@ it("shows a credential mask in the log detail and no upload control on assets", 
   expect(screen.getByText(/不在此页上传原始文件|不会在此上传/)).toBeTruthy();
 });
 
+it("keeps search mounted while the next query loads and pages with the cursor", async () => {
+  let release: ((value: Response) => void) | undefined;
+  const urls: string[] = [];
+  const fetchImpl = vi.fn(async (input: string) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("/auth/session")) return session("operator");
+    if (url.includes("cursor=")) return json({ items: [{ ...WORK, id: "22222222-2222-4222-8222-222222222222", title: "旧巷灯火" }], total: 2, nextCursor: null });
+    if (url.includes("q=")) return new Promise<Response>((resolve) => { release = resolve; });
+    return json({ items: [WORK], total: 2, nextCursor: "cursor-2" });
+  });
+  render(<AdminDirectory kind="works" fetchImpl={fetchImpl} />);
+  const input = await screen.findByLabelText("搜索作品标题");
+  expect(await screen.findByText("雨夜来信")).toBeTruthy();
+  input.focus();
+  fireEvent.change(input, { target: { value: "雨" } });
+  expect(document.activeElement).toBe(screen.getByLabelText("搜索作品标题"));
+  expect(screen.getByText("雨夜来信")).toBeTruthy();
+  release?.(json({ items: [WORK], total: 2, nextCursor: "cursor-2" }));
+  const more = await screen.findByRole("button", { name: "加载更多" });
+  await vi.waitFor(() => expect(more.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(more);
+  expect(await screen.findByText("旧巷灯火")).toBeTruthy();
+  expect(urls.some((url) => url.includes("cursor=cursor-2"))).toBe(true);
+});
+
+it("keeps the log time filter when the default window is empty", async () => {
+  const urls: string[] = [];
+  const fetchImpl = vi.fn(async (input: string) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("/auth/session")) return session("operator");
+    return json({ storage: "ready", items: [], total: 0, actors: [] });
+  });
+  render(<AdminDirectory kind="logs" fetchImpl={fetchImpl} />);
+  expect(await screen.findByRole("heading", { name: "还没有操作记录" })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("时间范围"), { target: { value: "all" } });
+  await vi.waitFor(() => expect(urls.some((url) => url.includes("range=all"))).toBe(true));
+});
+
 it("uses cards below 1024px", async () => {
   vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
     matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(),

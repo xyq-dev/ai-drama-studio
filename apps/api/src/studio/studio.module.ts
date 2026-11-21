@@ -34,6 +34,7 @@ import { ASSET_UPLOAD_SERVICE, AssetUploadController } from "./asset-upload.cont
 import { ADMIN_DIRECTORY_SERVICE, AdminDirectoryController } from "../admin/admin-directory.controller";
 import { AdminDirectoryService } from "../admin/admin-directory.service";
 import { CREATOR_ACCOUNT_STORE, AUTH_WORKSPACE_ID } from "../auth/auth.tokens";
+import { SITE_AUTH, type SiteAuthState } from "../auth/site-auth";
 import { operationJournal } from "../admin/operation-log-store";
 
 @Module({})
@@ -130,14 +131,20 @@ export class StudioModule {
         },
         {
           provide: ADMIN_DIRECTORY_SERVICE,
-          inject: [STUDIO_RUNTIME, CREATOR_ACCOUNT_STORE, AUTH_WORKSPACE_ID],
-          useFactory: (runtime: StudioRuntime, creators: CreatorAccountStore | null, workspaceId: string) => new AdminDirectoryService({
+          inject: [STUDIO_RUNTIME, CREATOR_ACCOUNT_STORE, AUTH_WORKSPACE_ID, SITE_AUTH],
+          useFactory: (runtime: StudioRuntime, creators: CreatorAccountStore | null, workspaceId: string, site: SiteAuthState | null) => new AdminDirectoryService({
             store: new AdminOpsStore(runtime.pool),
             creators,
             workspaceId,
             logs: operationJournal(),
             retry: (jobId, context) => runtime.service.retryJob(jobId, context),
-            readContent: (assetId) => runtime.service.readMockAssetContent(assetId),
+            readContent: (assetId) => runtime.service.readOperatorAssetContent(
+              assetId,
+              runtime.realMedia ? (id) => runtime.realMedia!.readAssetContent(id) : null,
+            ),
+            revokeSessions: (accountId) => {
+              if (site?.kind === "enabled") site.auth.revokeAccount(accountId);
+            },
           }),
         },
       ],

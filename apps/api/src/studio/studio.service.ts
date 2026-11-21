@@ -894,6 +894,23 @@ export class StudioService {
     );
   }
 
+  /**
+   * Operator preview. S3 assets go to the real-media reader; mock and local compose stay on the mock reader.
+   * The admin route has already required role=operator.
+   */
+  async readOperatorAssetContent(
+    assetId: string,
+    readReal: ((id: string) => Promise<{ mimeType: string; bytes: Buffer }>) | null,
+  ): Promise<{ mimeType: string; bytes: Buffer }> {
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);
+    if (asset.storageProvider === "s3") {
+      if (!readReal) throw new PersistenceError("REAL_MEDIA_NOT_READY", "Authenticated media access is not configured");
+      return readReal(assetId);
+    }
+    return this.readMockAssetContent(assetId);
+  }
+
   async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);

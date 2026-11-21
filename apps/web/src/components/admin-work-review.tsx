@@ -30,6 +30,7 @@ export function AdminWorkReview({ id, fetchImpl }: { id: string; fetchImpl?: Fet
   const { gate, reload } = useOperatorGate(impl);
   const [work, setWork] = useState<WorkDetail | null>(null);
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (gate !== "ready") return;
@@ -46,7 +47,7 @@ export function AdminWorkReview({ id, fetchImpl }: { id: string; fetchImpl?: Fet
       })
       .catch(() => { if (live) setFailed(true); });
     return () => { live = false; };
-  }, [gate, id, impl]);
+  }, [attempt, gate, id, impl]);
 
   return (
     <div className={styles.page} data-page="work-review">
@@ -69,11 +70,18 @@ export function AdminWorkReview({ id, fetchImpl }: { id: string; fetchImpl?: Fet
           <p>正在读取制作进度与产出，请稍候。本次不会改动任何作品。</p>
         </section>
       ) : null}
+      {gate === "unavailable" || gate === "failed" ? (
+        <section className={styles.state} data-state={gate}>
+          <h2>{gate === "unavailable" ? "作品核对尚未就绪" : "作品加载失败"}</h2>
+          <p>{gate === "unavailable" ? "登录尚未就绪，暂时不能核对作品。本次不会改动任何作品。" : "暂时无法确认管理员身份，请重试。本次不会改动任何作品。"}</p>
+          <button type="button" className={styles.primary} onClick={reload}>重新加载</button>
+        </section>
+      ) : null}
       {gate === "ready" && failed ? (
         <section className={styles.state} data-state="failed">
           <h2>作品加载失败</h2>
           <p>暂时无法读取这部作品，请重试。本次不会改动任何作品。</p>
-          <button type="button" className={styles.primary} onClick={reload}>重新加载</button>
+          <button type="button" className={styles.primary} onClick={() => setAttempt((value) => value + 1)}>重新加载</button>
         </section>
       ) : null}
       {work ? (

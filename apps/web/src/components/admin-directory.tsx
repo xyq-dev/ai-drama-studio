@@ -192,6 +192,8 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
   const [role, setRole] = useState("all");
   const [range, setRange] = useState("7d");
   const [listEpoch, setListEpoch] = useState(0);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<{ filters: string; value: string | null }>({ filters: "", value: null });
   const [notice, setNotice] = useState("");
   const [work, setWork] = useState<WorkItem | null>(null);
   const [asset, setAsset] = useState<AssetItem | null>(null);
@@ -214,6 +216,9 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
     return () => query.removeEventListener("change", sync);
   }, []);
 
+  const filters = [kind, q, status, owner, type, role, range].join("\0");
+  const requestCursor = cursor.filters === filters ? cursor.value : null;
+
   useEffect(() => {
     if (gate !== "ready") return;
     let live = true;
@@ -230,6 +235,8 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
     if (kind === "users" && status !== "all") params.set("status", status);
     if (kind === "logs" && owner !== "all") params.set("actor", owner);
     if (kind === "logs") params.set("range", range);
+    const appending = Boolean(requestCursor);
+    if (appending && requestCursor) params.set("cursor", requestCursor);
     const query = params.toString();
     impl(`/api/v1/admin/${kind}${query ? `?${query}` : ""}`, { headers: { Accept: "application/json" }, credentials: "same-origin", cache: "no-store" })
       .then(async (response) => {
@@ -241,6 +248,7 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
         const body = await response.json() as {
           items?: Array<WorkItem | AssetItem | JobItem | UserItem | LogItem>;
           total?: number;
+          nextCursor?: string | null;
           owners?: Array<{ id: string; name: string }>;
           projects?: Array<{ id: string; title: string }>;
           actors?: string[];
@@ -251,8 +259,14 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
           return;
         }
         const next = body.items ?? [];
-        setItems(next);
+        setNextCursor(typeof body.nextCursor === "string" && body.nextCursor ? body.nextCursor : null);
         setTotal(body.total ?? next.length);
+        if (appending) {
+          setItems((current) => [...current, ...next]);
+          setPhase("ready");
+          return;
+        }
+        setItems(next);
         setOwners(body.owners ?? []);
         setProjects(body.projects ?? []);
         setActors(body.actors ?? []);
@@ -260,7 +274,7 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
       })
       .catch(() => { if (live) setPhase("failed"); });
     return () => { live = false; };
-  }, [gate, impl, kind, listEpoch, owner, q, range, role, status, type]);
+  }, [filters, gate, impl, kind, listEpoch, owner, q, range, requestCursor, role, status, type]);
 
   function openRetry(item: JobItem) {
     setRetryError("");
@@ -298,7 +312,8 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
   }
 
   const filtering = Boolean(q.trim() || status !== "all" || owner !== "all" || type !== "all" || role !== "all" || (kind === "logs" && range !== "7d"));
-  const showList = gate === "ready" && (phase === "ready" || (phase === "empty" && filtering));
+  const showToolbar = gate === "ready";
+  const showList = gate === "ready" && (phase === "ready" || (phase === "loading" && items.length > 0) || (phase === "empty" && filtering));
   const showEmpty = gate === "ready" && phase === "empty" && !filtering;
 
   return (
@@ -308,26 +323,28 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
           <h1>{copy.title}</h1>
           <p>{copy.summary}</p>
         </div>
-        {kind === "users" && gate === "ready" && phase !== "loading" && phase !== "failed" ? (
+        {kind === "users" && gate === "ready" ? (
           <button type="button" className={styles.primary} onClick={() => setCreating(true)}>创建创作者账号</button>
         ) : null}
       </header>
       {notice ? <p className={styles.notice} role="status">{notice}</p> : null}
       {gate !== "ready" ? <StateCard gate={gate} copy={copy} onRetry={reload} /> : null}
-      {gate === "ready" && phase === "loading" ? <StateCard gate="loading" copy={copy} /> : null}
+      {showToolbar ? (
+        <form className={styles.toolbar} role="search" onSubmit={(event) => event.preventDefault()}>
+          <label className={styles.search}>
+            <img src="/design/tailadmin-v2/icon-search.svg" width={18} height={18} alt="" />
+            <input value={q} placeholder={copy.search} aria-label={copy.search} onChange={(event) => setQ(event.target.value)} />
+          </label>
+          <div className={styles.filters}>
+            <Filters kind={kind} status={status} setStatus={setStatus} owner={owner} setOwner={setOwner} type={type} setType={setType} role={role} setRole={setRole} range={range} setRange={setRange} owners={owners} projects={projects} actors={actors} />
+          </div>
+        </form>
+      ) : null}
+      {gate === "ready" && phase === "loading" && items.length === 0 ? <StateCard gate="loading" copy={copy} /> : null}
       {gate === "ready" && phase === "failed" ? <StateCard gate="failed" copy={copy} onRetry={() => setListEpoch((value) => value + 1)} /> : null}
       {showEmpty ? <StateCard gate="empty" copy={copy} /> : null}
       {showList ? (
         <>
-          <form className={styles.toolbar} role="search" onSubmit={(event) => event.preventDefault()}>
-            <label className={styles.search}>
-              <img src="/design/tailadmin-v2/icon-search.svg" width={18} height={18} alt="" />
-              <input value={q} placeholder={copy.search} aria-label={copy.search} onChange={(event) => setQ(event.target.value)} />
-            </label>
-            <div className={styles.filters}>
-              <Filters kind={kind} status={status} setStatus={setStatus} owner={owner} setOwner={setOwner} type={type} setType={setType} role={role} setRole={setRole} range={range} setRange={setRange} owners={owners} projects={projects} actors={actors} />
-            </div>
-          </form>
           <section className={styles.panel}>
             <div className={styles.panelHead}>
               <h2>{kind === "works" ? "全部作品" : kind === "assets" ? "可预览素材" : kind === "jobs" ? "任务队列" : kind === "users" ? "账号列表" : "审计记录"}</h2>
@@ -338,6 +355,11 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
             ) : (
               <Cards kind={kind} items={items} time={copy.time} onWork={setWork} onAsset={setAsset} onJob={setJobView} onRetry={openRetry} onUser={setUser} onLog={setLog} />
             )}
+            {nextCursor ? (
+              <div className={styles.pager}>
+                <button type="button" className={styles.secondary} disabled={phase === "loading"} onClick={() => setCursor({ filters, value: nextCursor })}>加载更多</button>
+              </div>
+            ) : null}
             <p className={styles.footnote}>{copy.footnote}</p>
           </section>
         </>

@@ -63,6 +63,8 @@ export class AdminDirectoryService {
     logs: OperationLogStore | null;
     retry: (jobId: string, context: StudioContext) => Promise<unknown>;
     readContent: (assetId: string) => Promise<{ mimeType: string; bytes: Buffer }>;
+    /** Called after a creator is disabled so an existing cookie cannot keep writing. */
+    revokeSessions?: (accountId: string) => void;
   }) {}
 
   async works(query: { q?: string; status?: string; owner?: string; cursor?: string; limit?: number }) {
@@ -239,6 +241,7 @@ export class AdminDirectoryService {
     if (!this.deps.creators) throw new AdminDirectoryError(503, "NOT_READY", "创作者账号存储尚未就绪。");
     try {
       const account = await this.deps.creators.setStatus(this.deps.workspaceId, id, input.status);
+      if (account.status === "DISABLED") this.deps.revokeSessions?.(account.id);
       await noteOperation({
         action: "调整用户状态",
         target: `${account.username} · 创作者 · ${account.status === "DISABLED" ? "已停用" : "已启用"}`,
@@ -259,7 +262,7 @@ export class AdminDirectoryService {
     if (!this.deps.logs) return { storage: "unconfigured" as const, items: [], total: 0 };
     const records = await this.deps.logs.list();
     const q = (query.q ?? "").trim().toLowerCase();
-    const range = query.range && query.range !== "all" ? query.range : "7d";
+    const range = query.range === "30d" || query.range === "all" ? query.range : "7d";
     const cutoff = range === "30d" ? Date.now() - 30 * 86_400_000 : range === "7d" ? Date.now() - 7 * 86_400_000 : 0;
     const items = records.filter((record) => {
       if (cutoff && Date.parse(record.at) < cutoff) return false;

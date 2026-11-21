@@ -47,11 +47,15 @@ it("keeps directory APIs operator-only and does not retry without confirmation",
   };
   const directory = new AdminDirectoryService({
     store: store as unknown as AdminOpsStore,
-    creators: { listManaged: async () => [] } as never,
+    creators: {
+      listManaged: async () => [],
+      setStatus: async (_workspace: string, id: string, status: "ACTIVE" | "DISABLED") => ({ id, username: "creator-a", status }),
+    } as never,
     workspaceId: "11111111-1111-4111-8111-111111111111",
     logs: null,
     retry,
     readContent: vi.fn(),
+    revokeSessions: (accountId) => auth.revokeAccount(accountId),
   });
   const auth = new SiteAuth(
     { username: "admin", passwordHash: OPERATOR_HASH, publicOrigin: ORIGIN },
@@ -115,6 +119,22 @@ it("keeps directory APIs operator-only and does not retry without confirmation",
     expect(confirmed.status).toBe(200);
     expect(retry).toHaveBeenCalledOnce();
     expect(JSON.stringify(await confirmed.json())).not.toMatch(/sk-[A-Za-z0-9]{8,}/);
+
+    const disabled = await fetch(`${base}/admin/users/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/status`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: ORIGIN,
+        cookie: operator.cookie,
+        "x-csrf-token": operator.csrf,
+      },
+      body: JSON.stringify({ confirmed: true, status: "DISABLED" }),
+    });
+    expect(disabled.status).toBe(200);
+    const expired = await fetch(`${base}/auth/session`, { headers: { cookie: creator.cookie, accept: "application/json" } });
+    expect(expired.status).toBe(401);
+    const stillOperator = await fetch(`${base}/admin/works`, { headers: { cookie: operator.cookie, accept: "application/json" } });
+    expect(stillOperator.status).toBe(200);
   } finally {
     await app.close();
   }

@@ -157,6 +157,7 @@
 .secondary { border: 1px solid var(--admin-line, #dce2ea); background: #fff; color: var(--admin-ink, #101828); }
 .danger { border: 0; background: #bb3439; color: #fff; }
 .footnote { padding: 4px 16px 0; }
+.pager { padding: 12px 16px 0; }
 .backdrop {
   position: fixed;
   inset: 0;

@@ -460,8 +460,9 @@ export class AdminOpsStore {
     if (flags.autoRuns) parts.push(writing("auto_creation_run"));
     if (flags.titleRuns) parts.push(writing("title_writing_run"));
     if (flags.seriesRuns) parts.push(writing("series_writing_run"));
+    // Keep id as uuid. Detail and cursor predicates compare it with ::uuid; casting to text makes PostgreSQL reject `text = uuid`.
     return parts.map((part) => `
-      SELECT id::text AS id, ${code.replaceAll("id_src", "id_src")} AS code, source, kind, state, error_code, updated_at,
+      SELECT id, ${code.replaceAll("id_src", "id_src")} AS code, source, kind, state, error_code, updated_at,
              project_title, episode_no, job_type, ${display} AS display_status
         FROM (${part}) raw`);
   }
