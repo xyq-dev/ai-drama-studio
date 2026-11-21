@@ -20,6 +20,10 @@ const { loadApiEnv } = require(join(root, "apps/api/dist/config/env.js"));
 const { adminBootstrap } = require(join(root, "apps/api/dist/admin/admin-bootstrap.js"));
 const { AdminModelsService } = require(join(root, "apps/api/dist/admin/admin-models.service.js"));
 const { AdminModelsController, ADMIN_MODELS_SERVICE } = require(join(root, "apps/api/dist/admin/admin-models.controller.js"));
+const { FeatureConfigVault, featureVaultPath } = require(join(root, "apps/api/dist/admin/feature-config-vault.js"));
+const { FeatureUsageStore } = require(join(root, "apps/api/dist/admin/feature-usage-store.js"));
+const { FeatureConfigService } = require(join(root, "apps/api/dist/admin/feature-config.service.js"));
+const { FeatureConfigController, FEATURE_CONFIG_SERVICE } = require(join(root, "apps/api/dist/admin/feature-config.controller.js"));
 const { setAdminResponseHeaders } = require(join(root, "apps/api/dist/admin/admin-auth.js"));
 const { AuthModule } = require(join(root, "apps/api/dist/auth/auth.module.js"));
 const { SiteAuth } = require(join(root, "apps/api/dist/auth/site-auth.js"));
@@ -42,6 +46,12 @@ const env = loadApiEnv({
 });
 const bootstrap = adminBootstrap(env);
 const backend = await AdminModelsService.open(env, bootstrap, async () => true);
+const featureVault = await FeatureConfigVault.open({ path: featureVaultPath(bootstrap.path), masterKey: bootstrap.masterKey });
+const featureConfig = await FeatureConfigService.open({
+  vault: featureVault,
+  usage: new FeatureUsageStore(join(directory, "feature-usage.json")),
+  homeWorkspaceId: env.APP_WORKSPACE_ID,
+});
 // Explicit SiteAuthState: skip AuthModule's DATABASE_URL creator pool (this fixture has no application DB).
 const siteAuth = {
   kind: "enabled",
@@ -51,8 +61,9 @@ const siteAuth = {
   ),
 };
 class AcceptanceModule {}
-Module({ imports: [AuthModule.register(env, siteAuth)], controllers: [AdminModelsController], providers: [
+Module({ imports: [AuthModule.register(env, siteAuth)], controllers: [AdminModelsController, FeatureConfigController], providers: [
   { provide: ADMIN_MODELS_SERVICE, useValue: backend },
+  { provide: FEATURE_CONFIG_SERVICE, useValue: featureConfig },
 ] })(AcceptanceModule);
 const app = await NestFactory.create(AcceptanceModule, { logger: false });
 app.use("/api/v1/admin", (_req, response, next) => { setAdminResponseHeaders(response); next(); });

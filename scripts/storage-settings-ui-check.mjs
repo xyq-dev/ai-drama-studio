@@ -79,8 +79,10 @@ try {
       await page.getByRole("button", { name: "打开导航" }).click();
       const dialog = page.getByRole("dialog", { name: "管理导航" });
       await dialog.waitFor();
-      assert.equal(await dialog.getByRole("link", { name: "文本模型", exact: true }).getAttribute("href"), "/admin/models");
-      assert.equal(await dialog.getByRole("link", { name: "媒体密钥", exact: true }).getAttribute("href"), "/admin/media-keys");
+      assert.equal(await dialog.getByRole("link", { name: "功能配置", exact: true }).getAttribute("href"), "/admin/features");
+      assert.equal(await dialog.getByRole("link", { name: "调用记录", exact: true }).getAttribute("href"), "/admin/usage");
+      assert.equal(await dialog.getByRole("link", { name: "文本模型", exact: true }).count(), 0);
+      assert.equal(await dialog.getByRole("link", { name: "媒体密钥", exact: true }).count(), 0);
       assert.equal(await dialog.getByRole("link", { name: "设置", exact: true }).count(), 0);
       assert.equal(await dialog.getByRole("link", { name: "我的作品", exact: true }).count(), 0);
       await page.keyboard.press("Escape");
