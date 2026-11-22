@@ -10,7 +10,7 @@ const request: WritingRequest = {
   system: "return json",
   user: "只根据剧名完成故事策划",
   schemaName: "title_concept",
-  jsonSchema: { type: "object" },
+  jsonSchema: { type: "object", properties: { synopsis: { maxLength: 800 } } },
   maxOutputTokens: 200,
 };
 
@@ -48,6 +48,8 @@ describe("AI SDK writing adapters", () => {
       expect(init?.headers && new Headers(init.headers).get("authorization")).toBe(`Bearer ${SENTINEL}`);
       expect(String(init?.body)).not.toContain(SENTINEL);
       expect(String(init?.body)).toContain(QWEN_PLUS_MODEL);
+      expect(String(init?.body)).toContain(request.schemaName);
+      expect(String(init?.body)).toContain("800");
       return chat(JSON.stringify({ ok: true }));
     });
     const exchange = await sendAiSdkWriting({ kind: "bailian", apiKey: SENTINEL, request, fetchImpl });

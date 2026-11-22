@@ -35,7 +35,14 @@ function setup(options: {
   /** Episode plans by project; a project without one is a three-episode project with no target. */
   plans?: Record<string, { episodeCount: number; targetEpisodeSeconds: number }>;
   planReady?: boolean;
-  featureWritingLock?: () => Promise<{ providerKey: "openai" | "anthropic" | "deepseek"; model: string; configVersion: string; credentialRef?: string; apiKey?: string } | null>;
+  featureWritingLock?: () => Promise<{
+    providerKey: "openai" | "anthropic" | "deepseek" | "bailian";
+    model: string;
+    configVersion: string;
+    credentialRef?: string;
+    apiKey?: string;
+    providerAdapter?: "bailian.ai-sdk.v1" | "deepseek.ai-sdk.v1";
+  } | null>;
   featureWritingCommit?: (input: { runId: string; projectId: string; providerKey: "openai" | "anthropic" | "deepseek"; model: string; configVersion: string; credentialRef: string }) => Promise<void>;
   featureCredential?: (run: { id: string; providerKey: string; model: string }) => Promise<{ apiKey: string; url: string; models: readonly string[] } | null>;
 } = {}) {
@@ -107,6 +114,20 @@ describe("title writing options", () => {
     expect((await setup({ nodeEnv: "production" }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_DISABLED" });
     expect((await setup({ storageReady: false }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_STORAGE_UNAVAILABLE" });
     expect((await setup({ env: {} }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", defaultProvider: null });
+    const waiting = setup({
+      env: {},
+      featureWritingLock: async () => ({
+        providerKey: "bailian", model: "qwen-plus", configVersion: "ver_bailian", apiKey: "synthetic-bailian-key-zzzz",
+        providerAdapter: "bailian.ai-sdk.v1",
+      }),
+    });
+    waiting.store.bailianReady = false;
+    expect((await waiting.service.options()).body).toMatchObject({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED" });
+    waiting.store.bailianReady = true;
+    const ready = await waiting.service.options();
+    expect(ready.body).toMatchObject({ code: "TITLE_WRITING_READY" });
+    expect(JSON.stringify(ready.body)).not.toContain("synthetic-bailian-key-zzzz");
+    expect((ready.body as { providers: unknown[] }).providers).toHaveLength(3);
   });
 
   it("allows title writing in production only when explicitly authorized", async () => {
@@ -222,6 +243,24 @@ describe("starting a run", () => {
     expect(seen.some((item) => item.body.model === "q-1")).toBe(false);
     const replay = await service.start(P1, { title: "夜班证词", providerKey: "anthropic", model: "q-1" }, TOKEN, CONTEXT("feature-key"));
     expect(replay.status).toBe(200);
+  });
+
+  it("replays a Bailian SDK start with the frozen adapter", async () => {
+    const { service, store } = setup({
+      env: {},
+      featureWritingLock: async () => ({
+        providerKey: "bailian", model: "qwen-plus", configVersion: "ver_bailian", credentialRef: "fc_bailian",
+        apiKey: "synthetic-bailian-key-zzzz", providerAdapter: "bailian.ai-sdk.v1",
+      }),
+    });
+    store.bailianReady = true;
+    const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("bailian-replay"));
+    expect(started.status).toBe(201);
+    expect(store.runs[0]?.input).toMatchObject({ providerKey: "bailian", model: "qwen-plus", providerAdapter: "bailian.ai-sdk.v1" });
+    const replay = await service.start(P1, { title: "夜班证词", providerKey: "anthropic" }, TOKEN, CONTEXT("bailian-replay"));
+    expect(replay.status).toBe(200);
+    expect(store.runs).toHaveLength(1);
+    expect(JSON.stringify(store.runs)).not.toContain("synthetic-bailian-key-zzzz");
   });
 
   it("uses the enabled writing configuration and ignores a client provider", async () => {

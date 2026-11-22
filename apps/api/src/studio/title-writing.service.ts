@@ -147,6 +147,13 @@ export class TitleWritingService {
     return this.deps.enabled && (this.deps.nodeEnv !== "production" || this.deps.allowProduction === true);
   }
 
+  /** True when the enabled writing binding is Bailian and the database can store that provider key. */
+  private async enabledBailianReady(): Promise<boolean> {
+    const locked = await this.deps.featureWritingLock?.() ?? null;
+    if (!locked?.apiKey || !locked.model || locked.providerKey !== BAILIAN_WRITING_PROVIDER_KEY) return false;
+    return bailianStorageReady(this.deps.store);
+  }
+
   private schedule(runId: string): void {
     const work = () => this.deps.engine.drive(runId);
     if (this.deps.schedule) {
@@ -174,12 +181,15 @@ export class TitleWritingService {
     }));
     // Without a ready configured default, Claude is offered first (TITLE_WRITING_PROVIDER_PREFERENCE).
     const firstReady = TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => providers.find((item) => item.providerKey === key)?.ready) ?? null;
+    // Feature-config Bailian is not a process provider. The creation page treats TITLE_WRITING_READY as permission to
+    // submit, and start() then uses the enabled binding. Storage must already accept the key.
+    const bailianReady = storageReady && await this.enabledBailianReady();
     // A configured default is reported even when it is not ready: the page shows why and never substitutes another one.
     const configuredDefault = this.deps.defaultProvider ?? null;
     const code = !this.active() ? "TITLE_WRITING_DISABLED"
       : !operatorConfigured(this.deps) ? "TITLE_WRITING_FORBIDDEN"
         : !storageReady ? "TITLE_WRITING_STORAGE_UNAVAILABLE"
-          : firstReady === null ? "TITLE_WRITING_PROVIDER_UNCONFIGURED" : "TITLE_WRITING_READY";
+          : firstReady === null && !bailianReady ? "TITLE_WRITING_PROVIDER_UNCONFIGURED" : "TITLE_WRITING_READY";
     const body: TitleWritingOptionsView = {
       enabled: this.active(),
       code,
@@ -299,7 +309,11 @@ export class TitleWritingService {
       // A start stored before the DeepSeek adapter mark existed is compared with the input it was stored with, so its
       // replay is still answered from that run instead of being refused as a different request.
       withoutAdapterMark: replayed !== null && replayed.providerAdapter === undefined,
-      ...(locked?.providerAdapter ? { providerAdapter: locked.providerAdapter } : {}),
+      ...(locked?.providerAdapter
+        ? { providerAdapter: locked.providerAdapter }
+        : replayed?.providerAdapter
+          ? { providerAdapter: replayed.providerAdapter }
+          : {}),
     });
     // The store looks the key up first: a replay of an existing run is returned whatever the quota is now. A new v2
     // run needs N+2 calls left in the rolling 24 hours; this reserves nothing. v1 keeps its existing per-call checks.

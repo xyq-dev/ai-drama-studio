@@ -8,6 +8,7 @@ import {
 } from "@ai-drama/contracts";
 import {
   TEXT_WRITING_TIMEOUT_MS,
+  deepseekSystemMessage,
   type WritingErrorCode,
   type WritingExchange,
   type WritingRequest,
@@ -111,7 +112,7 @@ export async function sendAiSdkWriting(options: {
       : createDeepSeek({ apiKey, baseURL, fetch: options.fetchImpl })(request.model);
     const result = await generateText({
       model,
-      system: request.system,
+      system: deepseekSystemMessage(request.system, request.schemaName, request.jsonSchema),
       prompt: request.user,
       maxOutputTokens: request.maxOutputTokens,
       maxRetries: 0,
