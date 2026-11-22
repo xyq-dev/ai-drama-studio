@@ -57,15 +57,18 @@ describe("page proxy", () => {
     const response = await proxy(new NextRequest("https://drama.example.test/studio", { headers: { cookie: "__Host-ads_session=ok" } }));
     expect(response.headers.get("x-middleware-next")).toBe("1");
   });
-  it("lets a creator load /admin so the page can refuse access, and still blocks storage settings", async () => {
+  it("sends a creator from /admin and storage settings to /studio", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({
       enabled: true, authenticated: true, role: "creator", username: "creator-a",
     })));
-    for (const path of ["/admin", "/admin/features", "/admin/models", "/admin/media-keys", "/admin/usage"]) {
+    for (const path of ["/admin", "/admin/features", "/admin/works", "/admin/assets", "/admin/jobs", "/admin/usage", "/admin/users", "/admin/logs", "/admin/models", "/admin/media-keys"]) {
       const response = await proxy(new NextRequest(`https://drama.example.test${path}`, {
         headers: { cookie: "__Host-ads_session=creator" },
       }));
-      expect(response.headers.get("x-middleware-next"), path).toBe("1");
+      expect(response.status, path).toBe(307);
+      expect(response.headers.get("location"), path).toBe("https://drama.example.test/studio");
+      expect(response.headers.get("cache-control"), path).toBe("private, no-store");
+      expect(response.headers.get("x-middleware-next"), path).toBeNull();
     }
     const storage = await proxy(new NextRequest("https://drama.example.test/settings/storage", {
       headers: { cookie: "__Host-ads_session=creator" },
@@ -77,10 +80,12 @@ describe("page proxy", () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({
       enabled: true, authenticated: true, role: "operator", username: "admin",
     })));
-    const response = await proxy(new NextRequest("https://drama.example.test/admin/models", {
-      headers: { cookie: "__Host-ads_session=operator" },
-    }));
-    expect(response.headers.get("x-middleware-next")).toBe("1");
+    for (const path of ["/admin/models", "/admin/features", "/admin/usage", "/admin/works"]) {
+      const response = await proxy(new NextRequest(`https://drama.example.test${path}`, {
+        headers: { cookie: "__Host-ads_session=operator" },
+      }));
+      expect(response.headers.get("x-middleware-next"), path).toBe("1");
+    }
   });
   it("covers every page except /login, the API and built static assets", () => {
     const pattern = new RegExp(`^${config.matcher[0]!}$`);

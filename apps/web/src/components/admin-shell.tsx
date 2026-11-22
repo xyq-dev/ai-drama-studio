@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { useModalKeyboard } from "../lib/modal-keyboard";
-import { loginUrl, logout } from "../lib/site-session";
+import { loginUrl, logout, readSession } from "../lib/site-session";
 import styles from "./admin-shell.module.css";
 
 type LiveLink = { href: string; label: string; icon: string };
@@ -57,6 +57,33 @@ function isCurrent(pathname: string, href: string): boolean {
   return false;
 }
 
+type ShellAccess = "loading" | "operator" | "creator" | "signed-out" | "open" | "failed";
+
+/** Shown outside the operator chrome. Never names the visitor as 平台管理员. */
+function AccessHold({ access, pathname }: { access: Exclude<ShellAccess, "operator" | "open">; pathname: string }) {
+  const loginHref = loginUrl(pathname, "signed-out");
+  useEffect(() => {
+    if (access === "creator") window.location.assign("/studio");
+    if (access === "signed-out") window.location.assign(loginHref);
+  }, [access, loginHref]);
+  const copy = access === "creator"
+    ? { title: "没有后台权限", body: "当前账号不能进入运营管理后台。请返回创作中心。", href: "/studio", action: "返回创作中心" }
+    : access === "signed-out"
+      ? { title: "请先登录", body: "进入运营管理后台前需要先登录。", href: loginHref, action: "前往登录" }
+      : access === "failed"
+        ? { title: "暂时无法确认身份", body: "没有读到登录状态。请刷新后再试。", href: "", action: "" }
+        : { title: "正在确认身份", body: "正在核对登录身份，请稍候。", href: "", action: "" };
+  return (
+    <main className={styles.hold} data-ui="admin-access-hold" data-access={access}>
+      <div className={styles.holdCard}>
+        <h1>{copy.title}</h1>
+        <p>{copy.body}</p>
+        {copy.href ? <a href={copy.href}>{copy.action}</a> : null}
+      </div>
+    </main>
+  );
+}
+
 function Brand() {
   return (
     <a className={styles.brand} href="/admin/features">
@@ -75,6 +102,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [wide, setWide] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [access, setAccess] = useState<ShellAccess>("loading");
   const opener = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLElement>(null);
   const wasOpen = useRef(false);
@@ -93,6 +121,21 @@ export function AdminShell({ children }: { children: ReactNode }) {
     sync();
     query.addEventListener("change", sync);
     return () => query.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    setAccess("loading");
+    readSession()
+      .then((session) => {
+        if (!live) return;
+        if (!session.enabled) setAccess("open");
+        else if (!session.authenticated) setAccess("signed-out");
+        else if (session.role === "operator") setAccess("operator");
+        else setAccess("creator");
+      })
+      .catch(() => { if (live) setAccess("failed"); });
+    return () => { live = false; };
   }, []);
 
   useEffect(() => {
@@ -166,6 +209,10 @@ export function AdminShell({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
+
+  if (access !== "operator" && access !== "open") {
+    return <AccessHold access={access} pathname={pathname} />;
+  }
 
   return (
     <div className={styles.shell} data-ui="hongguo-admin">

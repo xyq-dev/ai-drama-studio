@@ -205,6 +205,8 @@
   text-align: center;
 }
 .preview img, .preview video { max-width: 100%; max-height: 220px; }
+.previewError { display: grid; gap: 12px; justify-items: center; padding: 16px; }
+.previewError p { margin: 0; }
 .drawerActions, .dialogActions { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; }
 .dialog {
   top: 50%;

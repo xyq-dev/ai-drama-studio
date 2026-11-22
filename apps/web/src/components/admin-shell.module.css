@@ -360,3 +360,34 @@
   .adminAvatar { display: none; }
   .adminIdentity { padding-left: 2px; }
 }
+.hold {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+  background: #f7f8fb;
+  color: #101828;
+  font-family: "Noto Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+}
+.holdCard {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 28px 24px;
+  border: 1px solid #dce2ea;
+  border-radius: 12px;
+  background: #fff;
+}
+.holdCard h1 { margin: 0; font-size: 20px; line-height: 28px; }
+.holdCard p { margin: 0; color: #53637b; line-height: 22px; }
+.holdCard a {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: #465fff;
+  color: #fff;
+  text-decoration: none;
+}
