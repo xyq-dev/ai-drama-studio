@@ -30,6 +30,11 @@ const server = await createServer({
     resolveId(id) { if (id === "/fixture.tsx") return "\0fixture.tsx"; },
     load(id) { if (id === "\0fixture.tsx") return entry; },
     configureServer(vite) { vite.middlewares.use(async (req, res, next) => {
+      // AdminShell confirms role=operator before it renders this page.
+      if (req.url === "/api/v1/auth/session" || req.url?.startsWith("/api/v1/auth/session?")) {
+        res.setHeader("Content-Type", "application/json"); res.setHeader("Cache-Control", "no-store");
+        res.end(JSON.stringify({ enabled: true, authenticated: true, role: "operator", username: "admin" })); return;
+      }
       if (req.url?.startsWith("/api/v1/admin/storage")) {
         res.setHeader("Content-Type", "application/json"); res.setHeader("Cache-Control", "no-store");
         if (unavailable) { res.statusCode = 503; res.end(JSON.stringify({ error: { code: "STORAGE_SETTINGS_UNAVAILABLE" } })); return; }

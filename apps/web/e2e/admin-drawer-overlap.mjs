@@ -46,6 +46,13 @@ const server = await createServer({
     load(id) { if (id === "\0fixture.tsx") return entry; },
     configureServer(vite) {
       vite.middlewares.use(async (req, res, next) => {
+        // AdminShell confirms role=operator before it renders navigation.
+        if (req.url === "/api/v1/auth/session" || req.url?.startsWith("/api/v1/auth/session?")) {
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(JSON.stringify({ enabled: true, authenticated: true, role: "operator", username: "admin" }));
+          return;
+        }
         if (req.url !== "/" && !req.url?.startsWith("/?")) { next(); return; }
         res.setHeader("Content-Type", "text/html");
         res.end(await vite.transformIndexHtml("/", '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><body><div id="root"></div><script type="module" src="/fixture.tsx"></script></body></html>'));
