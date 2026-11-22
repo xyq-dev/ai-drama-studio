@@ -37,7 +37,9 @@
   display: grid;
   grid-template-columns: 244px minmax(0, 1fr);
   min-height: 100dvh;
-  font-family: "Noto Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  font-family:
+    "Noto Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui,
+    sans-serif;
   background: var(--admin-canvas);
   color: var(--admin-ink);
 }
@@ -53,7 +55,9 @@
   background: var(--admin-card);
   overflow-y: auto;
 }
-.sidebar[hidden] { display: none; }
+.sidebar[hidden] {
+  display: none;
+}
 .sidebarHead {
   display: flex;
   align-items: flex-start;
@@ -90,7 +94,10 @@
   height: 42px;
   border-radius: 10px;
 }
-.navigation { flex: 1 1 auto; min-height: 0; }
+.navigation {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 .navSection {
   display: block;
   margin: 8px 0 10px;
@@ -99,7 +106,50 @@
   line-height: 18px;
   font-weight: 700;
 }
-.navList { display: flex; flex-direction: column; gap: 4px; padding: 0; margin: 0; list-style: none; }
+.navList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 8px;
+  padding: 0 0 0 34px;
+  list-style: none;
+}
+.subnavLink {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 6px 12px;
+  border-radius: var(--admin-control-radius);
+  color: var(--admin-text);
+  text-decoration: none;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+}
+.subnavLink:hover {
+  background: var(--admin-soft);
+}
+.subnavLink[aria-current="page"] {
+  color: var(--admin-blue-ink);
+  font-weight: 700;
+}
+.crumbItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.crumbSlash {
+  color: var(--admin-muted);
+  font-weight: 500;
+}
 .navDivider {
   height: 1px;
   margin: 16px 5px 8px;
@@ -127,13 +177,15 @@
   position: relative;
 }
 .navLink:hover,
-.plannedToggle:hover { background: var(--admin-soft); }
-.navLink[aria-current=page] {
+.plannedToggle:hover {
+  background: var(--admin-soft);
+}
+.navLink[aria-current="page"] {
   background: var(--admin-blue-soft);
   color: var(--admin-blue-ink);
   font-weight: 700;
 }
-.navLink[aria-current=page]::before {
+.navLink[aria-current="page"]::before {
   content: "";
   position: absolute;
   left: 0;
@@ -143,8 +195,13 @@
   border-radius: 1px;
   background: var(--admin-blue);
 }
-.chevron { margin-left: auto; transition: transform .15s ease; }
-.chevronOpen { transform: rotate(90deg); }
+.chevron {
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+.chevronOpen {
+  transform: rotate(90deg);
+}
 .plannedItems {
   display: flex;
   flex-direction: column;
@@ -229,9 +286,18 @@
   text-decoration: none;
   cursor: pointer;
 }
-.footerLink:hover { color: var(--admin-blue-ink); }
-.footerLink:disabled { opacity: .5; cursor: not-allowed; }
-.page { min-width: 0; display: flex; flex-direction: column; }
+.footerLink:hover {
+  color: var(--admin-blue-ink);
+}
+.footerLink:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.page {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 .topbar {
   display: flex;
   height: 76px;
@@ -242,7 +308,13 @@
   border-bottom: 1px solid var(--admin-line);
   background: var(--admin-card);
 }
-.headerMain { display: flex; align-items: center; gap: 16px; min-width: 0; flex: 1; }
+.headerMain {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  flex: 1;
+}
 .breadcrumbs {
   display: flex;
   align-items: center;
@@ -255,8 +327,16 @@
   white-space: nowrap;
   overflow: hidden;
 }
-.breadcrumbs strong { color: var(--admin-ink); font-weight: 500; }
-.mobileCrumb { margin-left: auto; color: var(--admin-muted); font-size: 14px; white-space: nowrap; }
+.breadcrumbs strong {
+  color: var(--admin-ink);
+  font-weight: 500;
+}
+.mobileCrumb {
+  margin-left: auto;
+  color: var(--admin-muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
 .mobileBrand {
   display: inline-flex;
   align-items: center;
@@ -314,26 +394,45 @@
   color: var(--admin-muted);
   cursor: pointer;
 }
-.content { flex: 1; min-width: 0; }
-.backdrop { position: fixed; inset: 0; z-index: 70; background: rgb(32 39 79 / .38); }
+.content {
+  flex: 1;
+  min-width: 0;
+}
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgb(32 39 79 / 0.38);
+}
 .close {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 44px;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--admin-control-radius);
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 72px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--admin-line);
+  border-radius: 12px;
+  background: var(--admin-card);
+  color: var(--admin-ink);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
   cursor: pointer;
 }
 @media (min-width: 1024px) {
-  .menu { display: none; }
+  .menu {
+    display: none;
+  }
 }
 @media (max-width: 1023px) {
-  .shell { display: block; }
-  .sidebar { display: none; }
+  .shell {
+    display: block;
+  }
+  .sidebar {
+    display: none;
+  }
   .sidebar.drawer {
     position: fixed;
     z-index: 71;
@@ -356,9 +455,23 @@
     flex: 0 0 auto;
     background: var(--admin-card);
   }
-  .topbar { height: 64px; padding: 10px 16px; }
-  .adminAvatar { display: none; }
-  .adminIdentity { padding-left: 2px; }
+  .drawer .close {
+    position: fixed;
+    z-index: 72;
+    top: 16px;
+    right: 16px;
+    box-shadow: 0 8px 24px rgb(16 24 40 / 0.12);
+  }
+  .topbar {
+    height: 64px;
+    padding: 10px 16px;
+  }
+  .adminAvatar {
+    display: none;
+  }
+  .adminIdentity {
+    padding-left: 2px;
+  }
 }
 .hold {
   min-height: 100dvh;
@@ -367,7 +480,9 @@
   padding: 32px 16px;
   background: #f7f8fb;
   color: #101828;
-  font-family: "Noto Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  font-family:
+    "Noto Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui,
+    sans-serif;
 }
 .holdCard {
   width: min(420px, 100%);
@@ -378,8 +493,16 @@
   border-radius: 12px;
   background: #fff;
 }
-.holdCard h1 { margin: 0; font-size: 20px; line-height: 28px; }
-.holdCard p { margin: 0; color: #53637b; line-height: 22px; }
+.holdCard h1 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+}
+.holdCard p {
+  margin: 0;
+  color: #53637b;
+  line-height: 22px;
+}
 .holdCard a {
   justify-self: start;
   display: inline-flex;

@@ -100,7 +100,7 @@ export class FeatureConfigError extends Error {
 /** Production default: no outbound vendor call. Tests inject a mock probe. */
 export function networkRefusingFeatureProbe(): FeatureProbe {
   return async () => {
-    throw new FeatureConfigError(503, "FEATURE_PROBE_REFUSED", "没有接通模拟供应商，测试没有发出。");
+    throw new FeatureConfigError(503, "FEATURE_PROBE_REFUSED", "当前环境未接通供应商检测，测试没有发出。");
   };
 }
 
@@ -245,6 +245,16 @@ export class FeatureConfigService {
         credentialRef: fresh.credentialRef,
         fingerprint: fresh.testedFingerprint,
       };
+      // A newly enabled version invalidates other vendors' test receipts; they must retest before enable.
+      for (const [vendor, other] of Object.entries(record.slots)) {
+        if (vendor === body.vendor || !other) continue;
+        if (other.draftStatus === "passed") {
+          // Keep the key and model, but drop the leftover receipt so this is not a pending change.
+          other.draftStatus = "blank";
+          other.testToken = null;
+          other.testedFingerprint = null;
+        }
+      }
     }, body.expectedRevision);
     return this.toView(next);
   }
@@ -717,7 +727,7 @@ export class FeatureConfigService {
         version: record.live.versionId,
       }
       : legacyView(legacy);
-    const slots = FEATURE_CAPABILITIES[feature].map((capability) => this.slotView(feature, capability, record.slots[capability.vendor] ?? emptySlot()));
+    const slots = FEATURE_CAPABILITIES[feature].map((capability) => this.slotView(feature, capability, record.slots[capability.vendor] ?? emptySlot(), record.live ?? null));
     const drafted = Object.values(record.slots).some((slot) => slot && slot.draftStatus !== "blank");
     return {
       feature,
@@ -731,7 +741,7 @@ export class FeatureConfigService {
     };
   }
 
-  private slotView(feature: FeatureKey, capability: { vendor: FeatureVendor; connected: boolean; gap: string | null; models: readonly { id: string; label: string }[] }, slot: FeatureSlotRecord): FeatureSlotView {
+  private slotView(feature: FeatureKey, capability: { vendor: FeatureVendor; connected: boolean; gap: string | null; models: readonly { id: string; label: string }[] }, slot: FeatureSlotRecord, live: { vendor: string; model: string; credentialRef: string } | null): FeatureSlotView {
     return {
       vendor: capability.vendor,
       label: feature === "writing" && capability.vendor === "bailian" ? "百炼千问" : FEATURE_VENDOR_LABELS[capability.vendor],
@@ -743,6 +753,7 @@ export class FeatureConfigService {
       draftStatus: slot.draftStatus,
       testToken: slot.draftStatus === "passed" ? slot.testToken : null,
       failureMessage: slot.failureMessage,
+      isLive: Boolean(live && live.vendor === capability.vendor && live.model === slot.model && slot.credentialRef && live.credentialRef === slot.credentialRef),
     };
   }
 }

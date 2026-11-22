@@ -166,6 +166,8 @@ export interface FeatureSlotView {
   draftStatus: FeatureDraftStatus;
   testToken: string | null;
   failureMessage: string | null;
+  /** True when this slot's model and saved credential are exactly the enabled version. Never exposes the credential. */
+  isLive?: boolean;
 }
 
 export interface FeatureLiveView {

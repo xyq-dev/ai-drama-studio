@@ -26,7 +26,7 @@ const CODE_COPY: Record<string, string> = {
   ADMIN_CONFIG_BUSY: "配置正在写入，请稍后再试。",
   ADMIN_CONFIG_INVALID: "这份配置无法保存。",
   ADMIN_NOT_CONFIGURED: "管理员配置尚未就绪。",
-  FEATURE_PROBE_REFUSED: "没有接通模拟供应商，测试没有发出。",
+  FEATURE_PROBE_REFUSED: "当前环境未接通供应商检测，测试没有发出。",
   FEATURE_ROLLBACK_UNAVAILABLE: "没有可回退的上一配置版本。",
   AUTH_REQUIRED: "没有配置权限。",
   NETWORK_ERROR: "网络中断，操作没有完成。",

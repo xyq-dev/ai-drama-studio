@@ -210,8 +210,8 @@ async function main() {
   web.stdout.on("data", (chunk) => { webLog += chunk.toString(); });
   web.stderr.on("data", (chunk) => { webLog += chunk.toString(); });
   const shots = [
-    { name: "desktop-storyboard-saved.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "功能配置", ready: "草稿已保存" },
-    { name: "mobile-storyboard-saved.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 390, height: 844, heading: "功能配置", ready: "草稿已保存" },
+    { name: "desktop-storyboard-saved.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", ready: "草稿已保存" },
+    { name: "mobile-storyboard-saved.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 390, height: 844, heading: "模型与密钥", ready: "草稿已保存" },
     { name: "desktop-writing-first.png", path: "/admin/features?feature=writing", width: 1440, height: 900, heading: "尚未配置剧本编写", features: "empty" },
     { name: "desktop-storyboard-first.png", path: "/admin/features?feature=storyboard", width: 1440, height: 900, heading: "尚未配置分镜生图", features: "empty" },
     { name: "desktop-voice-first.png", path: "/admin/features?feature=voice", width: 1440, height: 900, heading: "尚未配置角色配音", features: "empty" },
@@ -227,10 +227,10 @@ async function main() {
     { name: "desktop-usage.png", path: "/admin/usage", width: 1440, height: 900, heading: "本集调用" },
     { name: "mobile-usage.png", path: "/admin/usage", width: 390, height: 844, heading: "本集调用" },
     { name: "desktop-task-detail.png", path: "/admin/usage", width: 1440, height: 900, heading: "本集调用", action: async (page) => { await page.getByRole("button", { name: /分镜生图/ }).click(); await page.getByRole("dialog", { name: "任务详情" }).waitFor(); } },
-    { name: "desktop-test-confirm.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "功能配置", action: async (page) => { await page.getByRole("button", { name: "测试配置" }).click(); await page.getByRole("dialog", { name: "确认测试费用" }).waitFor(); } },
-    { name: "desktop-test-failed.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "功能配置", action: async (page) => { await page.getByRole("button", { name: "测试配置" }).click(); await page.getByRole("button", { name: "确认测试" }).click(); await page.getByRole("dialog", { name: "测试没有通过" }).waitFor(); } },
-    { name: "desktop-enable-confirm.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "功能配置", features: "passed", action: async (page) => { await page.getByRole("button", { name: "启用配置" }).click(); await page.getByRole("dialog", { name: "确认启用" }).waitFor(); } },
-    { name: "mobile-menu.png", path: "/admin/features", width: 390, height: 844, heading: "功能配置", action: async (page) => { await page.getByRole("button", { name: "目录" }).click(); await page.getByRole("dialog", { name: "管理导航" }).waitFor(); } },
+    { name: "desktop-test-confirm.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", action: async (page) => { await page.getByRole("button", { name: "检测连接" }).click(); await page.getByRole("dialog", { name: "确认测试费用" }).waitFor(); } },
+    { name: "desktop-test-failed.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", action: async (page) => { await page.getByRole("button", { name: "检测连接" }).click(); await page.getByRole("button", { name: "确认测试" }).click(); await page.getByRole("dialog", { name: "测试没有通过" }).waitFor(); } },
+    { name: "desktop-enable-confirm.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", features: "passed", action: async (page) => { await page.getByRole("button", { name: "确认启用" }).click(); await page.getByRole("dialog", { name: "确认启用" }).waitFor(); } },
+    { name: "mobile-menu.png", path: "/admin/features", width: 390, height: 844, heading: "模型与密钥", action: async (page) => { await page.getByRole("button", { name: "打开功能配置目录" }).click(); await page.getByRole("dialog", { name: "管理导航" }).waitFor(); } },
   ];
   try {
     await waitForUrl(`http://127.0.0.1:${WEB_PORT}/login`);
