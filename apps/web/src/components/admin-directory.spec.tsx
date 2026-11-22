@@ -174,7 +174,71 @@ it("shows a credential mask in the log detail and no upload control on assets", 
   render(<AdminDirectory kind="assets" fetchImpl={assets} />);
   expect(await screen.findByRole("heading", { name: "还没有可预览素材" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: /上传/ })).toBeNull();
-  expect(screen.getByText(/不在此页上传原始文件|不会在此上传/)).toBeTruthy();
+  expect(screen.getByText(/素材来自制作任务产出，运营不会在此上传原始文件/)).toBeTruthy();
+  expect(document.body.textContent).not.toContain("来自制任务");
+});
+
+const ASSET = {
+  id: "6e251483-f3d5-4031-aa75-878c58300001",
+  name: "验收成片",
+  type: "video",
+  typeLabel: "成片视频",
+  projectTitle: "验收-2026-10-08T08-54-22",
+  updatedAt: "2026-11-21T02:08:00.000Z",
+  sourceTask: "视频生成 · JOB-6190",
+  contentHref: "/api/v1/admin/assets/6e251483-f3d5-4031-aa75-878c58300001/content",
+};
+
+it("shows a preview error and retries the content request", async () => {
+  const content: Array<{ status: number }> = [];
+  let fail = true;
+  const fetchImpl = vi.fn(async (input: string) => {
+    const url = String(input);
+    if (url.includes("/auth/session")) return session("operator");
+    if (url.includes("/content")) {
+      content.push({ status: fail ? 503 : 200 });
+      if (fail) {
+        return json({ error: { code: "CONTENT_UNAVAILABLE", message: "暂时无法预览这份素材。没有对外发布。" } }, 503);
+      }
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "video/mp4" } });
+    }
+    return json({ items: [ASSET], total: 1, projects: [] });
+  });
+  render(<AdminDirectory kind="assets" fetchImpl={fetchImpl} />);
+  expect(await screen.findByText(/素材来自制作任务产出，不在此页上传原始文件/)).toBeTruthy();
+  expect(document.body.textContent).not.toContain("来自制任务");
+  fireEvent.click(screen.getByRole("button", { name: "预览" }));
+  const dialog = screen.getByRole("dialog");
+  expect(await within(dialog).findByRole("alert")).toBeTruthy();
+  expect(within(dialog).getByRole("alert").textContent).toContain("暂时无法预览这份素材");
+  expect(within(dialog).queryByText("成片视频预览")).toBeNull();
+  expect(dialog.querySelector("video")).toBeNull();
+  fail = false;
+  fireEvent.click(within(dialog).getByRole("button", { name: "重新加载" }));
+  await vi.waitFor(() => expect(dialog.querySelector("video")).toBeTruthy());
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+  expect(within(dialog).queryByRole("button", { name: "重新加载" })).toBeNull();
+  expect(content.map((call) => call.status)).toEqual([503, 200]);
+});
+
+it("keeps the preview loading state until the content request succeeds", async () => {
+  let release: ((value: Response) => void) | undefined;
+  const fetchImpl = vi.fn(async (input: string) => {
+    const url = String(input);
+    if (url.includes("/auth/session")) return session("operator");
+    if (url.includes("/content")) return new Promise<Response>((resolve) => { release = resolve; });
+    return json({ items: [ASSET], total: 1, projects: [] });
+  });
+  render(<AdminDirectory kind="assets" fetchImpl={fetchImpl} />);
+  fireEvent.click(await screen.findByRole("button", { name: "预览" }));
+  const dialog = screen.getByRole("dialog");
+  expect(await within(dialog).findByText("正在加载预览")).toBeTruthy();
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+  expect(dialog.querySelector("video")).toBeNull();
+  release?.(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "video/mp4" } }));
+  await vi.waitFor(() => expect(dialog.querySelector("video")).toBeTruthy());
+  expect(within(dialog).queryByText("正在加载预览")).toBeNull();
+  expect(within(dialog).queryByRole("alert")).toBeNull();
 });
 
 it("keeps search mounted while the next query loads and pages with the cursor", async () => {

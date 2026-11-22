@@ -102,14 +102,14 @@ const COPY: Record<Kind, {
     title: "素材库",
     summary: "按类型和作品查看生产过程中的分镜图、音频和视频，便于运营核对预览。上传原始素材不是后台的主要工作。",
     emptyTitle: "还没有可预览素材",
-    emptyBody: "当前没有可供核对的分镜图、配音或成片。素材来自制任务产出，运营不会在此上传原始文件。",
+    emptyBody: "当前没有可供核对的分镜图、配音或成片。素材来自制作任务产出，运营不会在此上传原始文件。",
     loadingTitle: "正在加载素材库",
     loadingBody: "正在读取制作任务产出的分镜图、音频和视频，请稍候。本次不会上传或发布。",
     deniedTitle: "没有素材库权限",
     deniedBody: "素材预览仅平台管理员可查看。普通创作者请返回创作工作台。",
     failedTitle: "素材库加载失败",
     failedBody: "暂时无法读取素材数据，请重试。本次不会上传或发布素材。",
-    footnote: "素材来自制任务产出，不在此页上传原始文件。",
+    footnote: "素材来自制作任务产出，不在此页上传原始文件。",
     search: "搜索素材名称",
     count: (total) => `${total} 项素材`,
     time: "short",
@@ -365,7 +365,7 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
         </>
       ) : null}
       {work ? <WorkDrawer item={work} onClose={() => setWork(null)} /> : null}
-      {asset ? <AssetDrawer item={asset} onClose={() => setAsset(null)} /> : null}
+      {asset ? <AssetDrawer item={asset} fetchImpl={impl} onClose={() => setAsset(null)} /> : null}
       {jobView ? <JobDrawer item={jobView} onClose={() => setJobView(null)} /> : null}
       {retryJob ? (
         <RetryDialog
@@ -749,15 +749,85 @@ function WorkDrawer({ item, onClose }: { item: WorkItem; onClose: () => void }) 
   );
 }
 
-function AssetDrawer({ item, onClose }: { item: AssetItem; onClose: () => void }) {
-  const [media, setMedia] = useState(true);
+const PREVIEW_ERROR = "暂时无法预览这份素材。";
+
+async function previewFailureMessage(response: Response): Promise<string> {
+  try {
+    const body = await response.json() as { error?: { message?: unknown } };
+    const message = body.error?.message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  } catch {
+    // A non-JSON failure still gets the same preview sentence.
+  }
+  return PREVIEW_ERROR;
+}
+
+function revokePreviewUrl(url: string) {
+  if (url.startsWith("blob:") && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(url);
+}
+
+function AssetDrawer({ item, fetchImpl, onClose }: { item: AssetItem; fetchImpl: FetchLike; onClose: () => void }) {
+  const [attempt, setAttempt] = useState(0);
+  const [phase, setPhase] = useState<"loading" | "ready" | "error" | "placeholder">(item.type === "other" ? "placeholder" : "loading");
+  const [src, setSrc] = useState("");
+  const [errorText, setErrorText] = useState("");
+
+  useEffect(() => {
+    if (item.type === "other") return;
+    let live = true;
+    let objectUrl = "";
+    setPhase("loading");
+    setSrc("");
+    setErrorText("");
+    fetchImpl(item.contentHref, { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) {
+          const message = await previewFailureMessage(response);
+          if (!live) return;
+          setErrorText(message);
+          setPhase("error");
+          return;
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        if (!live) {
+          revokePreviewUrl(url);
+          return;
+        }
+        objectUrl = url;
+        setSrc(url);
+        setPhase("ready");
+      })
+      .catch(() => {
+        if (!live) return;
+        setErrorText(PREVIEW_ERROR);
+        setPhase("error");
+      });
+    return () => {
+      live = false;
+      revokePreviewUrl(objectUrl);
+    };
+  }, [attempt, fetchImpl, item.contentHref, item.type]);
+
+  function playbackFailed() {
+    setErrorText(PREVIEW_ERROR);
+    setPhase("error");
+  }
+
   return (
     <DrawerFrame title={item.name} label="素材预览" onClose={onClose}>
-      <div className={styles.preview}>
-        {media && item.type === "image" ? <img src={item.contentHref} alt="" onError={() => setMedia(false)} /> : null}
-        {media && item.type === "voice" ? <audio controls src={item.contentHref} onError={() => setMedia(false)} /> : null}
-        {media && item.type === "video" ? <video controls src={item.contentHref} onError={() => setMedia(false)} /> : null}
-        {!media || item.type === "other" ? <span>{item.typeLabel}预览</span> : null}
+      <div className={styles.preview} data-state={phase}>
+        {phase === "loading" ? <span>正在加载预览</span> : null}
+        {phase === "ready" && item.type === "image" ? <img src={src} alt="" onError={playbackFailed} /> : null}
+        {phase === "ready" && item.type === "voice" ? <audio controls src={src} onError={playbackFailed} /> : null}
+        {phase === "ready" && item.type === "video" ? <video controls src={src} onError={playbackFailed} /> : null}
+        {phase === "error" ? (
+          <div className={styles.previewError}>
+            <p role="alert">{errorText}</p>
+            <button type="button" className={styles.secondary} onClick={() => setAttempt((value) => value + 1)}>重新加载</button>
+          </div>
+        ) : null}
+        {phase === "placeholder" ? <span>{item.typeLabel}预览</span> : null}
       </div>
       <dl className={styles.meta}>
         <div><dt>类型</dt><dd>{item.typeLabel}</dd></div>

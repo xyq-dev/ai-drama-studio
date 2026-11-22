@@ -44,9 +44,9 @@ afterEach(() => {
   document.cookie = "ads_csrf=; Max-Age=0; Path=/";
 });
 
-it("shows the four formal groups and Hongguo admin branding", () => {
+it("shows the four formal groups and Hongguo admin branding", async () => {
   render(<AdminShell><main>正文</main></AdminShell>);
-  const nav = screen.getByRole("navigation", { name: "管理菜单" });
+  const nav = await screen.findByRole("navigation", { name: "管理菜单" });
   expect(within(nav).getAllByRole("link").map((link) => [link.getAttribute("href"), link.textContent])).toEqual([
     ["/admin/features", "功能配置"],
     ["/admin/works", "作品管理"],
@@ -85,18 +85,19 @@ it("uses the works breadcrumb instead of the old ops label", async () => {
   navState.pathname = "/admin/works";
   ({ AdminShell } = await import("./admin-shell"));
   render(<AdminShell><main>正文</main></AdminShell>);
-  const crumb = screen.getByRole("navigation", { name: "面包屑" });
+  const crumb = await screen.findByRole("navigation", { name: "面包屑" });
   expect(crumb.textContent).toContain("创作内容");
   expect(crumb.textContent).toContain("作品管理");
   expect(crumb.textContent).not.toContain("作品列表");
   expect(within(screen.getByRole("navigation", { name: "管理菜单" })).queryByText("规划中")).toBeNull();
 });
 
-it("opens a mobile drawer below 1024px with 44px touch targets and closes after selecting a live link", () => {
+it("opens a mobile drawer below 1024px with 44px touch targets and closes after selecting a live link", async () => {
   viewport(false);
   render(<AdminShell><main>正文</main></AdminShell>);
+  const opener = await screen.findByRole("button", { name: "目录" });
   expect(screen.queryByRole("navigation", { name: "管理菜单" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "目录" }));
+  fireEvent.click(opener);
   const dialog = screen.getByRole("dialog", { name: "管理导航" });
   expect(within(dialog).getByText("红果")).toBeTruthy();
   expect(within(dialog).getByText("运营管理后台")).toBeTruthy();
@@ -107,10 +108,10 @@ it("opens a mobile drawer below 1024px with 44px touch targets and closes after 
   expect(screen.queryByRole("dialog", { name: "管理导航" })).toBeNull();
 });
 
-it("keeps the selected item after the short mobile drawer closes", () => {
+it("keeps the selected item after the short mobile drawer closes", async () => {
   viewport(false);
   render(<AdminShell><main>正文</main></AdminShell>);
-  fireEvent.click(screen.getByRole("button", { name: "目录" }));
+  fireEvent.click(await screen.findByRole("button", { name: "目录" }));
   const dialog = screen.getByRole("dialog", { name: "管理导航" });
   expect(within(dialog).getByRole("link", { name: "功能配置" }).getAttribute("aria-current")).toBe("page");
   fireEvent.click(within(dialog).getByRole("link", { name: "功能配置" }));
@@ -127,12 +128,79 @@ it("signs out from the sidebar with the session CSRF token and returns to login"
   });
   vi.stubGlobal("fetch", fetchMock);
   render(<AdminShell><main>正文</main></AdminShell>);
-  fireEvent.click(screen.getByRole("button", { name: "退出" }));
+  fireEvent.click(await screen.findByRole("button", { name: "退出" }));
   await vi.waitFor(() => expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fadmin%2Ffeatures&reason=signed-out"));
   const calls = fetchMock.mock.calls as FetchCall[];
   const out = calls.find((call) => String(call[0]).endsWith("/auth/logout"));
   expect(out?.[1]?.method).toBe("POST");
   expect(new Headers(out?.[1]?.headers).get("X-CSRF-Token")).toBe(CSRF);
+});
+
+it("keeps the operator shell for an operator and hides it while the session is loading", async () => {
+  let release: ((value: Response) => void) | undefined;
+  vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { release = resolve; })));
+  render(<AdminShell><main>正文</main></AdminShell>);
+  expect(screen.getByRole("heading", { name: "正在确认身份" })).toBeTruthy();
+  expect(screen.queryByText("平台管理员")).toBeNull();
+  expect(screen.queryByRole("navigation", { name: "管理菜单" })).toBeNull();
+  expect(screen.queryByRole("navigation", { name: "面包屑" })).toBeNull();
+  expect(screen.queryByText("正文")).toBeNull();
+  expect(document.querySelector("[data-ui='hongguo-admin']")).toBeNull();
+  release?.(new Response(JSON.stringify({ enabled: true, authenticated: true, role: "operator" }), {
+    status: 200, headers: { "content-type": "application/json" },
+  }));
+  expect(await screen.findByText("平台管理员")).toBeTruthy();
+  expect(screen.getByRole("navigation", { name: "管理菜单" })).toBeTruthy();
+  expect(screen.getByText("正文")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "功能配置" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "调用记录" })).toBeTruthy();
+});
+
+it("redirects a creator away from the admin shell without the operator label", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    enabled: true, authenticated: true, role: "creator", username: "qa-iso-a",
+  }), { status: 200, headers: { "content-type": "application/json" } })));
+  render(<AdminShell><main>正文</main></AdminShell>);
+  expect(await screen.findByRole("heading", { name: "没有后台权限" })).toBeTruthy();
+  expect(screen.queryByText("平台管理员")).toBeNull();
+  expect(screen.queryByRole("navigation", { name: "管理菜单" })).toBeNull();
+  expect(screen.queryByRole("navigation", { name: "面包屑" })).toBeNull();
+  expect(screen.queryByText("正文")).toBeNull();
+  expect(document.querySelector("[data-ui='hongguo-admin']")).toBeNull();
+  expect(screen.getByRole("link", { name: "返回创作中心" }).getAttribute("href")).toBe("/studio");
+  expect(assign).toHaveBeenCalledWith("/studio");
+});
+
+it("does not show the operator shell when signed out", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "AUTH_REQUIRED" } }), {
+    status: 401, headers: { "content-type": "application/json" },
+  })));
+  render(<AdminShell><main>正文</main></AdminShell>);
+  expect(await screen.findByRole("heading", { name: "请先登录" })).toBeTruthy();
+  expect(screen.queryByText("平台管理员")).toBeNull();
+  expect(screen.queryByRole("navigation", { name: "管理菜单" })).toBeNull();
+  expect(screen.queryByText("正文")).toBeNull();
+  expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fadmin%2Ffeatures&reason=signed-out");
+});
+
+it("does not label an authenticated session without the operator role", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    enabled: true, authenticated: true, username: "qa-iso-a",
+  }), { status: 200, headers: { "content-type": "application/json" } })));
+  render(<AdminShell><main>正文</main></AdminShell>);
+  expect(await screen.findByRole("heading", { name: "没有后台权限" })).toBeTruthy();
+  expect(screen.queryByText("平台管理员")).toBeNull();
+  expect(document.querySelector("[data-ui='hongguo-admin']")).toBeNull();
+  expect(assign).toHaveBeenCalledWith("/studio");
+});
+
+it("does not show the operator shell when the session check fails", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("down"); }));
+  render(<AdminShell><main>正文</main></AdminShell>);
+  expect(await screen.findByRole("heading", { name: "暂时无法确认身份" })).toBeTruthy();
+  expect(screen.queryByText("平台管理员")).toBeNull();
+  expect(screen.queryByRole("navigation", { name: "管理菜单" })).toBeNull();
+  expect(assign).not.toHaveBeenCalled();
 });
 
 it("does not navigate away when the logout receipt is lost", async () => {
@@ -143,7 +211,7 @@ it("does not navigate away when the logout receipt is lost", async () => {
     });
   }));
   render(<AdminShell><main>正文</main></AdminShell>);
-  fireEvent.click(screen.getByRole("button", { name: "退出" }));
+  fireEvent.click(await screen.findByRole("button", { name: "退出" }));
   await vi.waitFor(() => expect(screen.getByRole("button", { name: "退出" })).toBeTruthy());
   expect(assign).not.toHaveBeenCalled();
   expect(screen.getByText("正文")).toBeTruthy();

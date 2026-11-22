@@ -8,8 +8,8 @@ import { loginUrl, type LoginReason } from "./lib/site-session";
  * service unavailable → /login as well (closed, never open). API routes are not handled here: the API checks every
  * request itself and answers 401 JSON. Only built static assets bypass this.
  *
- * Object-storage settings require role=operator. A creator opening /settings/storage is redirected to /studio.
- * /admin* stays reachable so the page can show the no-permission state. Admin APIs still reject creators.
+ * Object-storage settings and /admin* require role=operator. A creator opening either is redirected to /studio.
+ * Admin APIs still reject creators. The admin shell is not rendered for a non-operator.
  */
 export type PageAccess = "allowed" | "signed-out" | "expired" | "unavailable";
 export type PageRole = "operator" | "creator";
@@ -25,10 +25,16 @@ export type PageSession = {
 const SESSION_COOKIES = ["__Host-ads_session", "ads_session"];
 
 const STORAGE_SETTINGS_PREFIX = "/settings/storage";
+const ADMIN_PREFIX = "/admin";
 
-/** Object storage HTML stays operator-only. Admin HTML is allowed so creators see the refusal state, not a form. */
+/** Object storage HTML stays operator-only. */
 export function isStorageSettingsPath(pathname: string): boolean {
   return pathname === STORAGE_SETTINGS_PREFIX || pathname.startsWith(`${STORAGE_SETTINGS_PREFIX}/`);
+}
+
+/** Operator console HTML. Creators are sent to /studio before the admin shell is rendered. */
+export function isAdminPath(pathname: string): boolean {
+  return pathname === ADMIN_PREFIX || pathname.startsWith(`${ADMIN_PREFIX}/`);
 }
 
 export async function pageSession(cookie: string | null, fetchImpl: typeof fetch = fetch): Promise<PageSession> {
@@ -78,8 +84,8 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     return response;
   }
   const pathname = request.nextUrl.pathname;
-  // Creators may open /admin* and see the no-permission state. Storage settings stay operator-only.
-  if (session.siteLoginEnabled && isStorageSettingsPath(pathname) && session.role !== "operator") {
+  // Creators never receive the admin shell or the storage settings form.
+  if (session.siteLoginEnabled && (isAdminPath(pathname) || isStorageSettingsPath(pathname)) && session.role !== "operator") {
     const response = NextResponse.redirect(new URL("/studio", request.nextUrl.origin), 307);
     response.headers.set("Cache-Control", "private, no-store");
     return response;
