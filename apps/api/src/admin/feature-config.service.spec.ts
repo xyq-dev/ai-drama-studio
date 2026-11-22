@@ -374,6 +374,33 @@ describe("feature configuration", () => {
     expect(await service.readBinding("writing")).toBeNull();
   });
 
+  it("clears other vendors' passed test receipts when a new writing version is enabled", async () => {
+    const { service } = await open();
+    await enable(service, "writing", "deepseek", "deepseek-flash", KEYS.writingDeepseek);
+    expect(slot(await service.view(), "writing", "deepseek").draftStatus).toBe("passed");
+    await enable(service, "writing", "bailian", "qwen-plus", KEYS.writing);
+    const view = await service.view();
+    expect(view.features.find((item) => item.feature === "writing")?.live).toMatchObject({ vendor: "bailian", model: "qwen-plus" });
+    expect(slot(view, "writing", "bailian").draftStatus).toBe("passed");
+    expect(slot(view, "writing", "deepseek").draftStatus).toBe("blank");
+    expect(slot(view, "writing", "deepseek").testToken).toBeNull();
+  });
+
+  it("marks only the exact enabled credential as live, so a rotated key on the same model can still be enabled", async () => {
+    const { service } = await open();
+    await enable(service, "writing", "deepseek", "deepseek-flash", KEYS.writingDeepseek);
+    let view = await service.view();
+    expect(slot(view, "writing", "deepseek").isLive).toBe(true);
+    view = await service.saveDraft("writing", {
+      expectedRevision: view.revision, vendor: "deepseek", model: "deepseek-flash", secretAction: "replace",
+      apiKey: "synthetic-rotated-writing-deepseek-key-xxxx",
+    });
+    expect(slot(view, "writing", "deepseek").isLive).toBe(false);
+    const tested = await service.testDraft("writing", { expectedRevision: view.revision, vendor: "deepseek", confirmCost: true });
+    expect(slot(tested.view, "writing", "deepseek")).toMatchObject({ draftStatus: "passed", isLive: false });
+    expect(JSON.stringify(tested.view)).not.toContain("synthetic-rotated-writing-deepseek-key-xxxx");
+  });
+
   it("allows qwen-plus when the older writing allowlist does not name it", async () => {
     const { service } = await open({ policy: { writingAllowlist: async () => ["other-model"] } });
     const view = await service.saveDraft("writing", {

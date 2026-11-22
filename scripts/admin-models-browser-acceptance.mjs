@@ -64,13 +64,13 @@ async function capture(page, name) {
 async function signIn(page) {
   await page.getByLabel("密码", { exact: true }).fill(password);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await page.getByRole("heading", { name: "功能配置", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "模型与密钥", exact: true }).waitFor();
 }
 async function signOut(page) {
   const logout = page.getByRole("button", { name: "退出", exact: true });
   // On narrow viewports the admin footer lives in the drawer; open it before signing out.
   if (!(await logout.isVisible())) {
-    await page.getByRole("button", { name: "目录" }).click();
+    await page.getByRole("button", { name: "打开功能配置目录" }).click();
     await page.getByRole("dialog", { name: "管理导航" }).waitFor();
   }
   await logout.click();
@@ -134,7 +134,7 @@ try {
   await capture(page, "desktop-model-picker");
   await capture(page, "desktop-models-saved");
   await page.reload();
-  await page.getByRole("heading", { name: "功能配置", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "模型与密钥", exact: true }).waitFor();
   assert.equal((await readView(page)).savedRevision, 0);
   const storage = await page.evaluate(() => ({ local: Object.values(localStorage), session: Object.values(sessionStorage), cookie: document.cookie }));
   assert.equal(leaked.some((secret) => JSON.stringify(storage).includes(secret)), false);
@@ -150,9 +150,9 @@ try {
   await signIn(page);
   assert.equal((await readView(page)).savedRevision, 0);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("heading", { name: "功能配置", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "模型与密钥", exact: true }).waitFor();
   await capture(page, "mobile-models-saved");
-  await page.getByRole("button", { name: "目录" }).click();
+  await page.getByRole("button", { name: "打开功能配置目录" }).click();
   const drawer = page.getByRole("dialog", { name: "管理导航" });
   await drawer.waitFor();
   assert.equal(await drawer.getByRole("link", { name: "功能配置", exact: true }).getAttribute("href"), "/admin/features");

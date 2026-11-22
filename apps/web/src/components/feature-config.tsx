@@ -2,10 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  FEATURE_KEYS, FEATURE_VENDOR_KEYS, featureCapability,
-  type FeatureCardView, type FeatureConfigView, type FeatureKey, type FeatureSlotView, type FeatureVendor,
+  FEATURE_KEYS,
+  FEATURE_VENDOR_KEYS,
+  featureCapability,
+  type FeatureCardView,
+  type FeatureConfigView,
+  type FeatureKey,
+  type FeatureSlotView,
+  type FeatureVendor,
 } from "@ai-drama/contracts";
 import { AdminFrame, AdminGateView, useOperatorGate } from "./admin-access";
+import { SAVED_SECRET_MASK } from "../lib/ai-model-vendors";
 import { createFeatureConfigClient, featureErrorCopy } from "../lib/feature-config-client";
 import styles from "./feature-config.module.css";
 
@@ -15,43 +22,32 @@ const PAGE_LABEL: Record<FeatureKey, string> = {
   voice: "配音",
 };
 
-const FEATURE_ICON: Record<FeatureKey, string> = {
-  writing: "/design/tailadmin-v2/icon-script-ai.svg",
-  storyboard: "/design/tailadmin-v2/icon-images.svg",
-  voice: "/design/tailadmin-v2/icon-status.svg",
-};
-
 type PageTab = FeatureKey | "video";
 
 function ConfigIntro() {
   return (
     <header className={styles.intro}>
-      <h1>功能配置</h1>
-      <p>分别管理编剧、生图、视频和配音。选择一项，查看线上配置并编辑草稿。</p>
+      <div className={styles.introHead}>
+        <h1>模型与密钥</h1>
+      </div>
+      <p>按功能管理模型与凭证。</p>
     </header>
   );
 }
-
-const CTA: Record<FeatureKey, string> = {
-  writing: "配置阿里云编剧",
-  storyboard: "配置阿里云生图",
-  voice: "配置阿里云配音",
-};
-
-const FIRST_BODY: Record<FeatureKey, string> = {
-  writing: "选择编剧服务商，填写密钥并测试后即可启用。",
-  storyboard: "选择生图服务商，填写密钥并测试后即可启用。",
-  voice: "选择配音服务商，填写密钥并测试后即可启用。",
-};
 
 /** URL only. Live state is unknown until the view arrives, so a missing feature stays unset. */
 function readSelection(): { feature: FeatureKey | null; vendor: FeatureVendor | null } {
   if (typeof window === "undefined") return { feature: null, vendor: null };
   const params = new URLSearchParams(window.location.search);
   const featureValue = params.get("feature");
-  const feature = (FEATURE_KEYS as readonly string[]).includes(featureValue ?? "") ? featureValue as FeatureKey : null;
+  const feature = (FEATURE_KEYS as readonly string[]).includes(featureValue ?? "")
+    ? (featureValue as FeatureKey)
+    : null;
   const vendorValue = params.get("vendor");
-  const vendor = feature && (FEATURE_VENDOR_KEYS as readonly string[]).includes(vendorValue ?? "") ? vendorValue as FeatureVendor : null;
+  const vendor =
+    feature && (FEATURE_VENDOR_KEYS as readonly string[]).includes(vendorValue ?? "")
+      ? (vendorValue as FeatureVendor)
+      : null;
   return { feature, vendor };
 }
 
@@ -61,7 +57,38 @@ function replaceSelection(feature: FeatureKey, vendor: FeatureVendor | null) {
   if (vendor) params.set("vendor", vendor);
   else params.delete("vendor");
   const query = params.toString();
-  window.history.replaceState(null, "", query ? `${window.location.pathname}?${query}` : window.location.pathname);
+  window.history.replaceState(
+    null,
+    "",
+    query ? `${window.location.pathname}?${query}` : window.location.pathname,
+  );
+}
+
+function liveMatches(card: FeatureCardView, slot: FeatureSlotView): boolean {
+  if (typeof slot.isLive === "boolean") return slot.isLive;
+  return Boolean(card.live && card.live.vendor === slot.vendor && card.live.model === slot.model);
+}
+
+function pendingDraft(card: FeatureCardView): FeatureSlotView | null {
+  return (
+    card.slots.find(
+      (item) =>
+        item.draftStatus === "saved" ||
+        item.draftStatus === "failed" ||
+        item.draftStatus === "testing" ||
+        (item.draftStatus === "passed" && !liveMatches(card, item)),
+    ) ?? null
+  );
+}
+
+type ChangeKind = "empty" | "saved" | "failed" | "passed" | "enabled";
+
+function changeKind(card: FeatureCardView, slot: FeatureSlotView | null): ChangeKind {
+  if (!slot || slot.draftStatus === "blank") return "empty";
+  if (slot.draftStatus === "failed") return "failed";
+  if (slot.draftStatus === "saved" || slot.draftStatus === "testing") return "saved";
+  if (slot.draftStatus === "passed") return liveMatches(card, slot) ? "enabled" : "passed";
+  return "empty";
 }
 
 export function FeatureConfig() {
@@ -70,7 +97,7 @@ export function FeatureConfig() {
   const initial = readSelection();
   const [chosen, setChosen] = useState<PageTab | null>(initial.feature);
   const [vendor, setVendor] = useState<FeatureVendor | null>(initial.vendor);
-  const [phase, setPhase] = useState<"overview" | "editor">(initial.vendor ? "editor" : "overview");
+  const [editing, setEditing] = useState(false);
   const [view, setView] = useState<FeatureConfigView | null>(null);
   const [failed, setFailed] = useState(false);
   const [keys, setKeys] = useState<Record<string, string>>({});
@@ -88,39 +115,72 @@ export function FeatureConfig() {
     let live = true;
     setFailed(false);
     setView(null);
-    client.view().then((next) => { if (live) setView(next); }).catch(() => { if (live) setFailed(true); });
-    return () => { live = false; };
+    client
+      .view()
+      .then((next) => {
+        if (live) setView(next);
+      })
+      .catch(() => {
+        if (live) setFailed(true);
+      });
+    return () => {
+      live = false;
+    };
   }, [client, gate]);
 
   // Explicit `?feature=` or a later click wins. Otherwise prefer a live feature, then 剧本编写.
-  const feature: FeatureKey = (chosen && chosen !== "video" ? chosen : null)
-    ?? view?.features.find((item) => item.live)?.feature
-    ?? "writing";
+  const feature: FeatureKey =
+    (chosen && chosen !== "video" ? chosen : null) ??
+    view?.features.find((item) => item.live)?.feature ??
+    "writing";
   const card = view?.features.find((item) => item.feature === feature) ?? null;
-  const slot = (vendor ? card?.slots.find((item) => item.vendor === vendor) : null)
-    ?? card?.slots.find((item) => item.connected && item.vendor === card.live?.vendor)
-    ?? card?.slots.find((item) => item.connected)
-    ?? card?.slots[0]
-    ?? null;
+  const slot =
+    (vendor ? card?.slots.find((item) => item.vendor === vendor) : null) ??
+    (card ? pendingDraft(card) : null) ??
+    card?.slots.find((item) => item.connected && item.vendor === card.live?.vendor) ??
+    card?.slots.find((item) => item.connected) ??
+    card?.slots[0] ??
+    null;
   const selectedVendor = slot?.vendor ?? null;
   const fieldKey = selectedVendor ? `${feature}:${selectedVendor}` : "";
-  const draftKey = fieldKey ? keys[fieldKey] ?? "" : "";
+  const draftKey = fieldKey ? (keys[fieldKey] ?? "") : "";
   const replacingKey = fieldKey ? replacing[fieldKey] === true : false;
-  const model = fieldKey ? models[fieldKey] ?? slot?.model ?? slot?.models[0]?.id ?? "" : "";
+  const model = fieldKey ? (models[fieldKey] ?? slot?.model ?? slot?.models[0]?.id ?? "") : "";
   const enteringKey = Boolean(slot && (replacingKey || !slot.keyConfigured));
   const dirtyModel = Boolean(slot && model && model !== (slot.model ?? slot.models[0]?.id ?? ""));
   const dirtyKey = enteringKey && draftKey.length > 0;
   const needsKey = Boolean(slot?.connected && enteringKey && draftKey.trim().length < 8);
   const canSave = Boolean(slot?.connected && !busy && !needsKey);
-  const canTest = Boolean(slot?.connected && slot.keyConfigured && (slot.draftStatus === "saved" || slot.draftStatus === "failed") && !dirtyKey && !dirtyModel && !busy);
-  const canEnable = Boolean(slot?.connected && slot.draftStatus === "passed" && slot.testToken && !dirtyKey && !dirtyModel && !busy);
+  const canTest = Boolean(
+    slot?.connected &&
+    slot.keyConfigured &&
+    (slot.draftStatus === "saved" || slot.draftStatus === "failed") &&
+    !dirtyKey &&
+    !dirtyModel &&
+    !busy,
+  );
+  const canEnable = Boolean(
+    slot?.connected &&
+    slot.draftStatus === "passed" &&
+    slot.testToken &&
+    !dirtyKey &&
+    !dirtyModel &&
+    !busy &&
+    card &&
+    !liveMatches(card, slot),
+  );
+  const kind = card && slot ? changeKind(card, slot) : "empty";
+  const extra = vendor ? featureCapability(feature, vendor) : null;
+  const showingUnconnected = editing && extra !== null && !extra.connected;
+  const connected = showingUnconnected ? card?.slots.find((item) => item.connected) : null;
 
   function selectFeature(next: PageTab) {
     setChosen(next);
     setVendor(null);
-    setPhase("overview");
+    setEditing(false);
     setDialog(null);
     setError("");
+    setNotice("");
     if (next !== "video") replaceSelection(next, null);
   }
 
@@ -145,14 +205,33 @@ export function FeatureConfig() {
   function selectVendor(next: FeatureVendor) {
     setChosen(feature);
     setVendor(next);
-    setPhase("editor");
+    setEditing(true);
     setDialog(null);
     setError("");
     replaceSelection(feature, next);
   }
 
+  /** 取消 discards unsaved model, key and 更换 choices for this feature so 检测连接 / 确认启用 use the saved draft again. */
+  function cancelEdit() {
+    const prefix = `${feature}:`;
+    const keep = <T,>(current: Record<string, T>) =>
+      Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix)));
+    setModels(keep);
+    setKeys(keep);
+    setReplacing(keep);
+    setVendor(null);
+    setEditing(false);
+    setError("");
+    replaceSelection(feature, null);
+  }
+
   function beginConfigure() {
-    selectVendor("bailian");
+    // Open on the draft or live vendor shown in 配置变更, not always the first vendor.
+    const preferred =
+      (slot?.connected ? slot.vendor : null) ??
+      card?.slots.find((item) => item.connected)?.vendor ??
+      "bailian";
+    selectVendor(preferred);
   }
 
   async function save() {
@@ -161,7 +240,7 @@ export function FeatureConfig() {
     setBusy("save");
     setError("");
     setNotice("");
-    const secretAction = enteringKey && draftKey ? "replace" as const : "keep" as const;
+    const secretAction = enteringKey && draftKey ? ("replace" as const) : ("keep" as const);
     try {
       const next = await client.saveDraft(feature, {
         expectedRevision: view.revision,
@@ -173,6 +252,7 @@ export function FeatureConfig() {
       setView(next);
       setKeys((current) => ({ ...current, [fieldKey]: "" }));
       setReplacing((current) => ({ ...current, [fieldKey]: false }));
+      setEditing(false);
       setNotice("草稿已保存。线上任务仍使用当前生效配置。");
     } catch (caught) {
       setError(featureErrorCopy(caught));
@@ -197,7 +277,9 @@ export function FeatureConfig() {
       setView(result.view);
       if (!result.probe?.ok) {
         const message = result.probe?.message ?? "";
-        setFailureCopy(message && !message.includes(draftKey) ? message : "测试没有通过，草稿已保留，可以重试。");
+        setFailureCopy(
+          message && !message.includes(draftKey) ? message : "测试没有通过，草稿已保留，可以重试。",
+        );
         setDialog("failed");
       } else {
         setNotice("测试已通过。线上任务仍使用当前生效配置，启用后只影响新任务。");
@@ -233,48 +315,70 @@ export function FeatureConfig() {
   }
 
   if (gate !== "ready") {
-    return <AdminFrame><ConfigIntro /><AdminGateView gate={gate} onRetry={gate === "failed" ? reload : undefined} /></AdminFrame>;
+    return (
+      <AdminFrame>
+        <ConfigIntro />
+        <AdminGateView gate={gate} onRetry={gate === "failed" ? reload : undefined} />
+      </AdminFrame>
+    );
   }
   if (failed) {
-    return <AdminFrame><ConfigIntro /><AdminGateView gate="failed" onRetry={() => { setFailed(false); reload(); }} /></AdminFrame>;
+    return (
+      <AdminFrame>
+        <ConfigIntro />
+        <AdminGateView
+          gate="failed"
+          onRetry={() => {
+            setFailed(false);
+            reload();
+          }}
+        />
+      </AdminFrame>
+    );
   }
   if (!view || !card) {
-    return <AdminFrame><ConfigIntro /><AdminGateView gate="loading" /></AdminFrame>;
+    return (
+      <AdminFrame>
+        <ConfigIntro />
+        <AdminGateView gate="loading" />
+      </AdminFrame>
+    );
   }
-
-  const extra = vendor ? featureCapability(feature, vendor) : null;
-  const showingUnconnected = phase === "editor" && extra !== null && !extra.connected;
-  const showingFirst = card.firstTime && phase === "overview";
-  const connected = showingUnconnected ? card.slots.find((item) => item.connected) : null;
 
   return (
     <AdminFrame>
       <ConfigIntro />
-      <div className={styles.cards} role="group" aria-label="功能卡" data-state="editor">
-        {view.features.map((item) => (
-          <button key={item.feature} type="button" className={item.feature === feature && chosen !== "video" ? styles.cardOn : styles.card} onClick={() => selectFeature(item.feature)} aria-pressed={item.feature === feature && chosen !== "video"}>
-            <img src={FEATURE_ICON[item.feature]} width={18} height={18} alt="" />
-            <strong>{PAGE_LABEL[item.feature]}</strong>
-            <small>当前生效</small>
-            <span>{item.live ? `${item.live.vendorLabel} · ${item.live.modelLabel}` : "尚未配置"}</span>
-          </button>
-        ))}
-        <button type="button" className={chosen === "video" ? styles.cardOn : styles.card} onClick={() => selectFeature("video")} aria-pressed={chosen === "video"}>
-          <img src="/design/tailadmin-v2/icon-list-video.svg" width={18} height={18} alt="" />
-          <strong>视频</strong>
-          <small>当前生效</small>
-          <span>尚未接入</span>
-        </button>
-      </div>
       <div className={styles.tabs} role="tablist" aria-label="功能">
-        {view.features.map((item) => (
-          <button key={item.feature} type="button" role="tab" aria-selected={item.feature === feature && chosen !== "video"} className={item.feature === feature && chosen !== "video" ? styles.tabOn : styles.tab} onClick={() => selectFeature(item.feature)}>
-            {PAGE_LABEL[item.feature]}
-          </button>
-        ))}
-        <button type="button" role="tab" aria-selected={chosen === "video"} className={chosen === "video" ? styles.tabOn : styles.tab} onClick={() => selectFeature("video")}>
-          视频
-        </button>
+        {(["writing", "storyboard", "video", "voice"] as const).map((tab) => {
+          if (tab === "video") {
+            return (
+              <button
+                key="video"
+                type="button"
+                role="tab"
+                aria-selected={chosen === "video"}
+                className={chosen === "video" ? styles.tabOn : styles.tab}
+                onClick={() => selectFeature("video")}
+              >
+                视频
+              </button>
+            );
+          }
+          const item = view.features.find((entry) => entry.feature === tab);
+          if (!item) return null;
+          return (
+            <button
+              key={item.feature}
+              type="button"
+              role="tab"
+              aria-selected={item.feature === feature && chosen !== "video"}
+              className={item.feature === feature && chosen !== "video" ? styles.tabOn : styles.tab}
+              onClick={() => selectFeature(item.feature)}
+            >
+              {PAGE_LABEL[item.feature]}
+            </button>
+          );
+        })}
       </div>
       {chosen === "video" ? (
         <section className={styles.state} data-state="video-empty">
@@ -282,55 +386,82 @@ export function FeatureConfig() {
           <h2>视频尚未接入</h2>
           <p>视频尚未接入功能配置。现有视频任务链路保持不变，这里不能保存、检测或启用。</p>
         </section>
-      ) : showingUnconnected && extra ? (
-        <section className={styles.state} data-state="unconnected">
-          <img src="/design/tailadmin-v2/icon-key-round.svg" width={28} height={28} alt="" />
-          <h2>该服务商尚未接入</h2>
-          <p>{extra.gap ?? "该服务商尚未接入。"}</p>
-          <button type="button" className={styles.primary} onClick={() => connected ? selectVendor(connected.vendor) : selectFeature("storyboard")}>
-            返回已接入服务商
-          </button>
-        </section>
-      ) : showingFirst ? (
-        <section className={styles.state} data-state="first-time">
-          <img src="/design/tailadmin-v2/icon-key-round.svg" width={28} height={28} alt="" />
-          <h2>尚未配置{PAGE_LABEL[feature]}</h2>
-          <p>{FIRST_BODY[feature]}</p>
-          <button type="button" className={styles.primary} onClick={beginConfigure}>{CTA[feature]}</button>
-        </section>
-      ) : slot ? <Editor
-        card={card}
-        slot={slot}
-        model={model}
-        draftKey={draftKey}
-        replacing={replacingKey}
-        busy={busy}
-        canSave={canSave}
-        canTest={canTest}
-        canEnable={canEnable}
-        needsKey={needsKey}
-        error={error}
-        notice={notice}
-        onVendor={selectVendor}
-        onModel={(value) => setModels((current) => ({ ...current, [fieldKey]: value }))}
-        onKey={(value) => setKeys((current) => ({ ...current, [fieldKey]: value }))}
-        onReplace={() => setReplacing((current) => ({ ...current, [fieldKey]: true }))}
-        onSave={() => void save()}
-        onTest={() => { if (canTest) setDialog("test"); }}
-        onEnable={() => { if (canEnable) setDialog("enable"); }}
-        onRollback={() => void rollback()}
-        rollingBack={busy === "rollback"}
-      /> : null}
+      ) : (
+        <>
+          <CurrentCard card={card} onEdit={beginConfigure} />
+          <ChangePanel
+            card={card}
+            slot={kind === "empty" ? null : slot}
+            kind={kind}
+            busy={busy}
+            canTest={canTest}
+            canEnable={canEnable}
+            error={error}
+            notice={notice}
+            onTest={() => {
+              if (canTest) setDialog("test");
+            }}
+            onEnable={() => {
+              if (canEnable) setDialog("enable");
+            }}
+            onRollback={() => void rollback()}
+            rollingBack={busy === "rollback"}
+          />
+        </>
+      )}
+      {editing && card && slot ? (
+        <div className={styles.modal}>
+          <div className={styles.drawer} role="dialog" aria-modal="true" aria-label="修改配置">
+            {showingUnconnected && extra ? (
+              <section className={styles.state} data-state="unconnected">
+                <h2>该服务商尚未接入</h2>
+                <p>{extra.gap ?? "该服务商尚未接入。"}</p>
+                <button
+                  type="button"
+                  className={styles.primary}
+                  onClick={() => (connected ? selectVendor(connected.vendor) : setEditing(false))}
+                >
+                  返回已接入服务商
+                </button>
+              </section>
+            ) : (
+              <Editor
+                card={card}
+                slot={slot}
+                model={model}
+                draftKey={draftKey}
+                replacing={replacingKey}
+                busy={busy}
+                canSave={canSave}
+                needsKey={needsKey}
+                error={error}
+                onVendor={selectVendor}
+                onModel={(value) => setModels((current) => ({ ...current, [fieldKey]: value }))}
+                onKey={(value) => setKeys((current) => ({ ...current, [fieldKey]: value }))}
+                onReplace={() => setReplacing((current) => ({ ...current, [fieldKey]: true }))}
+                onSave={() => void save()}
+                onClose={cancelEdit}
+              />
+            )}
+          </div>
+        </div>
+      ) : null}
       {dialog === "test" && slot ? (
         <div className={styles.modal}>
           <div className={styles.dialog} role="dialog" aria-modal="true" aria-label="确认测试费用">
             <h2>确认测试</h2>
-            <p>{slot.label} · {slot.models.find((item) => item.id === model)?.label ?? model}</p>
+            <p>
+              {slot.label} · {slot.models.find((item) => item.id === model)?.label ?? model}
+            </p>
             <p>规模：{card.probeScale}</p>
             <p>{card.probeCostNote}</p>
             <div className={styles.dialogActions}>
-              <button type="button" className={styles.secondary} onClick={() => setDialog(null)}>取消</button>
-              <button type="button" className={styles.primary} onClick={() => void confirmTest()}>确认测试</button>
+              <button type="button" className={styles.secondary} onClick={() => setDialog(null)}>
+                取消
+              </button>
+              <button type="button" className={styles.primary} onClick={() => void confirmTest()}>
+                确认测试
+              </button>
             </div>
           </div>
         </div>
@@ -341,7 +472,9 @@ export function FeatureConfig() {
             <h2>测试没有通过</h2>
             <p>{failureCopy}</p>
             <div className={styles.dialogActions}>
-              <button type="button" className={styles.primary} onClick={() => setDialog(null)}>知道了</button>
+              <button type="button" className={styles.primary} onClick={() => setDialog(null)}>
+                知道了
+              </button>
             </div>
           </div>
         </div>
@@ -350,10 +483,18 @@ export function FeatureConfig() {
         <div className={styles.modal}>
           <div className={styles.dialog} role="dialog" aria-modal="true" aria-label="确认启用">
             <h2>确认启用</h2>
-            <p>启用后，新的{PAGE_LABEL[card.feature]}任务使用 {slot.label} · {slot.models.find((item) => item.id === model)?.label ?? model}。已经提交的任务保持锁定的版本，不会悄悄切换。</p>
+            <p>
+              启用后，新的{PAGE_LABEL[card.feature]}任务使用 {slot.label} ·{" "}
+              {slot.models.find((item) => item.id === model)?.label ?? model}
+              。已经提交的任务保持锁定的版本，不会悄悄切换。
+            </p>
             <div className={styles.dialogActions}>
-              <button type="button" className={styles.secondary} onClick={() => setDialog(null)}>取消</button>
-              <button type="button" className={styles.primary} onClick={() => void confirmEnable()}>确认启用</button>
+              <button type="button" className={styles.secondary} onClick={() => setDialog(null)}>
+                取消
+              </button>
+              <button type="button" className={styles.primary} onClick={() => void confirmEnable()}>
+                确认启用
+              </button>
             </div>
           </div>
         </div>
@@ -362,9 +503,189 @@ export function FeatureConfig() {
   );
 }
 
+function CurrentCard({ card, onEdit }: { card: FeatureCardView; onEdit: () => void }) {
+  return (
+    <section className={styles.current} aria-label="当前生效配置">
+      <div className={styles.editorHead}>
+        <h2>当前生效配置</h2>
+        {card.live ? (
+          <span className={styles.badgeOk}>已生效</span>
+        ) : (
+          <span className={styles.badgeMuted}>尚未配置</span>
+        )}
+      </div>
+      <dl className={styles.facts}>
+        <div>
+          <dt>供应商</dt>
+          <dd>{card.live ? card.live.vendorLabel : "未设置"}</dd>
+        </div>
+        <div>
+          <dt>模型</dt>
+          <dd>{card.live ? card.live.modelLabel : "未设置"}</dd>
+        </div>
+        <div>
+          <dt>凭证</dt>
+          <dd>{card.live ? `${PAGE_LABEL[card.feature]}专用  ${SAVED_SECRET_MASK}` : "未绑定"}</dd>
+        </div>
+      </dl>
+      <button type="button" className={styles.secondary} onClick={onEdit}>
+        修改配置
+      </button>
+    </section>
+  );
+}
+
+function ChangePanel({
+  card,
+  slot,
+  kind,
+  busy,
+  canTest,
+  canEnable,
+  error,
+  notice,
+  onTest,
+  onEnable,
+  onRollback,
+  rollingBack,
+}: {
+  card: FeatureCardView;
+  slot: FeatureSlotView | null;
+  kind: ChangeKind;
+  busy: string;
+  canTest: boolean;
+  canEnable: boolean;
+  error: string;
+  notice: string;
+  onTest: () => void;
+  onEnable: () => void;
+  onRollback: () => void;
+  rollingBack: boolean;
+}) {
+  const step = kind === "empty" ? 1 : kind === "saved" || kind === "failed" ? 2 : 3;
+  const done2 = kind === "passed" || kind === "enabled";
+  const done3 = kind === "enabled";
+  return (
+    <section className={styles.change} aria-label="配置变更">
+      <h2>配置变更</h2>
+      <ol className={styles.steps}>
+        <li
+          className={
+            step > 1 || kind === "enabled"
+              ? styles.stepDone
+              : step === 1
+                ? styles.stepOn
+                : styles.step
+          }
+        >
+          <span>1</span> 保存草稿
+        </li>
+        <li className={done2 ? styles.stepDone : step === 2 ? styles.stepOn : styles.step}>
+          <span>2</span> 检测连接
+        </li>
+        <li className={done3 ? styles.stepDone : step === 3 ? styles.stepOn : styles.step}>
+          <span>3</span> 确认启用
+        </li>
+      </ol>
+      {kind === "empty" ? (
+        <div className={styles.changeBody}>
+          <p className={styles.mutedLine}>
+            <span className={styles.dotMuted} />
+            暂无草稿
+          </p>
+          <p>修改配置后，可在这里检测并启用新版本。</p>
+        </div>
+      ) : slot ? (
+        <div className={styles.changeBody}>
+          {kind === "saved" ? (
+            <p className={styles.mutedLine}>
+              <span className={styles.dotWarn} />
+              草稿未启用
+            </p>
+          ) : null}
+          {kind === "failed" ? (
+            <p className={styles.failLine}>
+              <span className={styles.dotFail} />
+              检测未通过
+            </p>
+          ) : null}
+          {kind === "passed" ? (
+            <p className={styles.okLine}>
+              <span className={styles.dotOk} />
+              检测通过
+            </p>
+          ) : null}
+          {kind === "enabled" ? (
+            <p className={styles.okLine}>
+              <span className={styles.dotOk} />
+              已生效
+            </p>
+          ) : null}
+          <p className={styles.draftMeta}>
+            <strong>{slot.label}</strong>
+            <span>{slot.models.find((item) => item.id === slot.model)?.label ?? slot.model}</span>
+          </p>
+          <p>
+            {kind === "saved" ? "当前生效配置仍用于新任务。" : null}
+            {kind === "failed"
+              ? `${slot.failureMessage ? `原因：${slot.failureMessage} ` : ""}草稿已保留，不能启用。当前生效配置未切换。`
+              : null}
+            {kind === "passed" ? "连接检测已通过，等待确认启用。" : null}
+            {kind === "enabled" ? "本次变更仅对本功能的新任务生效。" : null}
+            {notice && kind !== "failed" ? ` ${notice}` : null}
+          </p>
+          {error ? (
+            <p className={styles.fail} role="alert">
+              {error}
+            </p>
+          ) : null}
+          {kind === "saved" || kind === "failed" ? (
+            <button type="button" className={styles.primary} disabled={!canTest} onClick={onTest}>
+              {busy === "test" ? "正在检测…" : "检测连接"}
+            </button>
+          ) : null}
+          {kind === "passed" ? (
+            <button
+              type="button"
+              className={styles.primary}
+              disabled={!canEnable}
+              onClick={onEnable}
+            >
+              {busy === "enable" ? "正在启用…" : "确认启用"}
+            </button>
+          ) : null}
+          {card.canRollback ? (
+            <button
+              type="button"
+              className={styles.secondary}
+              disabled={busy !== "" || rollingBack}
+              onClick={onRollback}
+            >
+              {rollingBack ? "正在回退…" : "回退到上一配置版本"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function Editor({
-  card, slot, model, draftKey, replacing, busy, canSave, canTest, canEnable, needsKey, error, notice,
-  onVendor, onModel, onKey, onReplace, onSave, onTest, onEnable, onRollback, rollingBack,
+  card,
+  slot,
+  model,
+  draftKey,
+  replacing,
+  busy,
+  canSave,
+  needsKey,
+  error,
+  onVendor,
+  onModel,
+  onKey,
+  onReplace,
+  onSave,
+  onClose,
 }: {
   card: FeatureCardView;
   slot: FeatureSlotView;
@@ -373,51 +694,39 @@ function Editor({
   replacing: boolean;
   busy: string;
   canSave: boolean;
-  canTest: boolean;
-  canEnable: boolean;
   needsKey: boolean;
   error: string;
-  notice: string;
   onVendor: (vendor: FeatureVendor) => void;
   onModel: (model: string) => void;
   onKey: (value: string) => void;
   onReplace: () => void;
   onSave: () => void;
-  onTest: () => void;
-  onEnable: () => void;
-  onRollback: () => void;
-  rollingBack: boolean;
+  onClose: () => void;
 }) {
-  const badge = slot.draftStatus === "saved" ? "草稿已保存"
-    : slot.draftStatus === "passed" ? "测试已通过"
-      : slot.draftStatus === "testing" ? "正在测试"
-        : slot.draftStatus === "failed" ? "测试未通过"
-          : "";
-  const bannerLead = slot.draftStatus === "saved" ? "等待测试"
-    : slot.draftStatus === "passed" ? "测试已通过"
-      : slot.draftStatus === "testing" ? "正在测试"
-        : slot.draftStatus === "failed" ? "测试未通过"
-          : "";
-  const bannerBody = notice || (slot.draftStatus === "saved"
-    ? "草稿已保存，线上任务仍使用当前生效配置。"
-    : slot.draftStatus === "passed"
-      ? "可以启用。线上任务仍使用当前生效配置。"
-      : slot.draftStatus === "testing"
-        ? "正在测试这一份草稿。"
-        : slot.draftStatus === "failed"
-          ? (slot.failureMessage || "测试没有通过，草稿已保留，可以重试。")
-          : "");
   return (
     <section className={styles.editor} aria-label={`${PAGE_LABEL[card.feature]}草稿`}>
       <div className={styles.editorHead}>
-        <h2>{PAGE_LABEL[card.feature]}配置</h2>
-        {badge ? <span className={styles.badge}>{badge}</span> : null}
+        <h2>修改配置</h2>
+        <button type="button" className={styles.quiet} onClick={onClose}>
+          取消
+        </button>
       </div>
-      <p className={styles.live}><span>当前生效</span> <strong>{card.live ? `${card.live.vendorLabel} / ${card.live.modelLabel}` : "尚未配置"}</strong></p>
+      <p className={styles.live}>
+        <span>当前生效</span>{" "}
+        <strong>
+          {card.live ? `${card.live.vendorLabel} / ${card.live.modelLabel}` : "尚未配置"}
+        </strong>
+      </p>
       <p className={styles.vendorLabel}>供应商</p>
       <div className={styles.vendors} role="group" aria-label="供应商">
         {card.slots.map((item) => (
-          <button key={item.vendor} type="button" className={item.vendor === slot.vendor ? styles.vendorOn : styles.vendor} aria-pressed={item.vendor === slot.vendor} onClick={() => onVendor(item.vendor)}>
+          <button
+            key={item.vendor}
+            type="button"
+            className={item.vendor === slot.vendor ? styles.vendorOn : styles.vendor}
+            aria-pressed={item.vendor === slot.vendor}
+            onClick={() => onVendor(item.vendor)}
+          >
             {item.label}
           </button>
         ))}
@@ -425,16 +734,27 @@ function Editor({
       <div className={styles.fields}>
         <label className={styles.field}>
           <span>模型</span>
-          <select aria-label="模型" value={model} disabled={!slot.connected || busy !== ""} onChange={(event) => onModel(event.target.value)}>
-            {slot.models.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          <select
+            aria-label="模型"
+            value={model}
+            disabled={!slot.connected || busy !== ""}
+            onChange={(event) => onModel(event.target.value)}
+          >
+            {slot.models.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
           </select>
         </label>
         <div className={styles.field}>
           <span>凭证 · {slot.label}</span>
           {slot.keyConfigured && !replacing ? (
             <div className={styles.keyRow}>
-              <span aria-label="已保存密钥">••••••••</span>
-              <button type="button" onClick={onReplace}>更换</button>
+              <span aria-label="已保存密钥">{SAVED_SECRET_MASK}</span>
+              <button type="button" onClick={onReplace}>
+                更换
+              </button>
             </div>
           ) : (
             <input
@@ -449,22 +769,21 @@ function Editor({
           )}
         </div>
       </div>
-      {needsKey ? <small className={styles.hint}>请填写这一家服务商的 API Key。密钥只在这次保存时发送，页面不会记住它。</small> : null}
-      {bannerBody ? (
-        <p className={slot.draftStatus === "failed" ? styles.fail : styles.banner} role="status">
-          {bannerLead ? <strong>{bannerLead}</strong> : null} {bannerBody}
+      {needsKey ? (
+        <small className={styles.hint}>
+          请填写这一家服务商的 API Key。密钥只在这次保存时发送，页面不会记住它。
+        </small>
+      ) : null}
+      <p className={styles.hint}>保存草稿或检测连接都不会切换当前生效配置。</p>
+      {error ? (
+        <p className={styles.fail} role="alert">
+          {error}
         </p>
       ) : null}
-      {error ? <p className={styles.fail} role="alert">{error}</p> : null}
       <div className={styles.actions}>
-        <button type="button" className={styles.secondary} disabled={!canSave} onClick={onSave}>{busy === "save" ? "正在保存…" : "保存草稿"}</button>
-        <button type="button" className={styles.primary} disabled={!canTest} onClick={onTest}>{busy === "test" ? "正在检测…" : "检测连接"}</button>
-        <button type="button" className={canEnable ? styles.primary : styles.quiet} disabled={!canEnable} onClick={onEnable}>{busy === "enable" ? "正在启用…" : "确认启用"}</button>
-        {card.canRollback ? (
-          <button type="button" className={styles.secondary} disabled={busy !== "" || rollingBack} onClick={onRollback}>
-            {rollingBack ? "正在回退…" : "回退到上一配置版本"}
-          </button>
-        ) : null}
+        <button type="button" className={styles.primary} disabled={!canSave} onClick={onSave}>
+          {busy === "save" ? "正在保存…" : "保存草稿"}
+        </button>
       </div>
     </section>
   );

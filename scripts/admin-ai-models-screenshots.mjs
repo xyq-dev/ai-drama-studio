@@ -1,0 +1,391 @@
+// Walk both admin paths against the isolated preview and capture 1440×900 / 390×844 screenshots.
+// Uses isolated-env test credentials and the in-process mock probe. No paid outbound.
+import { createRequire } from "node:module";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import assert from "node:assert/strict";
+
+const root = resolve(fileURLToPath(new URL("../", import.meta.url)));
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
+const reviewDir =
+  process.env.ADMIN_AI_MODELS_REVIEW_DIR ||
+  "/workspace/drama-studio/reviews/admin-ai-models-writing-2026-11-23";
+const secretsDir = process.env.ADMIN_AI_MODELS_SECRETS_DIR || resolve(reviewDir, ".secrets");
+const outDir = resolve(reviewDir, "screenshots");
+const origin = process.env.ADMIN_AI_MODELS_ORIGIN || "http://127.0.0.1:3822";
+const password = readFileSync(resolve(secretsDir, "ADMIN_MODELS_TEST_PASSWORD"), "utf8").trim();
+const username = process.env.SITE_AUTH_USERNAME || "admin";
+
+// Clearly fake isolated keys. Never printed. The FAILPROBE token trips the mock probe.
+const KEYS = {
+  openai: "sk-test-isolated-openai-key-not-real",
+  deepseek: "fake-deepseek-isolated-key-not-real",
+  bailianFail: "FAILPROBE-bailian-isolated-key-not-real",
+  bailianPass: "fake-bailian-isolated-key-not-real",
+  deepseekFail: "FAILPROBE-deepseek-isolated-key-not-real",
+};
+const FORBIDDEN = [password, ...Object.values(KEYS)];
+
+mkdirSync(outDir, { recursive: true });
+const shots = [];
+const checks = [];
+
+function leaked(text) {
+  return FORBIDDEN.some((secret) => text.includes(secret));
+}
+
+async function assertClean(page, name) {
+  const html = await page.evaluate(() => {
+    const clone = document.documentElement.cloneNode(true);
+    for (const input of clone.querySelectorAll('input[type="password"]')) input.value = "";
+    return clone.outerHTML;
+  });
+  assert.equal(leaked(html), false, `Secret appeared in DOM for ${name}`);
+}
+
+async function waitTestOutcome(page) {
+  const passed = page.getByText("检测通过");
+  const failed = page.getByRole("dialog", { name: "测试没有通过" });
+  try {
+    await Promise.race([
+      passed.waitFor({ state: "visible", timeout: 20_000 }),
+      failed.waitFor({ state: "visible", timeout: 20_000 }),
+    ]);
+  } catch (error) {
+    if (process.env.ADMIN_AI_MODELS_DEBUG_SHOT)
+      await page.screenshot({ path: process.env.ADMIN_AI_MODELS_DEBUG_SHOT, fullPage: true });
+    throw error;
+  }
+  if (await failed.isVisible().catch(() => false)) {
+    const title = await failed.locator("h2").innerText();
+    throw new Error(`Expected 检测通过, got dialog: ${title}`);
+  }
+}
+
+async function revealPrimary(page, locator, label) {
+  await locator.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(120);
+  const box = await locator.boundingBox();
+  const viewport = page.viewportSize();
+  assert.ok(box, `${label}: no bounding box`);
+  assert.ok(box.y >= 0 && box.y + box.height <= viewport.height, `${label}: outside viewport`);
+  assert.ok(box.x >= 0 && box.x + box.width <= viewport.width, `${label}: horizontally clipped`);
+  const hit = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const target = document.elementFromPoint(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+    );
+    let clipped = false;
+    for (let node = element.parentElement; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (/(hidden|clip)/.test(style.overflowY) || /(hidden|clip)/.test(style.overflow)) {
+        const outer = node.getBoundingClientRect();
+        if (rect.bottom > outer.bottom + 0.5 || rect.top < outer.top - 0.5) clipped = true;
+      }
+    }
+    return { onTop: target === element || element.contains(target), clipped };
+  });
+  assert.ok(hit.onTop, `${label}: covered by another element`);
+  assert.ok(!hit.clipped, `${label}: clipped by an overflow ancestor`);
+  checks.push({ label, box, ...hit });
+}
+
+async function shotScrolled(page, name) {
+  await hideDevBadge(page);
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+  await page.waitForTimeout(80);
+  const file = `${name}.png`;
+  await page.screenshot({ path: resolve(outDir, file), fullPage: false });
+  await assertClean(page, name);
+  shots.push(file);
+}
+
+async function hideDevBadge(page) {
+  await page
+    .addStyleTag({
+      content: `nextjs-portal,[data-next-badge],[data-next-badge-root],[data-nextjs-dev-indicator],#__next-build-watcher{display:none!important;visibility:hidden!important;pointer-events:none!important}`,
+    })
+    .catch(() => {});
+}
+
+async function shot(page, name) {
+  await hideDevBadge(page);
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    window.scrollTo(0, 0);
+  });
+  await page.waitForTimeout(80);
+  const file = `${name}.png`;
+  await page.screenshot({ path: resolve(outDir, file), fullPage: false });
+  await assertClean(page, name);
+  shots.push(file);
+}
+
+async function signIn(page) {
+  await page.goto(`${origin}/admin/ai-models`, { waitUntil: "networkidle" });
+  if (new URL(page.url()).pathname === "/login") {
+    await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
+    await page.locator('input[name="username"]').fill(username);
+    await page.getByLabel("密码", { exact: true }).fill(password);
+    await page.getByRole("button", { name: "登录", exact: true }).click();
+  }
+  await page.getByRole("heading", { name: "模型供应商", exact: true }).waitFor({ timeout: 60_000 });
+}
+
+async function gotoReady(page, path, heading) {
+  await page.goto(`${origin}${path}`, { waitUntil: "networkidle" });
+  await page.getByRole("heading", { name: heading, exact: true }).waitFor({ timeout: 60_000 });
+  // Headings also render in the loading intro; wait until the loading gate is gone.
+  await page
+    .getByRole("heading", { name: "正在加载配置" })
+    .waitFor({ state: "detached", timeout: 60_000 })
+    .catch(() => {});
+  await page
+    .getByText("正在核对登录身份", { exact: false })
+    .waitFor({ state: "detached", timeout: 30_000 })
+    .catch(() => {});
+}
+
+async function openMenu(page, category) {
+  await page.getByRole("button", { name: `打开${category}目录` }).click();
+  await page.getByRole("dialog", { name: "管理导航" }).waitFor();
+}
+
+async function walkDesktop(page) {
+  await gotoReady(page, "/admin/ai-models", "模型供应商");
+  await shot(page, "desktop-vendor-catalog-empty");
+  assert.equal(
+    await page.getByText("演示", { exact: true }).count(),
+    0,
+    "演示 badge must not render",
+  );
+  await shot(page, "desktop-vendor-catalog-nobadge-fixed");
+
+  await page.getByRole("link", { name: "进入设置" }).nth(1).click(); // OpenAI is second
+  await page.getByRole("heading", { name: "OpenAI", exact: true }).waitFor();
+  await shot(page, "desktop-openai-settings-empty");
+
+  await page.getByRole("button", { name: "编辑设置" }).click();
+  await page.getByRole("dialog", { name: "编辑设置" }).waitFor();
+  await shot(page, "desktop-openai-edit-drawer");
+  await page.getByLabel("API Key").fill(KEYS.openai);
+  await page.getByRole("button", { name: "保存凭证", exact: true }).click();
+  await page.getByText("密钥已保存 · 连接待测试").first().waitFor();
+  await shot(page, "desktop-openai-saved");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("heading", { name: "OpenAI", exact: true }).waitFor();
+  await page.getByText("密钥已保存 · 连接待测试").first().waitFor();
+  await shot(page, "desktop-openai-after-refresh");
+
+  await gotoReady(page, "/admin/ai-models", "模型供应商");
+  await page
+    .getByText("密钥已保存 · 连接待测试")
+    .waitFor({ state: "detached" })
+    .catch(() => {});
+  await shot(page, "desktop-vendor-catalog-openai-saved");
+
+  await gotoReady(page, "/admin/features?feature=writing", "模型与密钥");
+  await page.getByText("暂无草稿").waitFor();
+  await shot(page, "desktop-writing-current-empty");
+
+  await page.getByRole("button", { name: "修改配置" }).click();
+  await page.getByRole("dialog", { name: "修改配置" }).waitFor();
+  await page.getByRole("button", { name: "DeepSeek", exact: true }).click();
+  await shot(page, "desktop-writing-edit-drawer");
+  await page.getByLabel("API Key").fill(KEYS.deepseek);
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await page.getByText("草稿未启用").waitFor();
+  await page.getByText("DeepSeek Flash").first().waitFor();
+  await shot(page, "desktop-writing-draft-unenabled-first");
+
+  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
+  await shot(page, "desktop-writing-test-confirm");
+  await page.getByRole("button", { name: "确认测试", exact: true }).click();
+  await page.getByText("检测通过").waitFor();
+  await page.getByText("未设置").first().waitFor(); // live config unchanged
+  await shot(page, "desktop-writing-test-passed-first");
+
+  await page.getByRole("button", { name: "确认启用", exact: true }).click();
+  await page.getByRole("dialog", { name: "确认启用" }).waitFor();
+  await shot(page, "desktop-writing-enable-confirm-first");
+  await page
+    .getByRole("dialog", { name: "确认启用" })
+    .getByRole("button", { name: "确认启用", exact: true })
+    .click();
+  await page.getByText("本次变更仅对本功能的新任务生效。").waitFor();
+  await page.getByText("DeepSeek Flash").first().waitFor();
+  await shot(page, "desktop-writing-enabled-deepseek");
+
+  // Draft a Bailian change; keep DeepSeek as the live config. Fail, then pass, then enable.
+  await page.getByRole("button", { name: "修改配置" }).click();
+  await page.getByRole("dialog", { name: "修改配置" }).waitFor();
+  await page.getByRole("button", { name: "百炼千问", exact: true }).click();
+  await page.getByLabel("API Key").fill(KEYS.bailianFail);
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await page.getByText("草稿未启用").waitFor();
+  await page.getByText("DeepSeek Flash").first().waitFor(); // live still DeepSeek
+  await shot(page, "desktop-writing-draft-unenabled");
+
+  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
+  await page.getByRole("button", { name: "确认测试", exact: true }).click();
+  await page.getByRole("dialog", { name: "测试没有通过" }).waitFor();
+  await shot(page, "desktop-writing-test-failed-dialog");
+  await page.getByRole("button", { name: "知道了", exact: true }).click();
+  await page.getByText("检测未通过").waitFor();
+  await page.getByText("DeepSeek Flash").first().waitFor();
+  await shot(page, "desktop-writing-test-failed");
+
+  await page.getByRole("button", { name: "修改配置" }).click();
+  await page.getByRole("dialog", { name: "修改配置" }).waitFor();
+  await page.getByRole("button", { name: "更换" }).click();
+  await page.getByLabel("API Key").fill(KEYS.bailianPass);
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await page.getByText("草稿未启用").waitFor();
+
+  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
+  await page.getByRole("button", { name: "确认测试", exact: true }).click();
+  await page.getByText("检测通过").waitFor();
+  await page.getByText("DeepSeek Flash").first().waitFor(); // live still DeepSeek
+  await shot(page, "desktop-writing-test-passed");
+  assert.equal(
+    await page.getByText("演示", { exact: true }).count(),
+    0,
+    "演示 badge must not render",
+  );
+  await shot(page, "desktop-writing-test-passed-nobadge-fixed");
+
+  await page.getByRole("button", { name: "确认启用", exact: true }).click();
+  await page.getByRole("dialog", { name: "确认启用" }).waitFor();
+  await shot(page, "desktop-writing-enable-confirm");
+  await page
+    .getByRole("dialog", { name: "确认启用" })
+    .getByRole("button", { name: "确认启用", exact: true })
+    .click();
+  await page.getByText("本次变更仅对本功能的新任务生效。").waitFor();
+  await shot(page, "desktop-writing-enabled");
+}
+
+async function walkMobile(page) {
+  // Vendor path after OpenAI already saved in the desktop walk (same vault).
+  await gotoReady(page, "/admin/ai-models", "模型供应商");
+  await shot(page, "mobile-vendor-catalog");
+  await openMenu(page, "AI 大模型");
+  await shot(page, "mobile-ai-models-menu");
+  await page.getByRole("button", { name: "关闭菜单" }).click();
+
+  await page.getByRole("link", { name: "进入设置" }).nth(1).click();
+  await page.getByRole("heading", { name: "OpenAI", exact: true }).waitFor();
+  await page.getByText("密钥已保存 · 连接待测试").first().waitFor();
+  await shot(page, "mobile-openai-settings");
+
+  await gotoReady(page, "/admin/features?feature=writing", "模型与密钥");
+  // After desktop walk, writing is enabled on Bailian and leftover test receipts are cleared.
+  await page
+    .getByRole("region", { name: "配置变更" })
+    .getByText("已生效", { exact: true })
+    .waitFor();
+  await shot(page, "mobile-writing-enabled");
+  await openMenu(page, "功能配置");
+  await shot(page, "mobile-feature-config-menu");
+  await page.getByRole("button", { name: "关闭菜单" }).click();
+}
+
+const browser = await chromium.launch({
+  headless: true,
+  ...(process.env.CHROMIUM_EXECUTABLE_PATH
+    ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH }
+    : {}),
+  args: ["--no-sandbox"],
+});
+
+try {
+  const desktop = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    deviceScaleFactor: 1,
+  });
+  const desktopPage = await desktop.newPage();
+  desktopPage.setDefaultTimeout(60_000);
+  await signIn(desktopPage);
+  await walkDesktop(desktopPage);
+  await desktop.close();
+
+  const mobile = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 1,
+  });
+  const mobilePage = await mobile.newPage();
+  mobilePage.setDefaultTimeout(60_000);
+  await signIn(mobilePage);
+  await walkMobile(mobilePage);
+
+  // Mobile writing states. Each primary action is scrolled into view, hit-tested, and clicked.
+  await gotoReady(mobilePage, "/admin/features?feature=writing", "模型与密钥");
+  await mobilePage.getByRole("button", { name: "修改配置" }).click();
+  await mobilePage.getByRole("dialog", { name: "修改配置" }).waitFor();
+  await mobilePage.getByRole("button", { name: "DeepSeek", exact: true }).click();
+  const replace = mobilePage.getByRole("button", { name: "更换" });
+  if (await replace.count()) await replace.click();
+  await mobilePage.getByLabel("API Key").fill(KEYS.deepseekFail);
+  await mobilePage.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await mobilePage.getByText("草稿未启用").waitFor();
+  await shot(mobilePage, "mobile-writing-draft-unenabled");
+
+  const change = mobilePage.getByRole("region", { name: "配置变更" });
+  await change.getByRole("button", { name: "检测连接", exact: true }).click();
+  await mobilePage.getByRole("dialog", { name: "确认测试费用" }).waitFor();
+  await mobilePage.getByRole("button", { name: "确认测试", exact: true }).click();
+  await mobilePage.getByRole("dialog", { name: "测试没有通过" }).waitFor();
+  await mobilePage.getByRole("button", { name: "知道了", exact: true }).click();
+  await change.getByText("检测未通过").waitFor();
+  const retest = change.getByRole("button", { name: "检测连接", exact: true });
+  await revealPrimary(mobilePage, retest, "mobile failed 检测连接");
+  await shotScrolled(mobilePage, "mobile-writing-test-failed-fixed");
+  await retest.click();
+  await mobilePage.getByRole("dialog", { name: "确认测试费用" }).waitFor();
+  await mobilePage.getByRole("button", { name: "取消", exact: true }).click();
+
+  await mobilePage.getByRole("button", { name: "修改配置" }).click();
+  await mobilePage.getByRole("dialog", { name: "修改配置" }).waitFor();
+  await mobilePage.getByRole("button", { name: "更换" }).click();
+  await mobilePage.getByLabel("API Key").fill(KEYS.deepseek);
+  await mobilePage.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await change.getByText("草稿未启用").waitFor();
+  await change.getByRole("button", { name: "检测连接", exact: true }).click();
+  await mobilePage.getByRole("dialog", { name: "确认测试费用" }).waitFor();
+  await mobilePage.getByRole("button", { name: "确认测试", exact: true }).click();
+  await waitTestOutcome(mobilePage);
+  const enableButton = change.getByRole("button", { name: "确认启用", exact: true });
+  await revealPrimary(mobilePage, enableButton, "mobile passed 确认启用");
+  await shotScrolled(mobilePage, "mobile-writing-test-passed-fixed");
+  await enableButton.click();
+  await mobilePage.getByRole("dialog", { name: "确认启用" }).waitFor();
+  await mobilePage
+    .getByRole("dialog", { name: "确认启用" })
+    .getByRole("button", { name: "确认启用", exact: true })
+    .click();
+  await change.getByText("已生效", { exact: true }).waitFor();
+  const rollbackButton = change.getByRole("button", { name: "回退到上一配置版本" });
+  await revealPrimary(mobilePage, rollbackButton, "mobile enabled 回退");
+  await shotScrolled(mobilePage, "mobile-writing-enabled-fixed");
+
+  await mobile.close();
+  writeFileSync(
+    resolve(reviewDir, "screenshot-index.json"),
+    JSON.stringify({ origin, shots, checks }, null, 2) + "\n",
+  );
+  console.log(`Captured ${shots.length} screenshots under ${outDir}`);
+  console.log(shots.join("\n"));
+} finally {
+  await browser.close();
+}
