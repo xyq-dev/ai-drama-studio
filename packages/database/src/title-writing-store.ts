@@ -185,6 +185,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
   private breakdownReadyConfirmed = false;
   private anthropicReadyConfirmed = false;
   private deepseekReadyConfirmed = false;
+  private bailianReadyConfirmed = false;
 
   constructor(private readonly pool: DatabasePool, private readonly textChain: TextChainService) {}
 
@@ -221,6 +222,27 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       );
       this.anthropicReadyConfirmed = Number(checks.rows[0]?.allowed) === 2;
       return this.anthropicReadyConfirmed;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * True only when both live provider_key CHECKs name bailian. The draft that widens them is not applied by this process.
+   * A positive result is cached; a negative result is read again so a later authorized migration is noticed.
+   */
+  async bailianStorageReady(): Promise<boolean> {
+    if (this.bailianReadyConfirmed) return true;
+    if (!(await this.storageReady())) return false;
+    try {
+      const checks = await this.query(
+        `SELECT count(*)::int AS allowed FROM pg_constraint
+          WHERE conrelid IN (to_regclass('title_writing_run'), to_regclass('title_writing_call')) AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%provider_key%' AND pg_get_constraintdef(oid) LIKE '%''bailian''%'`,
+        [],
+      );
+      this.bailianReadyConfirmed = Number(checks.rows[0]?.allowed) === 2;
+      return this.bailianReadyConfirmed;
     } catch {
       return false;
     }

@@ -25,7 +25,9 @@ const summary: UsageSummaryView = {
     attempt: 1,
     feature: "storyboard",
     featureLabel: "分镜生图",
+    vendor: "bailian",
     vendorLabel: "阿里云",
+    model: "qwen-image-3.0",
     modelLabel: "Qwen Image",
     configVersion: "ver_locked",
     result: "succeeded",
@@ -62,6 +64,10 @@ it("shows usage by work and episode, and never prints an unknown amount as zero"
   expect(screen.getAllByText("待回传费用").length).toBeGreaterThan(0);
   expect(screen.getAllByText(/不会显示为 0/).length).toBeGreaterThan(0);
   expect(screen.queryByText("fc_secret_ref")).toBeNull();
+  fireEvent.change(screen.getByLabelText("功能"), { target: { value: "writing" } });
+  expect(screen.queryByRole("button", { name: /分镜生图/ })).toBeNull();
+  expect(screen.getByText("2 张")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("功能"), { target: { value: "all" } });
   expect(screen.queryByText(/^0$/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /分镜生图/ }));
   expect(await screen.findByRole("dialog", { name: "任务详情" })).toBeTruthy();

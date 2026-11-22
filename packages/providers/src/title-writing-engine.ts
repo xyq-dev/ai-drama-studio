@@ -3,6 +3,7 @@ import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   TITLE_WRITING_RUN_KIND_DISABLED,
   frozenProviderAdapter,
+  sdkWritingKind,
   isLegacyDeepseekRun,
   settledSaveOutcome,
   type TitleCallFinish,
@@ -49,6 +50,8 @@ import {
   type EpisodeOutline,
   type TitleConcept,
   type TitleWritingCallView,
+  type FrozenWritingProviderAdapter,
+  type TitleWritingDispatchProviderKey,
   type TitleWritingFrozenInput,
   type TitleWritingProviderKey,
   type TitleWritingStoredProviderKey,
@@ -72,6 +75,7 @@ import {
   validateTitleWritingOutput,
   type TitleWritingContext,
 } from "@ai-drama/domain";
+import { sendAiSdkWriting, type SdkWritingKind } from "./ai-sdk-writing-adapter";
 import { isScriptBreakdownRun } from "./script-breakdown-run";
 import {
   TEXT_WRITING_MAX_OUTPUT_TOKENS,
@@ -82,8 +86,8 @@ import {
   type WritingAdapter,
   type WritingExchange,
   type WritingProviderConfig,
+  type WritingRequest,
   type WritingTransport,
-
 } from "./text-writing";
 
 /**
@@ -141,7 +145,7 @@ export function newTitleRun(options: {
   title: string;
   settings: TitleWritingSettings;
   /** A retired key only rebuilds a stored start to compare a replay; the services never create a run with one. */
-  providerKey: TitleWritingStoredProviderKey;
+  providerKey: TitleWritingDispatchProviderKey;
   model: string;
   now: Date;
   /**
@@ -150,13 +154,22 @@ export function newTitleRun(options: {
    */
   withoutAdapterMark?: boolean;
   /**
+   * Feature-config SDK runs pass bailian.ai-sdk.v1 or deepseek.ai-sdk.v1. Omitted, a deepseek run keeps the
+   * chat-completions mark and every other key stays unmarked.
+   */
+  providerAdapter?: FrozenWritingProviderAdapter;
+  /**
    * 2 freezes the project's episode plan (N, target seconds) with the guided prompt v4; 1, the default, is the
    * unchanged three-episode input. Runs already stored with prompt v2 or v3 keep it.
    */
   version?: 1 | 2;
 }): TitleRunRecord {
-  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model,
-    ...(options.withoutAdapterMark ? {} : frozenProviderAdapter(options.providerKey)) };
+  const adapterMark = options.withoutAdapterMark
+    ? {}
+    : options.providerAdapter
+      ? { providerAdapter: options.providerAdapter }
+      : frozenProviderAdapter(options.providerKey);
+  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model, ...adapterMark };
   const input: TitleWritingFrozenInput = options.version === 2
     ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V4, ...common }
     : { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, ...common };
@@ -343,9 +356,13 @@ export interface TitleWritingEngineDeps {
   leaseMs?: number;
   timeoutMs?: number;
   send?: typeof sendWriting;
+  /** Injected fetch for the AI SDK writing adapters. Missing means those runs stop before a reservation. */
+  sdkFetch?: typeof fetch;
+  sendSdk?: typeof sendAiSdkWriting;
   /**
    * Enabled feature credential for this run. When it returns a key, that key is sent instead of the process
    * provider key, including when the process provider is not configured. Null keeps the process provider.
+   * Bailian and SDK DeepSeek have no process provider: a null result stops the run before any reservation.
    */
   featureCredential?: (run: { id: string; providerKey: string; model: string }) => Promise<{ apiKey: string; url: string; models: readonly string[] } | null>;
   /** Records a finished provider exchange. Must not receive the API key. Failures here do not change the run. */
@@ -450,6 +467,8 @@ export class TitleWritingEngine {
     if (isLegacyDeepseekRun(run.input)) {
       return this.finish(runId, "needs_attention", "legacy_provider_run");
     }
+    const sdkKind = sdkWritingKind(run.input.providerKey, "providerAdapter" in run.input ? run.input.providerAdapter : undefined);
+    if (sdkKind) return this.advanceSdk(runId, bundle, next, steps, anyCompleted, sdkKind);
     // A run of a retired provider (qwen) has no configuration or adapter: it stops here before any reservation or send,
     // and is never moved to another provider or model. Nor is a run whose frozen model is no longer allowed.
     const listed = providerConfigFor(this.deps.providers, run.input.providerKey);
@@ -535,6 +554,109 @@ export class TitleWritingEngine {
       transport: this.deps.transport,
       ...(this.deps.timeoutMs !== undefined ? { timeoutMs: this.deps.timeoutMs } : {}),
     });
+    return this.recordExchange(run, call, next, titleInput, exchange);
+  }
+
+  /**
+   * Bailian and SDK DeepSeek. Stops before reserve when the feature credential or the injected fetch is missing,
+   * so a test without a transport cannot reach the network and a historical qwen row never enters this method.
+   */
+  private async advanceSdk(
+    runId: string,
+    bundle: TitleRunBundle,
+    next: TitleStepRecord,
+    steps: TitleStepRecord[],
+    anyCompleted: boolean,
+    kind: SdkWritingKind,
+  ): Promise<boolean> {
+    const { run } = bundle;
+    const feature = await this.deps.featureCredential?.({ id: run.id, providerKey: run.input.providerKey, model: run.input.model }) ?? null;
+    if (!feature || !feature.apiKey || !feature.models.includes(run.input.model) || !this.deps.sdkFetch) {
+      return this.finish(runId, "needs_attention", "provider_unconfigured");
+    }
+    const titleInput = titleInputOf(run);
+    if (titleInput && isTitleWritingInputV2(titleInput) && episodeNoOf(next.stepKey) !== null && storyTextOf(bundle) === null) {
+      return this.finish(runId, "needs_attention", "story_too_large");
+    }
+    let prompt: { system: string; user: string };
+    let schema: { name: string; schema: Record<string, unknown> };
+    if (titleInput) {
+      const titlePrompt = buildTitleWritingPrompt(next.stepKey, titleInput, contextForStep(next.stepKey, steps));
+      prompt = titlePrompt;
+      schema = titleWritingJsonSchemas(titleInput)[titlePrompt.schemaKind];
+    } else {
+      const breakdown = run.input as ScriptBreakdownFrozenInput;
+      if (next.stepKey !== SCRIPT_BREAKDOWN_STEP_KEY) return this.finish(runId, "failed", "invalid_step");
+      prompt = buildScriptBreakdownPrompt(breakdown);
+      schema = scriptBreakdownJsonSchema(breakdown.episodeNo);
+    }
+    const request: WritingRequest = {
+      model: run.input.model,
+      system: prompt.system,
+      user: prompt.user,
+      schemaName: schema.name,
+      jsonSchema: schema.schema,
+      maxOutputTokens: TEXT_WRITING_MAX_OUTPUT_TOKENS,
+    };
+    const requestHash = sha256([
+      kind,
+      "providerAdapter" in run.input ? String(run.input.providerAdapter ?? "") : "",
+      request.model,
+      request.schemaName,
+      JSON.stringify(request.jsonSchema),
+      request.system,
+      request.user,
+    ].join("\n"));
+    const reservedAt = this.now();
+    const call: TitleCallRecord = {
+      id: randomUUID(),
+      runId,
+      workspaceId: this.deps.workspaceId,
+      stepKey: next.stepKey,
+      attemptNo: next.attemptNo + 1,
+      providerKey: run.input.providerKey,
+      model: run.input.model,
+      requestHash,
+      state: "reserved",
+      executorId: this.executorId,
+      providerRequestId: null,
+      responseModel: null,
+      usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null },
+      errorCode: null,
+      createdAt: reservedAt.toISOString(),
+      finishedAt: null,
+    };
+    const reservation = await this.deps.store.reserveCall(call, {
+      sinceIso: new Date(reservedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      maxCallsPerDay: this.deps.maxCallsPerDay,
+    }, reservedAt.toISOString(), this.lease(reservedAt));
+    if (reservation.kind === "lost") return false;
+    if (reservation.kind === "canceled") return this.finish(runId, "canceled", null);
+    if (reservation.kind === "source_changed") return this.finish(runId, "needs_attention", "breakdown_source_changed");
+    if (reservation.kind === "conflict") return this.finish(runId, "needs_attention", "breakdown_conflict");
+    if (reservation.kind === "blocked") return this.finish(runId, anyCompleted ? "partial" : "failed", reservation.code);
+    const submittedAt = this.now();
+    const submission = await this.deps.store.markCallSubmitted(this.deps.workspaceId, call.id, this.executorId,
+      submittedAt.toISOString(), this.lease(submittedAt));
+    if (submission === "canceled") return this.finish(runId, "canceled", null);
+    if (submission !== "submitted") return false;
+    const exchange = await (this.deps.sendSdk ?? sendAiSdkWriting)({
+      kind,
+      apiKey: feature.apiKey,
+      request,
+      fetchImpl: this.deps.sdkFetch,
+      ...(this.deps.timeoutMs !== undefined ? { timeoutMs: this.deps.timeoutMs } : {}),
+    });
+    return this.recordExchange(run, call, next, titleInput, exchange);
+  }
+
+  private async recordExchange(
+    run: TitleRunRecord,
+    call: TitleCallRecord,
+    next: TitleStepRecord,
+    titleInput: TitleWritingFrozenInput | null,
+    exchange: WritingExchange,
+  ): Promise<boolean> {
     let patch: TitleCallFinish;
     if (exchange.outcome === "answered" && exchange.content !== null) {
       const checked = titleInput
@@ -556,14 +678,13 @@ export class TitleWritingEngine {
         usage: exchange.usage,
       };
     }
-    // A fenced executor's late answer is dropped: recovery already recorded the call as unknown.
     const finished = await this.deps.store.finishCall(this.deps.workspaceId, call.id, this.executorId, patch, this.now().toISOString());
     if (this.deps.onProductionExchange && !isScriptBreakdownRun(run)) {
       const vendorRequestId = exchange.providerRequestId && exchange.providerRequestId.length >= 8
         ? exchange.providerRequestId
-        : `title-${runId}-${call.id}`.slice(0, 200);
+        : `title-${run.id}-${call.id}`.slice(0, 200);
       await this.deps.onProductionExchange({
-        runId,
+        runId: run.id,
         projectId: run.projectId,
         actorId: run.actorId,
         providerKey: run.input.providerKey,
@@ -720,6 +841,8 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   anthropicReady = true;
   /** Stands in for the live CHECKs naming deepseek (they have since the first title writing migration). */
   deepseekReady = true;
+  /** False until the unapplied bailian CHECK draft is authorized. Production memory is not used; tests opt in. */
+  bailianReady = false;
   readonly breakdownEpisodes = new Map<string, MemoryBreakdownEpisode>();
   readonly scenes: MemoryScene[] = [];
   readonly shots: MemoryShot[] = [];
@@ -761,9 +884,14 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return this.ready && (providerKey !== "anthropic" || this.anthropicReady) && (providerKey !== "deepseek" || this.deepseekReady);
   }
 
+  bailianStorageReady(): boolean {
+    return this.ready && this.bailianReady;
+  }
+
   /** The provider_key CHECK of title_writing_run and title_writing_call before and after the provider migration. */
   private checkProviderKey(providerKey: string): void {
     const allowed = this.anthropicReady ? ["qwen", "openai", "deepseek", "anthropic"] : ["qwen", "openai", "deepseek"];
+    if (this.bailianReady) allowed.push("bailian");
     if (!allowed.includes(providerKey)) throw new Error("new row violates check constraint provider_key");
   }
 

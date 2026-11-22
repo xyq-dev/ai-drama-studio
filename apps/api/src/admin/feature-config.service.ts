@@ -12,11 +12,13 @@ import {
   formatUsage,
   sumPresentCost,
   sumPresentUsage,
+  usageRecordMatches,
   USAGE_FOOTNOTE,
   type FeatureCardView,
   type FeatureConfigView,
   type FeatureDraftSave,
   type FeatureEnableRequest,
+  type FeatureRollbackRequest,
   type FeatureKey,
   type FeatureLiveView,
   type FeatureMutationResult,
@@ -157,9 +159,9 @@ export class FeatureConfigService {
     );
   }
 
-  operatorUsage(projectId?: string | null, episodeId?: string | null): Promise<UsageSummaryView> {
+  operatorUsage(projectId?: string | null, episodeId?: string | null, filter?: { feature?: string | null; vendor?: string | null; model?: string | null }): Promise<UsageSummaryView> {
     if (!this.homeWorkspaceId) throw new FeatureConfigError(503, "ADMIN_NOT_CONFIGURED", "管理员配置尚未就绪。");
-    return this.usageSummary({ workspaceId: this.homeWorkspaceId, projectId, episodeId });
+    return this.usageSummary({ workspaceId: this.homeWorkspaceId, projectId, episodeId, ...filter });
   }
 
   operatorUsageDetail(recordId: string): Promise<UsageRecordView> {
@@ -234,13 +236,29 @@ export class FeatureConfigService {
       if (!fresh?.model || !fresh.credentialRef || !fresh.testedFingerprint || fresh.testToken !== body.testToken || fresh.draftStatus !== "passed" || fresh.model !== slot.model || fresh.credentialRef !== slot.credentialRef) {
         throw new FeatureConfigError(409, "FEATURE_TEST_STALE", "草稿在测试之后有变动，请重新测试。");
       }
-      current.features[feature].live = {
+      const record = current.features[feature];
+      if (record.live) record.previousLive = record.live;
+      record.live = {
         versionId: id("ver"),
         vendor: body.vendor,
         model: fresh.model,
         credentialRef: fresh.credentialRef,
         fingerprint: fresh.testedFingerprint,
       };
+    }, body.expectedRevision);
+    return this.toView(next);
+  }
+
+  /**
+   * Restores the previous enabled version. One step only: the restored version does not become the next rollback target.
+   * Usage locks are not rewritten.
+   */
+  async rollback(feature: FeatureKey, body: FeatureRollbackRequest): Promise<FeatureConfigView> {
+    const next = await this.vault.update((current) => {
+      const record = current.features[feature];
+      if (!record.previousLive) throw new FeatureConfigError(409, "FEATURE_ROLLBACK_UNAVAILABLE", "没有可回退的上一配置版本。");
+      record.live = record.previousLive;
+      record.previousLive = null;
     }, body.expectedRevision);
     return this.toView(next);
   }
@@ -382,7 +400,7 @@ export class FeatureConfigService {
     return outcome;
   }
 
-  async usageSummary(input: { workspaceId: string; projectId?: string | null; episodeId?: string | null }): Promise<UsageSummaryView> {
+  async usageSummary(input: { workspaceId: string; projectId?: string | null; episodeId?: string | null; feature?: string | null; vendor?: string | null; model?: string | null }): Promise<UsageSummaryView> {
     const records = (await this.usage.read()).records.filter((item) => item.workspaceId === input.workspaceId && item.kind === "production");
     const projects = unique(records.filter((item) => item.projectId).map((item) => ({ id: item.projectId!, label: item.projectLabel })));
     const projectId = input.projectId ?? projects[0]?.id ?? null;
@@ -404,7 +422,7 @@ export class FeatureConfigService {
         usageText: sumPresentUsage(scoped, feature),
         costText: sumPresentCost(scoped, feature),
       })),
-      records: visible.map(toUsageView),
+      records: visible.map(toUsageView).filter((row) => usageRecordMatches(row, input)),
       footnote: USAGE_FOOTNOTE,
     };
   }
@@ -663,8 +681,9 @@ export class FeatureConfigService {
   private pruneCredentials(doc: FeatureVaultDocument, retained: ReadonlySet<string>): void {
     const used = new Set<string>(retained);
     for (const feature of FEATURE_KEYS) {
-      const live = doc.features[feature].live;
-      if (live) used.add(live.credentialRef);
+      const record = doc.features[feature];
+      if (record.live) used.add(record.live.credentialRef);
+      if (record.previousLive) used.add(record.previousLive.credentialRef);
       for (const slot of Object.values(doc.features[feature].slots)) {
         if (slot?.credentialRef) used.add(slot.credentialRef);
       }
@@ -698,7 +717,7 @@ export class FeatureConfigService {
         version: record.live.versionId,
       }
       : legacyView(legacy);
-    const slots = FEATURE_CAPABILITIES[feature].map((capability) => this.slotView(capability, record.slots[capability.vendor] ?? emptySlot()));
+    const slots = FEATURE_CAPABILITIES[feature].map((capability) => this.slotView(feature, capability, record.slots[capability.vendor] ?? emptySlot()));
     const drafted = Object.values(record.slots).some((slot) => slot && slot.draftStatus !== "blank");
     return {
       feature,
@@ -708,13 +727,14 @@ export class FeatureConfigService {
       slots,
       probeScale: FEATURE_PROBE_SCALE,
       probeCostNote: FEATURE_PROBE_COST_NOTE,
+      canRollback: Boolean(record.previousLive),
     };
   }
 
-  private slotView(capability: { vendor: FeatureVendor; connected: boolean; gap: string | null; models: readonly { id: string; label: string }[] }, slot: FeatureSlotRecord): FeatureSlotView {
+  private slotView(feature: FeatureKey, capability: { vendor: FeatureVendor; connected: boolean; gap: string | null; models: readonly { id: string; label: string }[] }, slot: FeatureSlotRecord): FeatureSlotView {
     return {
       vendor: capability.vendor,
-      label: FEATURE_VENDOR_LABELS[capability.vendor],
+      label: feature === "writing" && capability.vendor === "bailian" ? "百炼千问" : FEATURE_VENDOR_LABELS[capability.vendor],
       connected: capability.connected,
       gap: capability.gap,
       models: capability.models.map((item) => ({ ...item })),
@@ -746,6 +766,8 @@ function toUsageView(row: StoredUsage): UsageRecordView {
     attempt: row.attempt,
     feature: row.feature,
     featureLabel: FEATURE_LABELS[row.feature],
+    vendor: row.vendor,
+    model: row.model,
     vendorLabel: row.vendorLabel || (FEATURE_VENDOR_LABELS[row.vendor as FeatureVendor] ?? row.vendor),
     modelLabel: row.modelLabel || featureModelLabel(row.model),
     configVersion: row.configVersion,

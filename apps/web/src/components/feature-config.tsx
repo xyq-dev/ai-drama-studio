@@ -2,12 +2,18 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  FEATURE_KEYS, FEATURE_LABELS, FEATURE_VENDOR_KEYS, featureCapability,
+  FEATURE_KEYS, FEATURE_VENDOR_KEYS, featureCapability,
   type FeatureCardView, type FeatureConfigView, type FeatureKey, type FeatureSlotView, type FeatureVendor,
 } from "@ai-drama/contracts";
 import { AdminFrame, AdminGateView, useOperatorGate } from "./admin-access";
 import { createFeatureConfigClient, featureErrorCopy } from "../lib/feature-config-client";
 import styles from "./feature-config.module.css";
+
+const PAGE_LABEL: Record<FeatureKey, string> = {
+  writing: "编剧",
+  storyboard: "生图",
+  voice: "配音",
+};
 
 const FEATURE_ICON: Record<FeatureKey, string> = {
   writing: "/design/tailadmin-v2/icon-script-ai.svg",
@@ -15,11 +21,13 @@ const FEATURE_ICON: Record<FeatureKey, string> = {
   voice: "/design/tailadmin-v2/icon-status.svg",
 };
 
+type PageTab = FeatureKey | "video";
+
 function ConfigIntro() {
   return (
     <header className={styles.intro}>
       <h1>功能配置</h1>
-      <p>分别管理编剧、生图和配音。选择一项，查看线上配置并编辑草稿。</p>
+      <p>分别管理编剧、生图、视频和配音。选择一项，查看线上配置并编辑草稿。</p>
     </header>
   );
 }
@@ -60,7 +68,7 @@ export function FeatureConfig() {
   const client = useMemo(() => createFeatureConfigClient(), []);
   const { gate, reload } = useOperatorGate();
   const initial = readSelection();
-  const [chosen, setChosen] = useState<FeatureKey | null>(initial.feature);
+  const [chosen, setChosen] = useState<PageTab | null>(initial.feature);
   const [vendor, setVendor] = useState<FeatureVendor | null>(initial.vendor);
   const [phase, setPhase] = useState<"overview" | "editor">(initial.vendor ? "editor" : "overview");
   const [view, setView] = useState<FeatureConfigView | null>(null);
@@ -85,7 +93,9 @@ export function FeatureConfig() {
   }, [client, gate]);
 
   // Explicit `?feature=` or a later click wins. Otherwise prefer a live feature, then 剧本编写.
-  const feature: FeatureKey = chosen ?? view?.features.find((item) => item.live)?.feature ?? "writing";
+  const feature: FeatureKey = (chosen && chosen !== "video" ? chosen : null)
+    ?? view?.features.find((item) => item.live)?.feature
+    ?? "writing";
   const card = view?.features.find((item) => item.feature === feature) ?? null;
   const slot = (vendor ? card?.slots.find((item) => item.vendor === vendor) : null)
     ?? card?.slots.find((item) => item.connected && item.vendor === card.live?.vendor)
@@ -105,13 +115,31 @@ export function FeatureConfig() {
   const canTest = Boolean(slot?.connected && slot.keyConfigured && (slot.draftStatus === "saved" || slot.draftStatus === "failed") && !dirtyKey && !dirtyModel && !busy);
   const canEnable = Boolean(slot?.connected && slot.draftStatus === "passed" && slot.testToken && !dirtyKey && !dirtyModel && !busy);
 
-  function selectFeature(next: FeatureKey) {
+  function selectFeature(next: PageTab) {
     setChosen(next);
     setVendor(null);
     setPhase("overview");
     setDialog(null);
     setError("");
-    replaceSelection(next, null);
+    if (next !== "video") replaceSelection(next, null);
+  }
+
+  async function rollback() {
+    if (!view || chosen === "video" || busyRef.current) return;
+    busyRef.current = true;
+    setBusy("rollback");
+    setError("");
+    setNotice("");
+    try {
+      const next = await client.rollback(feature, { expectedRevision: view.revision });
+      setView(next);
+      setNotice("已回退到上一配置版本。进行中的任务保持提交时锁定的版本。");
+    } catch (caught) {
+      setError(featureErrorCopy(caught));
+    } finally {
+      busyRef.current = false;
+      setBusy("");
+    }
   }
 
   function selectVendor(next: FeatureVendor) {
@@ -224,22 +252,37 @@ export function FeatureConfig() {
       <ConfigIntro />
       <div className={styles.cards} role="group" aria-label="功能卡" data-state="editor">
         {view.features.map((item) => (
-          <button key={item.feature} type="button" className={item.feature === feature ? styles.cardOn : styles.card} onClick={() => selectFeature(item.feature)} aria-pressed={item.feature === feature}>
+          <button key={item.feature} type="button" className={item.feature === feature && chosen !== "video" ? styles.cardOn : styles.card} onClick={() => selectFeature(item.feature)} aria-pressed={item.feature === feature && chosen !== "video"}>
             <img src={FEATURE_ICON[item.feature]} width={18} height={18} alt="" />
-            <strong>{item.label}</strong>
+            <strong>{PAGE_LABEL[item.feature]}</strong>
             <small>当前生效</small>
             <span>{item.live ? `${item.live.vendorLabel} · ${item.live.modelLabel}` : "尚未配置"}</span>
           </button>
         ))}
+        <button type="button" className={chosen === "video" ? styles.cardOn : styles.card} onClick={() => selectFeature("video")} aria-pressed={chosen === "video"}>
+          <img src="/design/tailadmin-v2/icon-list-video.svg" width={18} height={18} alt="" />
+          <strong>视频</strong>
+          <small>当前生效</small>
+          <span>尚未接入</span>
+        </button>
       </div>
       <div className={styles.tabs} role="tablist" aria-label="功能">
         {view.features.map((item) => (
-          <button key={item.feature} type="button" role="tab" aria-selected={item.feature === feature} className={item.feature === feature ? styles.tabOn : styles.tab} onClick={() => selectFeature(item.feature)}>
-            {item.label}
+          <button key={item.feature} type="button" role="tab" aria-selected={item.feature === feature && chosen !== "video"} className={item.feature === feature && chosen !== "video" ? styles.tabOn : styles.tab} onClick={() => selectFeature(item.feature)}>
+            {PAGE_LABEL[item.feature]}
           </button>
         ))}
+        <button type="button" role="tab" aria-selected={chosen === "video"} className={chosen === "video" ? styles.tabOn : styles.tab} onClick={() => selectFeature("video")}>
+          视频
+        </button>
       </div>
-      {showingUnconnected && extra ? (
+      {chosen === "video" ? (
+        <section className={styles.state} data-state="video-empty">
+          <img src="/design/tailadmin-v2/icon-list-video.svg" width={28} height={28} alt="" />
+          <h2>视频尚未接入</h2>
+          <p>视频尚未接入功能配置。现有视频任务链路保持不变，这里不能保存、检测或启用。</p>
+        </section>
+      ) : showingUnconnected && extra ? (
         <section className={styles.state} data-state="unconnected">
           <img src="/design/tailadmin-v2/icon-key-round.svg" width={28} height={28} alt="" />
           <h2>该服务商尚未接入</h2>
@@ -251,11 +294,11 @@ export function FeatureConfig() {
       ) : showingFirst ? (
         <section className={styles.state} data-state="first-time">
           <img src="/design/tailadmin-v2/icon-key-round.svg" width={28} height={28} alt="" />
-          <h2>尚未配置{FEATURE_LABELS[feature]}</h2>
+          <h2>尚未配置{PAGE_LABEL[feature]}</h2>
           <p>{FIRST_BODY[feature]}</p>
           <button type="button" className={styles.primary} onClick={beginConfigure}>{CTA[feature]}</button>
         </section>
-      ) : slot ? <Editor
+      ) : chosen !== "video" && slot ? <Editor
         card={card}
         slot={slot}
         model={model}
@@ -275,6 +318,8 @@ export function FeatureConfig() {
         onSave={() => void save()}
         onTest={() => { if (canTest) setDialog("test"); }}
         onEnable={() => { if (canEnable) setDialog("enable"); }}
+        onRollback={() => void rollback()}
+        rollingBack={busy === "rollback"}
       /> : null}
       {dialog === "test" && slot ? (
         <div className={styles.modal}>
@@ -305,7 +350,7 @@ export function FeatureConfig() {
         <div className={styles.modal}>
           <div className={styles.dialog} role="dialog" aria-modal="true" aria-label="确认启用">
             <h2>确认启用</h2>
-            <p>启用后，新的{card.label}任务使用 {slot.label} · {slot.models.find((item) => item.id === model)?.label ?? model}。已经提交的任务保持锁定的版本，不会悄悄切换。</p>
+            <p>启用后，新的{PAGE_LABEL[card.feature]}任务使用 {slot.label} · {slot.models.find((item) => item.id === model)?.label ?? model}。已经提交的任务保持锁定的版本，不会悄悄切换。</p>
             <div className={styles.dialogActions}>
               <button type="button" className={styles.secondary} onClick={() => setDialog(null)}>取消</button>
               <button type="button" className={styles.primary} onClick={() => void confirmEnable()}>确认启用</button>
@@ -319,7 +364,7 @@ export function FeatureConfig() {
 
 function Editor({
   card, slot, model, draftKey, replacing, busy, canSave, canTest, canEnable, needsKey, error, notice,
-  onVendor, onModel, onKey, onReplace, onSave, onTest, onEnable,
+  onVendor, onModel, onKey, onReplace, onSave, onTest, onEnable, onRollback, rollingBack,
 }: {
   card: FeatureCardView;
   slot: FeatureSlotView;
@@ -340,6 +385,8 @@ function Editor({
   onSave: () => void;
   onTest: () => void;
   onEnable: () => void;
+  onRollback: () => void;
+  rollingBack: boolean;
 }) {
   const badge = slot.draftStatus === "saved" ? "草稿已保存"
     : slot.draftStatus === "passed" ? "测试已通过"
@@ -361,14 +408,14 @@ function Editor({
           ? (slot.failureMessage || "测试没有通过，草稿已保留，可以重试。")
           : "");
   return (
-    <section className={styles.editor} aria-label={`${card.label}草稿`}>
+    <section className={styles.editor} aria-label={`${PAGE_LABEL[card.feature]}草稿`}>
       <div className={styles.editorHead}>
-        <h2>{card.label}配置</h2>
+        <h2>{PAGE_LABEL[card.feature]}配置</h2>
         {badge ? <span className={styles.badge}>{badge}</span> : null}
       </div>
       <p className={styles.live}><span>当前生效</span> <strong>{card.live ? `${card.live.vendorLabel} / ${card.live.modelLabel}` : "尚未配置"}</strong></p>
-      <p className={styles.vendorLabel}>编辑服务商</p>
-      <div className={styles.vendors} role="group" aria-label="服务商">
+      <p className={styles.vendorLabel}>供应商</p>
+      <div className={styles.vendors} role="group" aria-label="供应商">
         {card.slots.map((item) => (
           <button key={item.vendor} type="button" className={item.vendor === slot.vendor ? styles.vendorOn : styles.vendor} aria-pressed={item.vendor === slot.vendor} onClick={() => onVendor(item.vendor)}>
             {item.label}
@@ -383,7 +430,7 @@ function Editor({
           </select>
         </label>
         <div className={styles.field}>
-          <span>API Key · {slot.label} / {card.label}</span>
+          <span>凭证 · {slot.label}</span>
           {slot.keyConfigured && !replacing ? (
             <div className={styles.keyRow}>
               <span aria-label="已保存密钥">••••••••</span>
@@ -411,8 +458,13 @@ function Editor({
       {error ? <p className={styles.fail} role="alert">{error}</p> : null}
       <div className={styles.actions}>
         <button type="button" className={styles.secondary} disabled={!canSave} onClick={onSave}>{busy === "save" ? "正在保存…" : "保存草稿"}</button>
-        <button type="button" className={styles.primary} disabled={!canTest} onClick={onTest}>{busy === "test" ? "正在测试…" : "测试配置"}</button>
-        <button type="button" className={canEnable ? styles.primary : styles.quiet} disabled={!canEnable} onClick={onEnable}>{busy === "enable" ? "正在启用…" : "启用配置"}</button>
+        <button type="button" className={styles.primary} disabled={!canTest} onClick={onTest}>{busy === "test" ? "正在检测…" : "检测连接"}</button>
+        <button type="button" className={canEnable ? styles.primary : styles.quiet} disabled={!canEnable} onClick={onEnable}>{busy === "enable" ? "正在启用…" : "确认启用"}</button>
+        {card.canRollback ? (
+          <button type="button" className={styles.secondary} disabled={busy !== "" || rollingBack} onClick={onRollback}>
+            {rollingBack ? "正在回退…" : "回退到上一配置版本"}
+          </button>
+        ) : null}
       </div>
     </section>
   );

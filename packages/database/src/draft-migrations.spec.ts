@@ -25,6 +25,16 @@ describe("unapplied migration drafts", () => {
     expect(reference).toContain("Do not apply");
   });
 
+  it("keeps the bailian provider CHECK draft out of the applied migration directory", async () => {
+    const appliedNames = await readdir(applied);
+    expect(appliedNames.some((name) => name.includes("writing_provider_bailian"))).toBe(false);
+    const draft = await readFile(join(drafts, "20261122000100_writing_provider_bailian.sql"), "utf8");
+    expect(draft).toContain("DRAFT");
+    expect(draft).toContain("Do not apply");
+    expect(draft).toContain("CHECK (provider_key IN ('qwen', 'openai', 'deepseek', 'anthropic', 'bailian'))");
+    expect(draft).not.toContain("INSERT INTO");
+  });
+
 });
 
 /** SQL without comment lines and blank lines: the statements alone. */

@@ -36,7 +36,7 @@
 .state img { width: 28px; height: 28px; margin-bottom: 8px; }
 .cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-top: 20px;
 }
@@ -97,7 +97,7 @@
 .quiet { background: #f2f4f7; color: #98a2b3; }
 .primary:disabled, .secondary:disabled, .quiet:disabled { cursor: not-allowed; }
 .primary:disabled { opacity: .45; }
-.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.fields { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
 .field { display: grid; gap: 6px; font-size: 14px; }
 .field input, .field select, .filters select, .keyRow {
   width: 100%;
@@ -146,7 +146,7 @@
 .scope { margin: 0 0 0 auto; }
 .totals {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-top: 16px;
 }
@@ -192,7 +192,7 @@
   .tabs { display: flex; margin-top: 16px; }
   .tab, .tabOn { flex: 1 1 0; padding: 0 8px; }
   .fields, .totals, .record { grid-template-columns: 1fr 1fr; }
-  .actions { flex-wrap: nowrap; }
+  .actions { flex-wrap: wrap; }
   .actions button { flex: 1 1 0; padding: 0 8px; }
   .scope { margin: 8px 0 0; width: 100%; }
   .filters { align-items: stretch; }

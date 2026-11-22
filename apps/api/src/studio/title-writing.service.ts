@@ -8,7 +8,9 @@ import {
   TITLE_WRITING_PROVIDER_KEYS,
   TITLE_WRITING_PROVIDER_LABELS,
   TITLE_WRITING_PROVIDER_PREFERENCE,
+  BAILIAN_WRITING_PROVIDER_KEY,
   isActiveTitleWritingProvider,
+  sdkWritingKind,
   isLegacyDeepseekRun,
   titleWritingRequiredCalls,
   titleWritingResumeSchema,
@@ -65,17 +67,18 @@ export interface TitleWritingDependencies {
    * apiKey is sent only to the writing engine. It is not stored on the run.
    */
   featureWritingLock?: () => Promise<{
-    providerKey: TitleWritingProviderKey;
+    providerKey: TitleWritingProviderKey | typeof BAILIAN_WRITING_PROVIDER_KEY;
     model: string;
     configVersion: string;
     credentialRef?: string;
     apiKey?: string;
+    providerAdapter?: "bailian.ai-sdk.v1" | "deepseek.ai-sdk.v1";
   } | null>;
   /** Persists the credential reference for a new run before the engine sends. */
   featureWritingCommit?: (input: {
     runId: string;
     projectId: string;
-    providerKey: TitleWritingProviderKey;
+    providerKey: TitleWritingProviderKey | typeof BAILIAN_WRITING_PROVIDER_KEY;
     model: string;
     configVersion: string;
     credentialRef: string;
@@ -254,17 +257,24 @@ export class TitleWritingService {
     let model = previous ? (replayed?.model ?? parsed.data.model) : (locked?.model ?? parsed.data.model ?? replayed?.model);
     if (!previous) {
       // New requests only: a retired provider is refused here, never moved to another provider.
-      if (!isActiveTitleWritingProvider(providerKey)) {
+      // Bailian is a new stored key and is not in the process-provider table.
+      if (providerKey === BAILIAN_WRITING_PROVIDER_KEY) {
+        if (!locked?.apiKey || !model) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: ["FEATURE_WRITING_KEY"] });
+        if (!await bailianStorageReady(this.deps.store)) {
+          return failure(503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: ["20261122000100_writing_provider_bailian"] });
+        }
+      } else if (!isActiveTitleWritingProvider(providerKey)) {
         return failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey, label: TITLE_WRITING_PROVIDER_LABELS[providerKey] });
-      }
-      const provider = this.deps.providers[providerKey];
-      const featureKey = Boolean(locked?.apiKey);
-      if (!featureKey && !provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
-      if (!featureKey) model ??= provider.ok ? provider.models[0]! : undefined;
-      if (!featureKey && provider.ok && model && !provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
-      if (featureKey && !model) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.ok ? provider.missing : ["FEATURE_WRITING_MODEL"] });
-      if (!await this.deps.store.providerStorageReady(providerKey)) {
-        return failure(503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [PROVIDER_MIGRATION_GAP] });
+      } else {
+        const provider = this.deps.providers[providerKey];
+        const featureKey = Boolean(locked?.apiKey);
+        if (!featureKey && !provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
+        if (!featureKey) model ??= provider.ok ? provider.models[0]! : undefined;
+        if (!featureKey && provider.ok && model && !provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
+        if (featureKey && !model) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.ok ? provider.missing : ["FEATURE_WRITING_MODEL"] });
+        if (!await this.deps.store.providerStorageReady(providerKey)) {
+          return failure(503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [PROVIDER_MIGRATION_GAP] });
+        }
       }
     }
     if (model === undefined) {
@@ -288,6 +298,7 @@ export class TitleWritingService {
       // A start stored before the DeepSeek adapter mark existed is compared with the input it was stored with, so its
       // replay is still answered from that run instead of being refused as a different request.
       withoutAdapterMark: replayed !== null && replayed.providerAdapter === undefined,
+      ...(locked?.providerAdapter ? { providerAdapter: locked.providerAdapter } : {}),
     });
     // The store looks the key up first: a replay of an existing run is returned whatever the quota is now. A new v2
     // run needs N+2 calls left in the rolling 24 hours; this reserves nothing. v1 keeps its existing per-call checks.
@@ -405,7 +416,10 @@ export class TitleWritingService {
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
       // A DeepSeek run from before the retirement is never sent for again (only an answer already stored may be saved).
-      providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(existing.run.input.model),
+      providerReady: !legacy && (
+        sdkWritingKind(runProvider, "providerAdapter" in existing.run.input ? existing.run.input.providerAdapter : undefined) !== null
+        || (provider !== null && provider.ok && provider.models.includes(existing.run.input.model))
+      ),
     }, this.now().toISOString());
     if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
@@ -420,9 +434,15 @@ export class TitleWritingService {
         if (provider?.ok && !provider.models.includes(existing.run.input.model)) {
           return failure(409, "TITLE_WRITING_RUN_MODEL_UNAVAILABLE", { providerKey: runProvider, model: existing.run.input.model });
         }
+        if (sdkWritingKind(runProvider, "providerAdapter" in existing.run.input ? existing.run.input.providerAdapter : undefined)) {
+          return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: runProvider, missing: ["FEATURE_WRITING_KEY"] });
+        }
         return isActiveTitleWritingProvider(runProvider)
           ? failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: runProvider, missing: provider && !provider.ok ? provider.missing : [] })
-          : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey: runProvider, label: TITLE_WRITING_PROVIDER_LABELS[runProvider] });
+          : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", {
+            providerKey: runProvider,
+            label: runProvider in TITLE_WRITING_PROVIDER_LABELS ? TITLE_WRITING_PROVIDER_LABELS[runProvider] : runProvider,
+          });
       }
       return failure(409, "TITLE_WRITING_NOT_RESUMABLE");
     }
@@ -459,4 +479,10 @@ export class TitleWritingService {
     }
     await this.deps.store.recoverExpired(this.deps.workspaceId, this.now().toISOString());
   }
+}
+
+async function bailianStorageReady(store: TitleWritingStore): Promise<boolean> {
+  const candidate = store as TitleWritingStore & { bailianStorageReady?: () => boolean | Promise<boolean> };
+  if (typeof candidate.bailianStorageReady !== "function") return false;
+  return candidate.bailianStorageReady();
 }

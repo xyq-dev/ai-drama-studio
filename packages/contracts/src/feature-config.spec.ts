@@ -15,7 +15,10 @@ import {
 
 describe("feature config catalog", () => {
   it("offers only connected, project-approved models and keeps official voice on MiniMax unless explicitly enabled", () => {
-    expect(FEATURE_CAPABILITIES.writing.find((item) => item.vendor === "bailian")?.connected).toBe(false);
+    expect(FEATURE_CAPABILITIES.writing.find((item) => item.vendor === "bailian")).toMatchObject({
+      connected: true,
+      models: [{ id: "qwen-plus", label: "通义千问 Plus" }],
+    });
     expect(FEATURE_CAPABILITIES.storyboard.map((item) => item.vendor)).toEqual(["bailian", "openai", "google"]);
     expect(FEATURE_CAPABILITIES.storyboard.find((item) => item.vendor === "openai")?.models.map((item) => item.id)).toEqual(["gpt-image-2.5-sunburst"]);
     expect(FEATURE_CAPABILITIES.voice.find((item) => item.vendor === "minimax")?.models.map((item) => item.id)).toEqual(["speech-2.8-hd"]);
@@ -23,7 +26,10 @@ describe("feature config catalog", () => {
     expect(officialVoiceRoute("minimax")).toBe("minimax");
     expect(officialVoiceRoute("bailian")).toBe("bailian");
     expect(storyboardProviderForVendor("google")).toBeNull();
-    expect(writingProviderForVendor("bailian")).toBeNull();
+    expect(writingProviderForVendor("bailian")).toBe("bailian");
+    expect(featureChoiceBlock({
+      feature: "writing", vendor: "bailian", model: "qwen-plus", writingAllowlist: ["deepseek-flash"],
+    }).ok).toBe(true);
   });
 
   it("blocks an unapproved model, an unconnected vendor, and an exhausted writing budget", () => {
