@@ -17,7 +17,7 @@ const entry = `import React from 'react';import{createRoot}from'react-dom/client
 const navigationStub = resolve(import.meta.dirname, "admin-drawer-navigation-stub.mjs");
 const evidence = { kind: "chromium-admin-shell-drawer-overlap", externalRequests: 0, checks: [], errors: [] };
 
-const NAV_LINKS = ["功能配置", "作品管理", "素材库", "生成任务", "调用记录", "用户与权限", "操作日志"];
+const NAV_LINKS = ["AI 大模型", "功能配置", "作品管理", "素材库", "生成任务", "调用记录", "用户与权限", "操作日志"];
 
 function intersects(a, b) {
   return a.x < b.right - 0.5 && a.right > b.x + 0.5 && a.y < b.bottom - 0.5 && a.bottom > b.y + 0.5;
@@ -104,7 +104,10 @@ try {
       return route.continue();
     });
     await page.goto("http://127.0.0.1:3866/");
-    await page.getByRole("button", { name: "目录", exact: true }).click();
+    // The stub path is /admin/features, so the mobile opener is named for that category (admin-shell nav contract).
+    const opener = page.getByRole("button", { name: "打开功能配置目录", exact: true });
+    assert.equal(await opener.getAttribute("aria-expanded"), "false", "mobile drawer opener should start collapsed");
+    await opener.click();
     const dialog = page.getByRole("dialog", { name: "管理导航" });
     await dialog.waitFor();
     const nav = dialog.getByRole("navigation", { name: "管理菜单" });
