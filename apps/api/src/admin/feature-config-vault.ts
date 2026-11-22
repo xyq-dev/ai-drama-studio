@@ -32,6 +32,8 @@ const liveSchema = z.object({
 }).strict();
 const featureSchema = z.object({
   live: liveSchema.nullable(),
+  /** The enabled version replaced by the latest enable. Absent on files written before rollback existed. */
+  previousLive: liveSchema.nullable().optional(),
   slots: z.partialRecord(z.enum(FEATURE_VENDOR_KEYS), slotSchema),
 }).strict();
 const documentSchema = z.object({
@@ -64,6 +66,7 @@ export interface FeatureLiveRecord {
 }
 export interface FeatureRecord {
   live: FeatureLiveRecord | null;
+  previousLive?: FeatureLiveRecord | null;
   slots: Partial<Record<FeatureVendor, FeatureSlotRecord>>;
 }
 export interface FeatureVaultDocument {

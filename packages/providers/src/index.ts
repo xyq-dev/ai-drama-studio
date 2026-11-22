@@ -69,6 +69,12 @@ export {
   type WritingUsage,
 } from "./text-writing";
 export {
+  sdkWritingBaseUrl,
+  sdkWritingChatUrl,
+  sendAiSdkWriting,
+  type SdkWritingKind,
+} from "./ai-sdk-writing-adapter";
+export {
   InMemoryTitleWritingStore,
   type MemoryBreakdownEpisode,
   type MemoryCharacter,

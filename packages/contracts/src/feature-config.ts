@@ -1,14 +1,21 @@
 import { z } from "zod";
+import {
+  BAILIAN_AI_SDK_ADAPTER,
+  DEEPSEEK_AI_SDK_ADAPTER,
+  QWEN_PLUS_MODEL,
+  type FeatureWritingSdkAdapter,
+} from "./title-writing";
 
 /**
  * Per-feature vendor configuration. Model ids are the ones this repository can actually call.
  * Prototype short names (GPT Image, CosyVoice, DeepSeek Chat) are not an allowlist.
  *
  * Connected means an adapter exists in this repo:
- * - writing × bailian: the qwen text adapter is retired, so the slot is unconnected.
+ * - writing × bailian: qwen-plus through the AI SDK adapter (bailian.ai-sdk.v1). The retired qwen provider key is not reused.
  * - storyboard × google: no image adapter.
  * - voice × openai: no speech adapter (reachable so the unconnected state is explicit).
  * Official voice stays MiniMax speech-2.8-hd. Bailian qwen3-tts-flash is only used when an operator enables it.
+ * Video is not a feature key: the admin page shows an empty state and does not enable a vendor.
  */
 export const FEATURE_KEYS = ["writing", "storyboard", "voice"] as const;
 export type FeatureKey = (typeof FEATURE_KEYS)[number];
@@ -53,9 +60,9 @@ export const FEATURE_CAPABILITIES: Record<FeatureKey, readonly FeatureVendorCapa
   writing: [
     {
       vendor: "bailian",
-      connected: false,
-      gap: "剧本编写的阿里云百炼文本适配器已退役，无法保存、测试或启用。接入缺口：在用的百炼编剧适配器。",
-      models: [],
+      connected: true,
+      gap: null,
+      models: [{ id: QWEN_PLUS_MODEL, label: "通义千问 Plus" }],
     },
     { vendor: "openai", connected: true, gap: null, models: WRITING_OPENAI },
     { vendor: "deepseek", connected: true, gap: null, models: [{ id: "deepseek-flash", label: "DeepSeek Flash" }] },
@@ -141,6 +148,11 @@ export const featureEnableRequestSchema = z.object({
 }).strict();
 export type FeatureEnableRequest = z.infer<typeof featureEnableRequestSchema>;
 
+export const featureRollbackRequestSchema = z.object({
+  expectedRevision: revision,
+}).strict();
+export type FeatureRollbackRequest = z.infer<typeof featureRollbackRequestSchema>;
+
 export type FeatureDraftStatus = "blank" | "saved" | "testing" | "passed" | "failed";
 
 export interface FeatureSlotView {
@@ -174,6 +186,8 @@ export interface FeatureCardView {
   slots: FeatureSlotView[];
   probeScale: string;
   probeCostNote: string;
+  /** True when this feature has a previous enabled version that can be restored. Locks are not part of this flag. */
+  canRollback?: boolean;
 }
 
 export interface FeatureConfigView {
@@ -223,6 +237,8 @@ export interface UsageRecordView {
   episodeLabel: string;
   kind: "production" | "admin_test";
   credentialRef: string | null;
+  vendor: string;
+  model: string;
 }
 
 export interface UsageSummaryView {
@@ -316,7 +332,8 @@ export function featureChoiceBlock(input: FeatureChoiceInput): { ok: true } | { 
   if (!capability.models.some((item) => item.id === input.model)) {
     return { ok: false, code: "FEATURE_MODEL_NOT_APPROVED", message: "该模型不在获准列表中，已阻止这次操作。" };
   }
-  if (input.feature === "writing" && input.writingAllowlist && !input.writingAllowlist.includes(input.model)) {
+  // Bailian writing models are approved by this catalog (qwen-plus). The older admin-model allowlist does not list them.
+  if (input.feature === "writing" && input.vendor !== "bailian" && input.writingAllowlist && !input.writingAllowlist.includes(input.model)) {
     return { ok: false, code: "FEATURE_MODEL_NOT_APPROVED", message: "该模型不在当前写作白名单中，已阻止这次操作。" };
   }
   if (input.feature === "writing" && input.writingCallsRemaining !== null && input.writingCallsRemaining !== undefined && input.writingCallsRemaining < 1) {
@@ -336,7 +353,31 @@ export function storyboardProviderForVendor(vendor: string): "openai-media" | "d
   return null;
 }
 
-export function writingProviderForVendor(vendor: string): "openai" | "deepseek" | "anthropic" | null {
-  if (vendor === "openai" || vendor === "deepseek" || vendor === "anthropic") return vendor;
+export function writingProviderForVendor(vendor: string): "openai" | "deepseek" | "anthropic" | "bailian" | null {
+  if (vendor === "openai" || vendor === "deepseek" || vendor === "anthropic" || vendor === "bailian") return vendor;
   return null;
+}
+
+/** New feature-config writing tasks for Bailian and DeepSeek. OpenAI and Claude keep their existing adapters. */
+export function featureWritingSdkAdapter(vendor: string): FeatureWritingSdkAdapter | null {
+  if (vendor === "bailian") return BAILIAN_AI_SDK_ADAPTER;
+  if (vendor === "deepseek") return DEEPSEEK_AI_SDK_ADAPTER;
+  return null;
+}
+
+export interface UsageListFilter {
+  feature?: string | null;
+  vendor?: string | null;
+  model?: string | null;
+}
+
+/** Narrows a call-record list. Empty and "all" leave that dimension unfiltered. */
+export function usageRecordMatches(
+  record: { feature: string; vendor: string; model: string; vendorLabel?: string; modelLabel?: string },
+  filter: UsageListFilter,
+): boolean {
+  if (filter.feature && filter.feature !== "all" && record.feature !== filter.feature) return false;
+  if (filter.vendor && filter.vendor !== "all" && record.vendor !== filter.vendor && record.vendorLabel !== filter.vendor) return false;
+  if (filter.model && filter.model !== "all" && record.model !== filter.model && record.modelLabel !== filter.model) return false;
+  return true;
 }

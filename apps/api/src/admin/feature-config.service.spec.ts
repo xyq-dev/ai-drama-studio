@@ -9,6 +9,7 @@ import { FeatureUsageStore } from "./feature-usage-store";
 import {
   FeatureConfigService,
   networkRefusingFeatureProbe,
+  type FeaturePolicy,
   type FeatureProbe,
   type FeatureProbeInput,
   type LegacyFeatureSource,
@@ -33,7 +34,7 @@ afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-async function open(options: { probe?: FeatureProbe; legacy?: LegacyFeatureSource | null; homeWorkspaceId?: string } = {}) {
+async function open(options: { probe?: FeatureProbe; legacy?: LegacyFeatureSource | null; homeWorkspaceId?: string; policy?: FeaturePolicy } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "feature-config-"));
   dirs.push(dir);
   await chmod(dir, 0o700);
@@ -51,6 +52,7 @@ async function open(options: { probe?: FeatureProbe; legacy?: LegacyFeatureSourc
   });
   const service = await FeatureConfigService.open({
     vault, usage, probe, legacy: options.legacy ?? null, homeWorkspaceId: options.homeWorkspaceId ?? WS_A,
+    ...(options.policy ? { policy: options.policy } : {}),
   });
   return { service, seen, dir };
 }
@@ -349,5 +351,74 @@ describe("feature configuration", () => {
       });
     }
     expect((await service.credentialForTask("storyboard", WS_A, "locked-task"))?.apiKey).toBe(KEYS.imageBailian);
+  });
+
+  it("keeps a bailian writing draft off the live binding and cannot enable a failed probe", async () => {
+    const secret = "sentinel-bailian-writing-key-zzzz";
+    const { service } = await open({ probe: async () => ({ ok: false, message: `vendor said ${secret}` }) });
+    let view = await service.view();
+    view = await service.saveDraft("writing", {
+      expectedRevision: view.revision, vendor: "bailian", model: "qwen-plus", secretAction: "replace", apiKey: secret,
+    });
+    expect(await service.readBinding("writing")).toBeNull();
+    expect(JSON.stringify(view)).not.toContain(secret);
+    expect(slot(view, "writing", "bailian").label).toBe("百炼千问");
+    const tested = await service.testDraft("writing", { expectedRevision: view.revision, vendor: "bailian", confirmCost: true });
+    expect(tested.probe?.ok).toBe(false);
+    expect(tested.probe?.message).not.toContain(secret);
+    expect(slot(tested.view, "writing", "bailian").draftStatus).toBe("failed");
+    expect(JSON.stringify(tested)).not.toContain(secret);
+    await expect(service.enable("writing", {
+      expectedRevision: tested.view.revision, vendor: "bailian", testToken: "a".repeat(16),
+    })).rejects.toMatchObject({ code: "FEATURE_TEST_REQUIRED" });
+    expect(await service.readBinding("writing")).toBeNull();
+  });
+
+  it("allows qwen-plus when the older writing allowlist does not name it", async () => {
+    const { service } = await open({ policy: { writingAllowlist: async () => ["other-model"] } });
+    const view = await service.saveDraft("writing", {
+      expectedRevision: 0, vendor: "bailian", model: "qwen-plus", secretAction: "replace", apiKey: KEYS.writing,
+    });
+    expect(slot(view, "writing", "bailian").model).toBe("qwen-plus");
+    await expect(service.saveDraft("writing", {
+      expectedRevision: view.revision, vendor: "deepseek", model: "deepseek-flash", secretAction: "replace", apiKey: KEYS.writingDeepseek,
+    })).rejects.toMatchObject({ code: "FEATURE_MODEL_NOT_APPROVED" });
+  });
+
+  it("rolls the live version back without changing a locked credential", async () => {
+    const { service } = await open();
+    await enable(service, "writing", "deepseek", "deepseek-flash", KEYS.writingDeepseek);
+    await service.submitProduction({
+      feature: "writing", workspaceId: WS_A, projectId: "work-1", episodeId: "ep-1", taskId: "writing-lock",
+      actorId: "creator", projectLabel: "作品", episodeLabel: "第 1 集", vendorRequestId: "vendor-request-write-01",
+    });
+    const enabled = await enable(service, "writing", "bailian", "qwen-plus", KEYS.writing);
+    expect(card(enabled, "writing").canRollback).toBe(true);
+    expect((await service.readBinding("writing"))?.model).toBe("qwen-plus");
+    expect((await service.credentialForTask("writing", WS_A, "writing-lock"))?.apiKey).toBe(KEYS.writingDeepseek);
+    const rolled = await service.rollback("writing", { expectedRevision: enabled.revision });
+    expect((await service.readBinding("writing"))?.model).toBe("deepseek-flash");
+    expect((await service.readBinding("writing"))?.secret).toBe(KEYS.writingDeepseek);
+    expect(card(rolled, "writing").canRollback).toBe(false);
+    expect((await service.credentialForTask("writing", WS_A, "writing-lock"))?.apiKey).toBe(KEYS.writingDeepseek);
+    expect(JSON.stringify(rolled)).not.toContain(KEYS.writing);
+    expect(JSON.stringify(rolled)).not.toContain(KEYS.writingDeepseek);
+  });
+
+  it("filters usage records by feature, vendor, and model without changing episode totals", async () => {
+    const { service } = await open();
+    const base = {
+      workspaceId: WS_A, projectId: "work-1", projectLabel: "作品", episodeId: "ep-1", episodeLabel: "第 1 集",
+      actorId: "creator", configVersion: "ver_1", credentialRef: "fc_example_ref", result: "succeeded" as const,
+      usage: { status: "unknown" as const }, cost: { status: "pending" as const },
+    };
+    await service.recordExecution({ ...base, feature: "writing", taskId: "w", vendor: "bailian", model: "qwen-plus", vendorRequestId: "vendor-request-w-01" });
+    await service.recordExecution({ ...base, feature: "storyboard", taskId: "s", vendor: "openai", model: "gpt-image-2.5-sunburst", vendorRequestId: "vendor-request-s-01" });
+    const filtered = await service.usageSummary({ workspaceId: WS_A, feature: "writing", vendor: "bailian", model: "qwen-plus" });
+    expect(filtered.records.map((item) => item.taskId)).toEqual(["w"]);
+    expect(filtered.records[0]).toMatchObject({ vendor: "bailian", model: "qwen-plus" });
+    expect(filtered.totals).toHaveLength(3);
+    expect(filtered.totals.find((item) => item.feature === "writing")?.costText).toBe("待回传费用");
+    expect(JSON.stringify(filtered)).not.toContain(KEYS.writing);
   });
 });

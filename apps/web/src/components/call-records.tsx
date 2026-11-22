@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { UsageRecordView, UsageSummaryView } from "@ai-drama/contracts";
+import { usageRecordMatches, type UsageRecordView, type UsageSummaryView } from "@ai-drama/contracts";
 import { AdminFrame, AdminGateView, useOperatorGate } from "./admin-access";
 import { createFeatureConfigClient, featureErrorCopy } from "../lib/feature-config-client";
 import styles from "./feature-config.module.css";
@@ -20,6 +20,9 @@ export function CallRecords() {
   const [summary, setSummary] = useState<UsageSummaryView | null>(null);
   const [projectPick, setProjectPick] = useState<string | null>(null);
   const [episodePick, setEpisodePick] = useState<string | null>(null);
+  const [featurePick, setFeaturePick] = useState("all");
+  const [vendorPick, setVendorPick] = useState("all");
+  const [modelPick, setModelPick] = useState("all");
   const [failed, setFailed] = useState("");
   const [detail, setDetail] = useState<UsageRecordView | null>(null);
   const [detailError, setDetailError] = useState("");
@@ -62,6 +65,10 @@ export function CallRecords() {
   const shownProject = projectPick ?? summary.projectId ?? "";
   const shownEpisode = episodePick ?? (shownProject === (summary.projectId ?? "") ? summary.episodeId ?? "" : "");
   const episodes = summary.episodes.filter((item) => !shownProject || item.projectId === shownProject);
+  const features = uniqueOptions(summary.records.map((item) => ({ id: item.feature, label: item.featureLabel })));
+  const vendors = uniqueOptions(summary.records.map((item) => ({ id: item.vendor, label: item.vendorLabel })));
+  const models = uniqueOptions(summary.records.map((item) => ({ id: item.model, label: item.modelLabel })));
+  const listed = summary.records.filter((record) => usageRecordMatches(record, { feature: featurePick, vendor: vendorPick, model: modelPick }));
   return (
     <AdminFrame>
       <header className={styles.intro}>
@@ -81,6 +88,27 @@ export function CallRecords() {
             {episodes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
         </label>
+        <label>
+          <span>功能</span>
+          <select aria-label="功能" value={featurePick} onChange={(event) => setFeaturePick(event.target.value)}>
+            <option value="all">全部</option>
+            {features.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>供应商</span>
+          <select aria-label="供应商" value={vendorPick} onChange={(event) => setVendorPick(event.target.value)}>
+            <option value="all">全部</option>
+            {vendors.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>模型</span>
+          <select aria-label="模型" value={modelPick} onChange={(event) => setModelPick(event.target.value)}>
+            <option value="all">全部</option>
+            {models.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          </select>
+        </label>
         <p className={styles.scope}>统计范围：本集生产任务</p>
       </div>
       <section className={styles.totals} aria-label="本集用量">
@@ -95,15 +123,15 @@ export function CallRecords() {
       <section className={styles.records} aria-label="本集调用">
         <div className={styles.recordHeadLine}>
           <h2>本集调用</h2>
-          <span>最近 {summary.records.length} 条</span>
+          <span>最近 {listed.length} 条</span>
         </div>
-        {summary.records.length === 0 ? <p className={styles.empty}>这一范围内还没有生产调用。用量保持未知，不会显示为 0。</p> : (
+        {listed.length === 0 ? <p className={styles.empty}>这一范围内还没有生产调用。用量保持未知，不会显示为 0。</p> : (
           <div className={styles.table}>
             <div className={styles.columns} aria-hidden="true">
               <span>任务</span><span>功能</span><span>服务商</span><span>执行模型</span><span>实际用量</span><span>结果</span>
             </div>
             <ul>
-              {summary.records.map((record) => (
+              {listed.map((record) => (
                 <li key={record.id}>
                   <button type="button" className={styles.record} onClick={() => void openDetail(record)}>
                     <strong>{record.taskId}</strong>
@@ -146,4 +174,13 @@ export function CallRecords() {
       ) : null}
     </AdminFrame>
   );
+}
+
+function uniqueOptions(items: Array<{ id: string; label: string }>): Array<{ id: string; label: string }> {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
 }

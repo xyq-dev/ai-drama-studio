@@ -1,5 +1,5 @@
 import type {
-  FeatureConfigView, FeatureDraftSave, FeatureEnableRequest, FeatureKey, FeatureMutationResult, FeatureTestRequest,
+  FeatureConfigView, FeatureDraftSave, FeatureEnableRequest, FeatureKey, FeatureMutationResult, FeatureRollbackRequest, FeatureTestRequest,
   UsageRecordView, UsageSummaryView,
 } from "@ai-drama/contracts";
 import { withSession } from "./site-session";
@@ -27,6 +27,7 @@ const CODE_COPY: Record<string, string> = {
   ADMIN_CONFIG_INVALID: "这份配置无法保存。",
   ADMIN_NOT_CONFIGURED: "管理员配置尚未就绪。",
   FEATURE_PROBE_REFUSED: "没有接通模拟供应商，测试没有发出。",
+  FEATURE_ROLLBACK_UNAVAILABLE: "没有可回退的上一配置版本。",
   AUTH_REQUIRED: "没有配置权限。",
   NETWORK_ERROR: "网络中断，操作没有完成。",
   REQUEST_FAILED: "操作没有完成。",
@@ -69,6 +70,7 @@ export function createFeatureConfigClient(fetchImpl?: FetchLike) {
     saveDraft: (feature: FeatureKey, body: FeatureDraftSave) => request<FeatureConfigView>(`/features/${feature}/draft`, "PUT", body),
     testDraft: (feature: FeatureKey, body: FeatureTestRequest) => request<FeatureMutationResult>(`/features/${feature}/test`, "POST", body),
     enable: (feature: FeatureKey, body: FeatureEnableRequest) => request<FeatureConfigView>(`/features/${feature}/enable`, "POST", body),
+    rollback: (feature: FeatureKey, body: FeatureRollbackRequest) => request<FeatureConfigView>(`/features/${feature}/rollback`, "POST", body),
     usage: (projectId: string | null, episodeId: string | null) => {
       const query = new URLSearchParams();
       if (projectId) query.set("projectId", projectId);

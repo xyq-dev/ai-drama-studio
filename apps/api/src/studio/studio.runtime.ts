@@ -19,7 +19,7 @@ import {
   openStorageSettingsStore, storageSettingsOptions,
   type PostgresPool,
 } from "@ai-drama/database";
-import { sampleVideoGenerationEnabled, realMediaAccessAllowed, storyboardProviderForVendor, writingProviderForVendor, type ComfyUiAdminCheck, type TitleRunKind } from "@ai-drama/contracts";
+import { BAILIAN_COMPATIBLE_BASE_URL, featureWritingSdkAdapter, sampleVideoGenerationEnabled, realMediaAccessAllowed, storyboardProviderForVendor, writingProviderForVendor, type ComfyUiAdminCheck, type TitleRunKind } from "@ai-drama/contracts";
 import {
   ANTHROPIC_MESSAGES_URL, AutoCreationEngine, DEEPSEEK_CHAT_COMPLETIONS_URL, OPENAI_RESPONSES_URL, SeriesWritingEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
@@ -272,6 +272,7 @@ export class StudioRuntime implements OnModuleDestroy {
       store: titleStore,
       providers: titleProviders,
       transport: createFetchTransport(),
+      sdkFetch: globalThis.fetch,
       maxCallsPerDay,
       allowedRunKinds,
       ...(featureConfig ? {
@@ -279,7 +280,8 @@ export class StudioRuntime implements OnModuleDestroy {
           const locked = await featureConfig!.credentialForTask("writing", workspaceId, run.id);
           const providerKey = writingProviderForVendor(locked?.vendor ?? "");
           if (!locked || !providerKey || providerKey !== run.providerKey || locked.model !== run.model) return null;
-          return { apiKey: locked.apiKey, url: writingUrl[providerKey], models: [locked.model] };
+          const url = providerKey === "bailian" ? BAILIAN_COMPATIBLE_BASE_URL : writingUrl[providerKey];
+          return { apiKey: locked.apiKey, url, models: [locked.model] };
         },
         onProductionExchange: async (event) => {
           const locked = await featureConfig!.credentialForTask("writing", workspaceId, event.runId);
@@ -330,7 +332,15 @@ export class StudioRuntime implements OnModuleDestroy {
         if (!binding || binding.source !== "enabled") return null;
         const providerKey = writingProviderForVendor(binding.vendor);
         if (!providerKey) return null;
-        return { providerKey, model: binding.model, configVersion: binding.configVersion, credentialRef: binding.credentialRef, apiKey: binding.secret };
+        const providerAdapter = featureWritingSdkAdapter(binding.vendor);
+        return {
+          providerKey,
+          model: binding.model,
+          configVersion: binding.configVersion,
+          credentialRef: binding.credentialRef,
+          apiKey: binding.secret,
+          ...(providerAdapter ? { providerAdapter } : {}),
+        };
       }, featureWritingCommit: async (input) => {
         const binding = await featureConfig!.readBinding("writing");
         if (!binding || binding.source !== "enabled" || binding.credentialRef !== input.credentialRef) return;

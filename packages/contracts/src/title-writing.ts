@@ -55,6 +55,13 @@ export type TitleWritingV1LeftOutProviderKey = (typeof TITLE_WRITING_V1_LEFT_OUT
 /** Every provider a stored run or call may carry. */
 export const TITLE_WRITING_STORED_PROVIDER_KEYS = [...TITLE_WRITING_PROVIDER_KEYS, ...TITLE_WRITING_RETIRED_PROVIDER_KEYS] as const;
 export type TitleWritingStoredProviderKey = (typeof TITLE_WRITING_STORED_PROVIDER_KEYS)[number];
+export function storedTitleWritingProviderLabel(providerKey: string): string {
+  if ((TITLE_WRITING_STORED_PROVIDER_KEYS as readonly string[]).includes(providerKey)) {
+    return TITLE_WRITING_PROVIDER_LABELS[providerKey as TitleWritingStoredProviderKey];
+  }
+  return providerKey;
+}
+
 export const TITLE_WRITING_PROVIDER_LABELS: Readonly<Record<TitleWritingStoredProviderKey, string>> = {
   openai: "OpenAI",
   anthropic: "Claude",
@@ -69,7 +76,27 @@ export const TITLE_WRITING_PROVIDER_LABELS: Readonly<Record<TitleWritingStoredPr
  */
 export const DEEPSEEK_PROVIDER_ADAPTER = "deepseek.chat-completions.v1" as const;
 
-/** The frozen-input mark of a provider's current adapter: only DeepSeek has one. */
+/**
+ * Feature-config writing uses these adapter ids. They are not the retired `qwen` provider key.
+ * Bailian is a new stored key (`bailian`); historical qwen rows stay readable and are never sent.
+ */
+export const BAILIAN_WRITING_PROVIDER_KEY = "bailian" as const;
+export const BAILIAN_AI_SDK_ADAPTER = "bailian.ai-sdk.v1" as const;
+export const DEEPSEEK_AI_SDK_ADAPTER = "deepseek.ai-sdk.v1" as const;
+export const QWEN_PLUS_MODEL = "qwen-plus" as const;
+/** China-site OpenAI-compatible endpoint. The SDK default is the international site and is not used. */
+export const BAILIAN_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1" as const;
+/** Official DeepSeek host. The SDK is not pointed at Vercel AI Gateway. */
+export const DEEPSEEK_AI_SDK_BASE_URL = "https://api.deepseek.com" as const;
+
+export type FeatureWritingSdkAdapter = typeof BAILIAN_AI_SDK_ADAPTER | typeof DEEPSEEK_AI_SDK_ADAPTER;
+/** Provider key stored on a title run: the historical set, plus bailian for new SDK runs. */
+export type TitleWritingDispatchProviderKey = TitleWritingStoredProviderKey | typeof BAILIAN_WRITING_PROVIDER_KEY;
+export type FrozenWritingProviderAdapter =
+  | typeof DEEPSEEK_PROVIDER_ADAPTER
+  | FeatureWritingSdkAdapter;
+
+/** The frozen-input mark of the pre-SDK DeepSeek adapter. Bailian and SDK DeepSeek pass their own id into newTitleRun. */
 export function frozenProviderAdapter(providerKey: string): { providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER } {
   return providerKey === "deepseek" ? { providerAdapter: DEEPSEEK_PROVIDER_ADAPTER } : {};
 }
@@ -78,9 +105,19 @@ export function frozenProviderAdapter(providerKey: string): { providerAdapter?: 
  * A DeepSeek run stored by the code before the retirement: its frozen input has no adapter mark. Such a run is never
  * driven or sent for again, whatever is configured now; it keeps its frozen provider, model, input, hash, calls and
  * unknown costs, an answer it already stored can still be saved, and a lost receipt of its start is still answered.
+ * A run marked with the chat-completions adapter or the AI SDK adapter is not legacy.
  */
 export function isLegacyDeepseekRun(input: { providerKey: string; providerAdapter?: unknown }): boolean {
-  return input.providerKey === "deepseek" && input.providerAdapter !== DEEPSEEK_PROVIDER_ADAPTER;
+  return input.providerKey === "deepseek"
+    && input.providerAdapter !== DEEPSEEK_PROVIDER_ADAPTER
+    && input.providerAdapter !== DEEPSEEK_AI_SDK_ADAPTER;
+}
+
+/** SDK send is allowed only for this exact pair. A historical qwen row never matches. */
+export function sdkWritingKind(providerKey: string, providerAdapter: unknown): "bailian" | "deepseek" | null {
+  if (providerKey === BAILIAN_WRITING_PROVIDER_KEY && providerAdapter === BAILIAN_AI_SDK_ADAPTER) return "bailian";
+  if (providerKey === "deepseek" && providerAdapter === DEEPSEEK_AI_SDK_ADAPTER) return "deepseek";
+  return null;
 }
 
 export function isActiveTitleWritingProvider(key: string): key is TitleWritingProviderKey {
@@ -245,10 +282,10 @@ export interface TitleWritingFrozenInputV1 {
   promptVersion: typeof TITLE_WRITING_PROMPT_VERSION;
   title: string;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingStoredProviderKey;
+  providerKey: TitleWritingDispatchProviderKey;
   model: string;
-  /** DeepSeek runs created by the current server only (DEEPSEEK_PROVIDER_ADAPTER). Absent on every older run. */
-  providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
+  /** Chat-completions DeepSeek, SDK DeepSeek, or SDK Bailian. Absent on runs stored before any adapter mark. */
+  providerAdapter?: FrozenWritingProviderAdapter;
 }
 
 /**
@@ -261,10 +298,10 @@ export interface TitleWritingFrozenInputV2 {
   promptVersion: typeof TITLE_WRITING_PROMPT_VERSION_V2 | typeof TITLE_WRITING_PROMPT_VERSION_V3 | typeof TITLE_WRITING_PROMPT_VERSION_V4;
   title: string;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingStoredProviderKey;
+  providerKey: TitleWritingDispatchProviderKey;
   model: string;
-  /** DeepSeek runs created by the current server only (DEEPSEEK_PROVIDER_ADAPTER). Absent on every older run. */
-  providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
+  /** Chat-completions DeepSeek, SDK DeepSeek, or SDK Bailian. Absent on runs stored before any adapter mark. */
+  providerAdapter?: FrozenWritingProviderAdapter;
 }
 
 export type TitleWritingFrozenInput = TitleWritingFrozenInputV1 | TitleWritingFrozenInputV2;
@@ -480,7 +517,7 @@ export interface TitleWritingCallView {
   callId: string;
   stepKey: TitleWritingStepKey;
   attemptNo: number;
-  providerKey: TitleWritingStoredProviderKey;
+  providerKey: TitleWritingDispatchProviderKey;
   model: string;
   responseModel: string | null;
   providerRequestId: string | null;
@@ -517,7 +554,7 @@ export interface TitleWritingRunView {
   /** N of this run: its outline has N episodes and it has N episode steps. */
   episodeCount: number;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingStoredProviderKey;
+  providerKey: TitleWritingDispatchProviderKey;
   model: string;
   state: TitleWritingRunState;
   errorCode: string | null;

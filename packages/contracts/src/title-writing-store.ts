@@ -4,8 +4,8 @@ import type {
   TitleConcept,
   TitleWritingCallState,
   TitleWritingFrozenInput,
+  TitleWritingDispatchProviderKey,
   TitleWritingProviderKey,
-  TitleWritingStoredProviderKey,
   TitleWritingRunState,
   TitleWritingScriptSave,
   TitleWritingStepKey,
@@ -70,7 +70,7 @@ export interface TitleCallRecord {
   workspaceId: string;
   stepKey: TitleWritingStepKey;
   attemptNo: number;
-  providerKey: TitleWritingStoredProviderKey;
+  providerKey: TitleWritingDispatchProviderKey;
   model: string;
   requestHash: string;
   state: TitleWritingCallState;

@@ -31,7 +31,10 @@
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",
     "@ai-drama/domain": "workspace:*",
+    "@ai-sdk/alibaba": "2.0.93",
+    "@ai-sdk/deepseek": "3.0.89",
     "@aws-sdk/client-s3": "3.1138.0",
+    "ai": "7.0.179",
     "zod": "catalog:"
   },
   "devDependencies": {

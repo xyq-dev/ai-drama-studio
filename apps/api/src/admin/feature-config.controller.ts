@@ -5,6 +5,7 @@ import {
   FEATURE_VENDOR_LABELS,
   featureDraftSaveSchema,
   featureEnableRequestSchema,
+  featureRollbackRequestSchema,
   featureTestRequestSchema,
   type FeatureKey,
   type FeatureVendor,
@@ -118,17 +119,50 @@ export class FeatureConfigController {
     });
   }
 
+  @Post("features/:feature/rollback")
+  rollback(
+    @Param("feature") feature: string,
+    @Headers() headers: RequestHeaders,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: AdminResponse,
+  ) {
+    return this.send(response, async () => {
+      const { auth, backend } = this.configured();
+      this.requireOperator(headers, auth);
+      authorizeJsonWrite(auth, headers);
+      const input = featureRollbackRequestSchema.safeParse(body);
+      if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      const key = this.feature(feature);
+      const view = await backend.rollback(key, input.data);
+      await noteOperation({
+        action: "回退功能配置",
+        target: FEATURE_LABELS[key],
+        result: "success",
+        source: "管理后台 /admin/features",
+        detail: "已恢复上一启用版本。进行中的任务锁未改写。完整密钥未写入。",
+      });
+      return view;
+    });
+  }
+
   @Get("usage")
   usage(
     @Headers() headers: RequestHeaders,
     @Query("projectId") projectId: string | undefined,
     @Query("episodeId") episodeId: string | undefined,
+    @Query("feature") feature: string | undefined,
+    @Query("vendor") vendor: string | undefined,
+    @Query("model") model: string | undefined,
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
       this.requireOperator(headers, auth);
-      return backend.operatorUsage(projectId || null, episodeId || null);
+      return backend.operatorUsage(projectId || null, episodeId || null, {
+        feature: feature || null,
+        vendor: vendor || null,
+        model: model || null,
+      });
     });
   }
 

@@ -87,7 +87,7 @@ function cardButton(label: string) {
 }
 
 function expectFeatureSelected(label: string) {
-  for (const name of ["剧本编写", "分镜生图", "角色配音"]) {
+  for (const name of ["编剧", "生图", "配音", "视频"]) {
     expect(cardButton(name).getAttribute("aria-pressed")).toBe(name === label ? "true" : "false");
   }
   const tabs = within(screen.getByRole("tablist", { name: "功能" }));
@@ -109,7 +109,7 @@ it("shows a loading state with no primary actions while the session is unread", 
   vi.stubGlobal("fetch", () => new Promise(() => undefined));
   render(<FeatureConfig />);
   expect(screen.getByRole("heading", { name: "正在加载配置" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "测试配置" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "检测连接" })).toBeNull();
   expect(screen.queryByRole("button", { name: "保存草稿" })).toBeNull();
   expect(screen.queryByRole("button", { name: "配置阿里云编剧" })).toBeNull();
 });
@@ -124,30 +124,36 @@ it("shows the no-permission state to a creator and does not request configuratio
   expect(calls.some((call) => call.url.includes("/admin/features"))).toBe(false);
 });
 
-it("opens the unconnected state from a first-time writing card without hiding the feature cards", async () => {
+it("opens the qwen-plus editor from a first-time writing card and keeps the feature cards", async () => {
   window.history.replaceState(null, "", "/admin/features?feature=writing");
   install(operatorSession(), view());
   render(<FeatureConfig />);
-  expect(await screen.findByRole("heading", { name: "尚未配置剧本编写" })).toBeTruthy();
-  expectFeatureSelected("剧本编写");
+  expect(await screen.findByRole("heading", { name: "尚未配置编剧" })).toBeTruthy();
+  expectFeatureSelected("编剧");
   expect(within(featureCards()).getAllByText("尚未配置")).toHaveLength(3);
+  expect(cardButton("视频").textContent).toContain("尚未接入");
   fireEvent.click(screen.getByRole("button", { name: "配置阿里云编剧" }));
-  expect(await screen.findByRole("heading", { name: "该服务商尚未接入" })).toBeTruthy();
-  expect(screen.getByText(/阿里云百炼文本适配器已退役/)).toBeTruthy();
-  expectFeatureSelected("剧本编写");
-  expect(screen.getByRole("button", { name: "返回已接入服务商" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "编剧配置" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "通义千问 Plus" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "该服务商尚未接入" })).toBeNull();
+  expectFeatureSelected("编剧");
+  fireEvent.click(cardButton("视频"));
+  expect(screen.getByRole("heading", { name: "视频尚未接入" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "保存草稿" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "检测连接" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "确认启用" })).toBeNull();
 });
 
 it("shows three cards and selects live writing when the feature query is absent", async () => {
   install(operatorSession(), liveWritingView());
   render(<FeatureConfig />);
-  expect(await screen.findByRole("heading", { name: "剧本编写配置" })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "尚未配置分镜生图" })).toBeNull();
-  expect(screen.queryByRole("heading", { name: "尚未配置角色配音" })).toBeNull();
-  expectFeatureSelected("剧本编写");
-  expect(cardButton("剧本编写").textContent).toContain("DeepSeek · DeepSeek Flash");
-  expect(cardButton("分镜生图").textContent).toContain("尚未配置");
-  expect(cardButton("角色配音").textContent).toContain("尚未配置");
+  expect(await screen.findByRole("heading", { name: "编剧配置" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置生图" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "尚未配置配音" })).toBeNull();
+  expectFeatureSelected("编剧");
+  expect(cardButton("编剧").textContent).toContain("DeepSeek · DeepSeek Flash");
+  expect(cardButton("生图").textContent).toContain("尚未配置");
+  expect(cardButton("配音").textContent).toContain("尚未配置");
   expect(window.location.pathname).toBe("/admin/features");
   expect(window.location.search).toBe("");
 });
@@ -155,34 +161,34 @@ it("shows three cards and selects live writing when the feature query is absent"
 it("keeps the three cards on a first-time storyboard or voice empty state and returns to writing", async () => {
   install(operatorSession(), liveWritingView());
   render(<FeatureConfig />);
-  expect(await screen.findByRole("heading", { name: "剧本编写配置" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "编剧配置" })).toBeTruthy();
 
-  fireEvent.click(cardButton("分镜生图"));
-  expect(screen.getByRole("heading", { name: "尚未配置分镜生图" })).toBeTruthy();
+  fireEvent.click(cardButton("生图"));
+  expect(screen.getByRole("heading", { name: "尚未配置生图" })).toBeTruthy();
   expect(screen.getByText("选择生图服务商，填写密钥并测试后即可启用。")).toBeTruthy();
   expect(screen.getByRole("button", { name: "配置阿里云生图" })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "剧本编写配置" })).toBeNull();
-  expectFeatureSelected("分镜生图");
-  expect(cardButton("剧本编写").textContent).toContain("DeepSeek · DeepSeek Flash");
+  expect(screen.queryByRole("heading", { name: "编剧配置" })).toBeNull();
+  expectFeatureSelected("生图");
+  expect(cardButton("编剧").textContent).toContain("DeepSeek · DeepSeek Flash");
 
-  fireEvent.click(cardButton("剧本编写"));
-  expect(screen.getByRole("heading", { name: "剧本编写配置" })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "尚未配置分镜生图" })).toBeNull();
+  fireEvent.click(cardButton("编剧"));
+  expect(screen.getByRole("heading", { name: "编剧配置" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置生图" })).toBeNull();
   expect(screen.queryByRole("button", { name: "配置阿里云生图" })).toBeNull();
-  expectFeatureSelected("剧本编写");
+  expectFeatureSelected("编剧");
   expect(screen.getByText("DeepSeek / DeepSeek Flash")).toBeTruthy();
 
-  fireEvent.click(cardButton("角色配音"));
-  expect(screen.getByRole("heading", { name: "尚未配置角色配音" })).toBeTruthy();
+  fireEvent.click(cardButton("配音"));
+  expect(screen.getByRole("heading", { name: "尚未配置配音" })).toBeTruthy();
   expect(screen.getByText("选择配音服务商，填写密钥并测试后即可启用。")).toBeTruthy();
   expect(screen.getByRole("button", { name: "配置阿里云配音" })).toBeTruthy();
-  expectFeatureSelected("角色配音");
-  expect(within(featureCards()).getAllByRole("button")).toHaveLength(3);
+  expectFeatureSelected("配音");
+  expect(within(featureCards()).getAllByRole("button")).toHaveLength(4);
 
-  fireEvent.click(cardButton("剧本编写"));
-  expect(screen.getByRole("heading", { name: "剧本编写配置" })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "尚未配置角色配音" })).toBeNull();
-  expectFeatureSelected("剧本编写");
+  fireEvent.click(cardButton("编剧"));
+  expect(screen.getByRole("heading", { name: "编剧配置" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置配音" })).toBeNull();
+  expectFeatureSelected("编剧");
   expect(window.location.search).toBe("?feature=writing");
 });
 
@@ -190,21 +196,21 @@ it("keeps an explicit storyboard query instead of switching to live writing", as
   window.history.replaceState(null, "", "/admin/features?feature=storyboard");
   install(operatorSession(), liveWritingView());
   render(<FeatureConfig />);
-  expect(await screen.findByRole("heading", { name: "尚未配置分镜生图" })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "剧本编写配置" })).toBeNull();
-  expectFeatureSelected("分镜生图");
-  expect(cardButton("剧本编写").textContent).toContain("DeepSeek · DeepSeek Flash");
-  expect(cardButton("分镜生图").textContent).toContain("尚未配置");
-  expect(cardButton("角色配音").textContent).toContain("尚未配置");
+  expect(await screen.findByRole("heading", { name: "尚未配置生图" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "编剧配置" })).toBeNull();
+  expectFeatureSelected("生图");
+  expect(cardButton("编剧").textContent).toContain("DeepSeek · DeepSeek Flash");
+  expect(cardButton("生图").textContent).toContain("尚未配置");
+  expect(cardButton("配音").textContent).toContain("尚未配置");
   expect(window.location.search).toBe("?feature=storyboard");
 });
 
 it("defaults to writing when no feature is live and the query is absent", async () => {
   install(operatorSession(), view());
   render(<FeatureConfig />);
-  expect(await screen.findByRole("heading", { name: "尚未配置剧本编写" })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "尚未配置分镜生图" })).toBeNull();
-  expectFeatureSelected("剧本编写");
+  expect(await screen.findByRole("heading", { name: "尚未配置编剧" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置生图" })).toBeNull();
+  expectFeatureSelected("编剧");
   expect(within(featureCards()).getAllByText("尚未配置")).toHaveLength(3);
   expect(window.location.search).toBe("");
 });
@@ -220,11 +226,11 @@ it("selects the live feature when writing is still unconfigured", async () => {
   });
   install(operatorSession(), config);
   render(<FeatureConfig />);
-  expect(await screen.findByRole("heading", { name: "分镜生图配置" })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "尚未配置剧本编写" })).toBeNull();
-  expectFeatureSelected("分镜生图");
-  expect(cardButton("分镜生图").textContent).toContain("阿里云 · Qwen Image");
-  expect(cardButton("剧本编写").textContent).toContain("尚未配置");
+  expect(await screen.findByRole("heading", { name: "生图配置" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "尚未配置编剧" })).toBeNull();
+  expectFeatureSelected("生图");
+  expect(cardButton("生图").textContent).toContain("阿里云 · Qwen Image");
+  expect(cardButton("编剧").textContent).toContain("尚未配置");
   expect(window.location.search).toBe("");
 });
 
@@ -242,16 +248,16 @@ it("keeps a typed key on its own vendor and cancels a test without calling the v
   install(operatorSession(), config);
   render(<FeatureConfig />);
   expect(await screen.findByText(/草稿已保存，线上任务仍使用当前生效配置/)).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "测试配置" }));
+  fireEvent.click(screen.getByRole("button", { name: "检测连接" }));
   expect(screen.getByRole("dialog", { name: "确认测试费用" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "取消" }));
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(calls.some((call) => call.url.includes("/test"))).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "更换" }));
   fireEvent.change(screen.getByLabelText("API Key"), { target: { value: SECRET } });
-  fireEvent.click(within(screen.getByRole("group", { name: "服务商" })).getByRole("button", { name: "OpenAI" }));
+  fireEvent.click(within(screen.getByRole("group", { name: "供应商" })).getByRole("button", { name: "OpenAI" }));
   expect((screen.getByLabelText("API Key") as HTMLInputElement).value).toBe("");
-  fireEvent.click(within(screen.getByRole("group", { name: "服务商" })).getByRole("button", { name: "阿里云" }));
+  fireEvent.click(within(screen.getByRole("group", { name: "供应商" })).getByRole("button", { name: "阿里云" }));
   expect((screen.getByLabelText("API Key") as HTMLInputElement).value).toBe(SECRET);
   expect(JSON.stringify(calls)).not.toContain(SECRET);
 });
@@ -277,7 +283,7 @@ it("sends confirmCost only after the operator confirms, and keeps a failed draft
   });
   install(operatorSession(), config, () => json({ view: failed, probe: { ok: false, message: "测试没有通过，草稿已保留，可以重试。" } }));
   render(<FeatureConfig />);
-  fireEvent.click(await screen.findByRole("button", { name: "测试配置" }));
+  fireEvent.click(await screen.findByRole("button", { name: "检测连接" }));
   fireEvent.click(screen.getByRole("button", { name: "确认测试" }));
   expect(await screen.findByRole("dialog", { name: "测试没有通过" })).toBeTruthy();
   const testCall = calls.find((call) => call.url.includes("/test"));

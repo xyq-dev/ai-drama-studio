@@ -5,6 +5,7 @@ import {
   TITLE_WRITING_PROVIDER_KEYS,
   TITLE_WRITING_PROVIDER_PREFERENCE,
   TITLE_WRITING_PROVIDER_LABELS,
+  storedTitleWritingProviderLabel,
   isActiveTitleWritingProvider,
   isLegacyDeepseekRun,
   scriptBreakdownPlaceSchema,
@@ -384,7 +385,7 @@ export class ScriptBreakdownService {
         }
         return isActiveTitleWritingProvider(runProvider)
           ? failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: runProvider, missing: provider && !provider.ok ? provider.missing : [] })
-          : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey: runProvider, label: TITLE_WRITING_PROVIDER_LABELS[runProvider] });
+          : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey: runProvider, label: storedTitleWritingProviderLabel(runProvider) });
       }
       return failure(409, "TITLE_WRITING_NOT_RESUMABLE");
     }
