@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AdminModelsView, FeatureConfigView } from "@ai-drama/contracts";
-import { AiModelCatalog, AiModelVendorSettings } from "./ai-model-vendors";
+import { AiModelCatalog, AiModelVendorSettings, preservedModels } from "./ai-model-vendors";
 
 const CSRF = "c".repeat(43);
 
@@ -161,4 +161,70 @@ it("does not offer a vendor-level save for Bailian and explains the feature-boun
   expect(screen.getByText(/没有供应商级凭证仓/)).toBeTruthy();
   expect(screen.getByRole("link", { name: /功能配置/ })).toBeTruthy();
   expect(screen.queryByText("连接正常")).toBeNull();
+});
+
+function withOpenAiModels(view: AdminModelsView, models: string[]): AdminModelsView {
+  return {
+    ...view,
+    saved: {
+      ...view.saved,
+      providers: view.saved.providers.map((provider) =>
+        provider.providerKey === "openai" ? { ...provider, models } : provider,
+      ),
+    },
+  };
+}
+
+it("keeps every configured model when a vendor key is saved, only moving the chosen default first", async () => {
+  expect(preservedModels(["gpt-6-astra", "gpt-6-luna"], "gpt-6-luna")).toEqual(["gpt-6-luna", "gpt-6-astra"]);
+  expect(preservedModels(["gpt-6-astra", "gpt-6-luna"], "")).toEqual(["gpt-6-astra", "gpt-6-luna"]);
+  const configured = withOpenAiModels(modelsView(true), ["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]);
+  const bodies: Array<{ models: string[]; secretAction: string }> = [];
+  install(configured, featuresView(), (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return json(configured);
+  });
+  render(<AiModelVendorSettings vendorId="openai" />);
+  fireEvent.click(await screen.findByRole("button", { name: "编辑设置" }));
+  const dialog = screen.getByRole("dialog", { name: "编辑设置" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "更换" }));
+  fireEvent.change(within(dialog).getByLabelText("API Key"), {
+    target: { value: "sk-test-isolated-rotated-key-not-real" },
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存凭证" }));
+  expect((await screen.findAllByText("密钥已保存 · 连接待测试")).length).toBeGreaterThan(0);
+  expect(bodies).toHaveLength(1);
+  expect(bodies[0]!.secretAction).toBe("replace");
+  expect(bodies[0]!.models).toEqual(["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]);
+});
+
+it("says the running API still uses the previous credential while a restart is pending, never 连接正常", async () => {
+  const before = modelsView(true);
+  const pending = { ...modelsView(true), savedRevision: 3, activeRevision: 2, pendingRestart: true };
+  install(before, featuresView(), () => json(pending));
+  render(<AiModelVendorSettings vendorId="openai" />);
+  fireEvent.click(await screen.findByRole("button", { name: "编辑设置" }));
+  const dialog = screen.getByRole("dialog", { name: "编辑设置" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "更换" }));
+  fireEvent.change(within(dialog).getByLabelText("API Key"), {
+    target: { value: "sk-test-isolated-rotated-key-not-real" },
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存凭证" }));
+  expect(await screen.findByText(/运行中的服务仍使用原有凭证/)).toBeTruthy();
+  expect(screen.queryByText("连接正常")).toBeNull();
+  expect(screen.queryByText(/演示|模拟/)).toBeNull();
+});
+
+it("says the change is deferred while creative runs finish", async () => {
+  install({ ...modelsView(true), activationDeferred: true });
+  render(<AiModelVendorSettings vendorId="openai" />);
+  expect(await screen.findByText(/应用已推迟/)).toBeTruthy();
+  expect(screen.queryByText("连接正常")).toBeNull();
+});
+
+it("shows no activation note when the saved config is already in use", async () => {
+  install(modelsView(true));
+  render(<AiModelVendorSettings vendorId="openai" />);
+  expect(await screen.findByRole("button", { name: "编辑设置" })).toBeTruthy();
+  expect(screen.queryByText(/尚未生效|应用已推迟/)).toBeNull();
 });

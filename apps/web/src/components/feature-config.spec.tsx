@@ -415,3 +415,59 @@ it("opens 修改配置 on the vendor shown in 配置变更, not the first vendor
     within(drawer).getByRole("button", { name: "DeepSeek" }).getAttribute("aria-pressed"),
   ).toBe("true");
 });
+
+it("restores the saved draft when 取消 closes the editor, so 检测连接 and 确认启用 work again", async () => {
+  const config = view((next) => {
+    const writing = card(next, "writing");
+    writing.firstTime = false;
+    const deepseek = writing.slots.find((item) => item.vendor === "deepseek")!;
+    deepseek.keyConfigured = true;
+    deepseek.draftStatus = "passed";
+    deepseek.testToken = "tt_passed-token";
+    deepseek.model = "deepseek-flash";
+  });
+  install(operatorSession(), config);
+  render(<FeatureConfig />);
+  expect(await screen.findByText("检测通过")).toBeTruthy();
+  const enable = () => screen.getByRole("button", { name: "确认启用" }) as HTMLButtonElement;
+  expect(enable().disabled).toBe(false);
+
+  fireEvent.click(screen.getByRole("button", { name: "修改配置" }));
+  let drawer = screen.getByRole("dialog", { name: "修改配置" });
+  fireEvent.click(within(drawer).getByRole("button", { name: "更换" }));
+  fireEvent.change(within(drawer).getByLabelText("API Key"), { target: { value: SECRET } });
+  fireEvent.click(within(drawer).getByRole("button", { name: "取消" }));
+
+  expect(screen.queryByRole("dialog", { name: "修改配置" })).toBeNull();
+  expect(screen.getByText("检测通过")).toBeTruthy();
+  expect(enable().disabled).toBe(false);
+  expect(screen.queryByDisplayValue(SECRET)).toBeNull();
+
+  // Reopening shows the saved mask again, not the discarded key field.
+  fireEvent.click(screen.getByRole("button", { name: "修改配置" }));
+  drawer = screen.getByRole("dialog", { name: "修改配置" });
+  expect(within(drawer).getByLabelText("已保存密钥")).toBeTruthy();
+  expect(within(drawer).queryByLabelText("API Key")).toBeNull();
+  expect(calls.filter((call) => call.init?.method && call.init.method !== "GET")).toHaveLength(0);
+});
+
+it("keeps 检测连接 usable on a saved draft after a typed key is discarded with 取消", async () => {
+  const config = view((next) => {
+    const writing = card(next, "writing");
+    writing.firstTime = false;
+    const deepseek = writing.slots.find((item) => item.vendor === "deepseek")!;
+    deepseek.keyConfigured = true;
+    deepseek.draftStatus = "saved";
+    deepseek.model = "deepseek-flash";
+  });
+  install(operatorSession(), config);
+  render(<FeatureConfig />);
+  const test = async () => (await screen.findByRole("button", { name: "检测连接" })) as HTMLButtonElement;
+  expect((await test()).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "修改配置" }));
+  const drawer = screen.getByRole("dialog", { name: "修改配置" });
+  fireEvent.click(within(drawer).getByRole("button", { name: "更换" }));
+  fireEvent.change(within(drawer).getByLabelText("API Key"), { target: { value: SECRET } });
+  fireEvent.click(within(drawer).getByRole("button", { name: "取消" }));
+  expect((await test()).disabled).toBe(false);
+});

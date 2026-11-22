@@ -211,6 +211,20 @@ export function FeatureConfig() {
     replaceSelection(feature, next);
   }
 
+  /** 取消 discards unsaved model, key and 更换 choices for this feature so 检测连接 / 确认启用 use the saved draft again. */
+  function cancelEdit() {
+    const prefix = `${feature}:`;
+    const keep = <T,>(current: Record<string, T>) =>
+      Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix)));
+    setModels(keep);
+    setKeys(keep);
+    setReplacing(keep);
+    setVendor(null);
+    setEditing(false);
+    setError("");
+    replaceSelection(feature, null);
+  }
+
   function beginConfigure() {
     // Open on the draft or live vendor shown in 配置变更, not always the first vendor.
     const preferred =
@@ -426,10 +440,7 @@ export function FeatureConfig() {
                 onKey={(value) => setKeys((current) => ({ ...current, [fieldKey]: value }))}
                 onReplace={() => setReplacing((current) => ({ ...current, [fieldKey]: true }))}
                 onSave={() => void save()}
-                onClose={() => {
-                  setEditing(false);
-                  setError("");
-                }}
+                onClose={cancelEdit}
               />
             )}
           </div>

@@ -57,6 +57,27 @@ function defaultModel(
   return saved ? { id: saved, label: modelLabel(id, saved) } : null;
 }
 
+/**
+ * The vault replaces a provider's whole model list on save. Keep every configured model and only move the chosen
+ * default to the front, so saving a credential never deletes other models.
+ */
+export function preservedModels(existing: readonly string[], chosen: string): string[] {
+  if (!chosen) return [...existing];
+  return [chosen, ...existing.filter((item) => item !== chosen)].slice(0, 10);
+}
+
+/** Neutral copy when the saved vendor config is not yet what the running API uses. Never implies 连接正常. */
+export function activationCopy(view: AdminModelsView | null): string | null {
+  if (!view) return null;
+  if (view.activationDeferred) {
+    return "配置已保存，应用已推迟：有创作任务尚未结束，运行中的服务继续使用原有凭证。";
+  }
+  if (view.pendingRestart) {
+    return "配置已保存，尚未生效：运行中的服务仍使用原有凭证，需由部署流程受控重启 API 后才会使用新凭证。";
+  }
+  return null;
+}
+
 function secretCopy(configured: boolean, label: string): string {
   return configured ? `${label} 项目密钥  ${SAVED_SECRET_MASK}` : "未绑定";
 }
@@ -287,7 +308,7 @@ export function AiModelVendorSettings({ vendorId }: { vendorId: string }) {
 
   async function save() {
     if (!vendor || !isVaultVendor(vendor.id) || !models || busy) return;
-    const modelsToSave = draftModel ? [draftModel] : [...(vault?.models ?? [])];
+    const modelsToSave = preservedModels(vault?.models ?? [], draftModel);
     const secretAction =
       replacing && draftKey.trim().length >= 8 ? ("replace" as const) : ("keep" as const);
     if (replacing && secretAction !== "replace") {
@@ -384,6 +405,11 @@ export function AiModelVendorSettings({ vendorId }: { vendorId: string }) {
         {notice ? (
           <p className={styles.banner} role="status">
             {notice}
+          </p>
+        ) : null}
+        {isVaultVendor(vendor.id) && configured && activationCopy(models) ? (
+          <p className={styles.banner} role="note" data-state="pending-activation">
+            {activationCopy(models)}
           </p>
         ) : null}
       </section>
