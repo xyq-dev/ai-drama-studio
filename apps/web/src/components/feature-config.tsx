@@ -298,7 +298,7 @@ export function FeatureConfig() {
           <p>{FIRST_BODY[feature]}</p>
           <button type="button" className={styles.primary} onClick={beginConfigure}>{CTA[feature]}</button>
         </section>
-      ) : chosen !== "video" && slot ? <Editor
+      ) : slot ? <Editor
         card={card}
         slot={slot}
         model={model}

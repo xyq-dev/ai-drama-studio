@@ -242,6 +242,7 @@ export {
   DEEPSEEK_PROVIDER_ADAPTER,
   QWEN_PLUS_MODEL,
   frozenProviderAdapter,
+  storedTitleWritingProviderLabel,
   isLegacyDeepseekRun,
   sdkWritingKind,
   TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS,

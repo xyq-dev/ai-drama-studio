@@ -375,7 +375,7 @@ describe("feature configuration", () => {
   });
 
   it("allows qwen-plus when the older writing allowlist does not name it", async () => {
-    const { service } = await open({ policy: { writingAllowlist: async () => ["deepseek-flash"] } });
+    const { service } = await open({ policy: { writingAllowlist: async () => ["other-model"] } });
     const view = await service.saveDraft("writing", {
       expectedRevision: 0, vendor: "bailian", model: "qwen-plus", secretAction: "replace", apiKey: KEYS.writing,
     });

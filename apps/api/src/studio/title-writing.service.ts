@@ -7,6 +7,7 @@ import {
   TITLE_WRITING_MIN_EPISODES,
   TITLE_WRITING_PROVIDER_KEYS,
   TITLE_WRITING_PROVIDER_LABELS,
+  storedTitleWritingProviderLabel,
   TITLE_WRITING_PROVIDER_PREFERENCE,
   BAILIAN_WRITING_PROVIDER_KEY,
   isActiveTitleWritingProvider,
@@ -441,7 +442,7 @@ export class TitleWritingService {
           ? failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: runProvider, missing: provider && !provider.ok ? provider.missing : [] })
           : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", {
             providerKey: runProvider,
-            label: runProvider in TITLE_WRITING_PROVIDER_LABELS ? TITLE_WRITING_PROVIDER_LABELS[runProvider] : runProvider,
+            label: storedTitleWritingProviderLabel(runProvider),
           });
       }
       return failure(409, "TITLE_WRITING_NOT_RESUMABLE");

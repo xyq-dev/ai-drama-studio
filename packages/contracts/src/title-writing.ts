@@ -55,6 +55,13 @@ export type TitleWritingV1LeftOutProviderKey = (typeof TITLE_WRITING_V1_LEFT_OUT
 /** Every provider a stored run or call may carry. */
 export const TITLE_WRITING_STORED_PROVIDER_KEYS = [...TITLE_WRITING_PROVIDER_KEYS, ...TITLE_WRITING_RETIRED_PROVIDER_KEYS] as const;
 export type TitleWritingStoredProviderKey = (typeof TITLE_WRITING_STORED_PROVIDER_KEYS)[number];
+export function storedTitleWritingProviderLabel(providerKey: string): string {
+  if ((TITLE_WRITING_STORED_PROVIDER_KEYS as readonly string[]).includes(providerKey)) {
+    return TITLE_WRITING_PROVIDER_LABELS[providerKey as TitleWritingStoredProviderKey];
+  }
+  return providerKey;
+}
+
 export const TITLE_WRITING_PROVIDER_LABELS: Readonly<Record<TitleWritingStoredProviderKey, string>> = {
   openai: "OpenAI",
   anthropic: "Claude",

@@ -40,6 +40,27 @@ const summary: UsageSummaryView = {
     episodeLabel: "第 1 集",
     kind: "production",
     credentialRef: "fc_secret_ref",
+  }, {
+    id: "rec-2",
+    taskId: "task-writing",
+    attempt: 1,
+    feature: "writing",
+    featureLabel: "剧本编写",
+    vendor: "deepseek",
+    vendorLabel: "DeepSeek",
+    model: "deepseek-flash",
+    modelLabel: "DeepSeek Flash",
+    configVersion: "ver_writing",
+    result: "unknown",
+    startedAt: "2026-11-21T02:05:00.000Z",
+    usageText: "未知",
+    costText: "未知",
+    projectId: "work-1",
+    projectLabel: "夜班证词",
+    episodeId: "ep-1",
+    episodeLabel: "第 1 集",
+    kind: "production",
+    credentialRef: "fc_secret_ref",
   }],
   footnote: "未知用量按原样保留，不会显示为 0。管理员测试不计入本集生产汇总。",
 };
@@ -64,10 +85,15 @@ it("shows usage by work and episode, and never prints an unknown amount as zero"
   expect(screen.getAllByText("待回传费用").length).toBeGreaterThan(0);
   expect(screen.getAllByText(/不会显示为 0/).length).toBeGreaterThan(0);
   expect(screen.queryByText("fc_secret_ref")).toBeNull();
-  fireEvent.change(screen.getByLabelText("功能"), { target: { value: "writing" } });
-  expect(screen.queryByRole("button", { name: /分镜生图/ })).toBeNull();
+  expect(screen.getByRole("button", { name: /剧本编写/ })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("功能"), { target: { value: "storyboard" } });
+  expect(screen.queryByRole("button", { name: /剧本编写/ })).toBeNull();
+  expect(screen.getByRole("button", { name: /分镜生图/ })).toBeTruthy();
   expect(screen.getByText("2 张")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("供应商"), { target: { value: "bailian" } });
+  expect(screen.getByRole("button", { name: /Qwen Image/ })).toBeTruthy();
   fireEvent.change(screen.getByLabelText("功能"), { target: { value: "all" } });
+  fireEvent.change(screen.getByLabelText("供应商"), { target: { value: "all" } });
   expect(screen.queryByText(/^0$/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /分镜生图/ }));
   expect(await screen.findByRole("dialog", { name: "任务详情" })).toBeTruthy();

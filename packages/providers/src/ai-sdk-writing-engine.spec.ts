@@ -25,6 +25,16 @@ function providers(): Record<"openai" | "anthropic" | "deepseek", WritingProvide
   });
 }
 
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (part && typeof part === "object" && "text" in part) return String(part.text);
+    return "";
+  }).join("\n");
+}
+
 function answerFor(user: string): string {
   const step = fixtureStepOf(user);
   if (step === "concept") return JSON.stringify(fixtureConcept(TITLE));
@@ -46,8 +56,8 @@ function chatFetch(options: { kind: "bailian" | "deepseek"; content?: (user: str
         init?.signal?.addEventListener("abort", fail, { once: true });
       });
     }
-    const body = JSON.parse(String(init?.body)) as { messages?: Array<{ role: string; content: string }> };
-    const user = body.messages?.find((message) => message.role === "user")?.content ?? "";
+    const body = JSON.parse(String(init?.body)) as { messages?: Array<{ role: string; content: unknown }> };
+    const user = (body.messages ?? []).map((message) => messageText(message.content)).join("\n");
     const text = options.content ? options.content(user) : answerFor(user);
     return new Response(JSON.stringify({
       id: "chatcmpl-engine",
