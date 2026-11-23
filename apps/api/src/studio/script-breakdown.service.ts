@@ -93,7 +93,8 @@ const MESSAGES: Record<string, string> = {
 };
 
 function failure(status: number, code: string, details?: Record<string, unknown>): ScriptBreakdownResult {
-  return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
+  const message = typeof details?.message === "string" ? details.message : (MESSAGES[code] ?? "请求失败");
+  return { status, body: { error: { code, message, ...(details ? { details } : {}) } } };
 }
 
 
@@ -293,7 +294,12 @@ export class ScriptBreakdownService {
     if (created.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE", { taskKind: isScriptBreakdownRun(created.bundle.run) ? "script_breakdown" : "title" });
     const mine = this.ofEpisode(created.bundle, projectId, episodeId);
     if (created.kind === "conflict" || !mine || mine.run.inputHash !== requestHash) return failure(409, "IDEMPOTENCY_KEY_REUSED");
-    if (created.kind === "created") this.schedule(mine.run.id);
+    if (created.kind === "created") {
+      const { acceptCreatorTask } = await import("../membership/creator-task-guard");
+      const denied = await acceptCreatorTask(context, "writing", projectId);
+      if (denied) return failure(402, denied.code, { message: denied.message });
+      this.schedule(mine.run.id);
+    }
     return this.view(mine, created.kind === "created" ? 201 : 200);
   }
 

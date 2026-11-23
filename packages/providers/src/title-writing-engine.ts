@@ -364,6 +364,11 @@ export interface TitleWritingEngineDeps {
    * Bailian and SDK DeepSeek have no process provider: a null result stops the run before any reservation.
    */
   featureCredential?: (run: { id: string; providerKey: string; model: string }) => Promise<{ apiKey: string; url: string; models: readonly string[] } | null>;
+  /**
+   * Membership settlement for one run. unsent releases a hold that never left the process.
+   * unknown keeps the hold for reconciliation and does not send again. sent commits it.
+   */
+  onMembershipSignal?: (event: { runId: string; outcome: "unsent" | "unknown" | "sent" }) => Promise<void>;
   /** Records a finished provider exchange. Must not receive the API key. Failures here do not change the run. */
   onProductionExchange?: (event: {
     runId: string;
@@ -441,6 +446,16 @@ export class TitleWritingEngine {
   }
 
   private async finish(runId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null): Promise<false> {
+    if (this.deps.onMembershipSignal) {
+      const bundle = await this.deps.store.getRunById(this.deps.workspaceId, runId);
+      const states = bundle?.calls.map((call) => call.state) ?? [];
+      const outcome = states.includes("unknown")
+        ? "unknown"
+        : states.some((item) => item === "completed" || item === "rejected" || item === "submitted")
+          ? "sent"
+          : "unsent";
+      await this.deps.onMembershipSignal({ runId, outcome }).catch(() => undefined);
+    }
     await this.deps.store.finishRun(this.deps.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString());
     return false;
   }

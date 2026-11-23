@@ -7,6 +7,8 @@ import {
   mayPostCreatorLedgerEntry,
 } from "@ai-drama/domain";
 import { CREATOR_PLAN_LEDGER_STORE, AUTH_WORKSPACE_ID } from "../auth/auth.tokens";
+import { MEMBERSHIP_STORE, type MembershipStore } from "../membership/membership-store";
+import { MEMBERSHIP_FEATURES, MEMBERSHIP_FEATURE_LABELS, membershipStatusLabel } from "@ai-drama/domain";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import { requireOperatorAccess, type CreatorAccessScope } from "../auth/creator-access";
 import { ownerAccountFilter } from "../auth/creator-access";
@@ -26,6 +28,7 @@ export class AccountController {
     @Inject(SITE_AUTH) private readonly site: SiteAuthState,
     @Inject(AUTH_WORKSPACE_ID) private readonly workspaceId: string,
     @Optional() @Inject(CREATOR_PLAN_LEDGER_STORE) private readonly plans: CreatorPlanLedgerStore | null = null,
+    @Optional() @Inject(MEMBERSHIP_STORE) private readonly membership: MembershipStore | null = null,
   ) {}
 
   @Get("plan")
@@ -140,6 +143,51 @@ export class AccountController {
     });
     response.status(201);
     return { posted: true, entry };
+  }
+
+  @Get("membership")
+  async membershipView(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AccountResponse) {
+    response.setHeader("Cache-Control", "private, no-store");
+    const session = this.requireSession(headers);
+    if (!this.membership || session.role === "operator" && session.accountId === "open") {
+      response.status(200);
+      return { status: "none", statusLabel: "未开通", planName: null, startsAt: null, endsAt: null, features: [], ledger: [] };
+    }
+    const now = new Date();
+    const current = await this.membership.currentMembership(this.workspaceId, session.accountId, now);
+    const balances = await this.membership.balances(this.workspaceId, session.accountId);
+    const plans = await this.membership.listPlans(this.workspaceId);
+    const plan = current ? plans.find((item) => item.id === current.planId) : undefined;
+    const stamp = now.getTime();
+    const status = !current
+      ? "none"
+      : current.status === "disabled"
+        ? "disabled"
+        : stamp < Date.parse(current.startsAt) || stamp >= Date.parse(current.endsAt)
+          ? "expired"
+          : "active";
+    const ledger = await this.membership.ledger(this.workspaceId, session.accountId);
+    response.status(200);
+    return {
+      status,
+      statusLabel: membershipStatusLabel(status),
+      planName: current?.planName ?? null,
+      startsAt: current?.startsAt ?? null,
+      endsAt: current?.endsAt ?? null,
+      sourceLabel: current ? "人工开通" : null,
+      features: MEMBERSHIP_FEATURES.map((feature) => ({
+        feature,
+        label: MEMBERSHIP_FEATURE_LABELS[feature],
+        enabled: plan?.features.find((item) => item.feature === feature)?.enabled === true,
+        remaining: balances[feature],
+      })),
+      ledger: ledger.map((row) => ({
+        id: row.id,
+        summary: `${row.feature ? MEMBERSHIP_FEATURE_LABELS[row.feature] : "额度"} ${row.kind === "debit" ? "占用" : row.kind === "credit" ? "释放" : "调整"} ${Number(row.units)}。${row.reason}`,
+        occurredAt: row.occurredAt,
+        status: row.status,
+      })),
+    };
   }
 
   /** Explicit operator ops listing helper: returns whether the session may open the ops works view. */

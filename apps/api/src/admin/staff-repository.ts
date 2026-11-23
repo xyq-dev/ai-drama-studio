@@ -1,0 +1,361 @@
+import { randomUUID } from "node:crypto";
+import type { StaffAccountStatus, StaffPermission } from "@ai-drama/domain";
+import type { DatabasePool } from "@ai-drama/database";
+
+export interface StaffRoleRecord {
+  id: string;
+  workspaceId: string;
+  code: string;
+  name: string;
+  builtIn: boolean;
+  permissions: StaffPermission[];
+}
+
+export interface StaffAccountRecord {
+  id: string;
+  workspaceId: string;
+  username: string;
+  displayName: string;
+  passwordHash: string | null;
+  status: StaffAccountStatus;
+  roleId: string;
+  permissionVersion: number;
+  totpSecret: string | null;
+  totpEnabled: boolean;
+  lastLoginAt: string | null;
+  authSource: "env" | "invite";
+}
+
+export interface StaffInviteRecord {
+  id: string;
+  workspaceId: string;
+  staffId: string;
+  tokenHash: string;
+  expiresAt: string;
+  usedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface RecoveryCodeRecord {
+  id: string;
+  staffId: string;
+  codeHash: string;
+  usedAt: string | null;
+}
+
+export interface StaffRepository {
+  ready(): Promise<boolean>;
+  listRoles(workspaceId: string): Promise<StaffRoleRecord[]>;
+  getRole(id: string): Promise<StaffRoleRecord | null>;
+  saveRole(role: StaffRoleRecord): Promise<void>;
+  listStaff(workspaceId: string): Promise<StaffAccountRecord[]>;
+  getStaff(id: string): Promise<StaffAccountRecord | null>;
+  findByUsername(workspaceId: string, username: string): Promise<StaffAccountRecord | null>;
+  saveStaff(account: StaffAccountRecord): Promise<void>;
+  listInvites(workspaceId: string, staffId?: string): Promise<StaffInviteRecord[]>;
+  saveInvite(invite: StaffInviteRecord): Promise<void>;
+  findInviteByHash(tokenHash: string): Promise<StaffInviteRecord | null>;
+  recoveryCodes(staffId: string): Promise<RecoveryCodeRecord[]>;
+  replaceRecoveryCodes(staffId: string, codes: RecoveryCodeRecord[]): Promise<void>;
+  markRecoveryUsed(id: string, at: string): Promise<void>;
+}
+
+export class MemoryStaffRepository implements StaffRepository {
+  roles: StaffRoleRecord[] = [];
+  staff: StaffAccountRecord[] = [];
+  invites: StaffInviteRecord[] = [];
+  codes: RecoveryCodeRecord[] = [];
+
+  async ready(): Promise<boolean> {
+    return true;
+  }
+
+  async listRoles(workspaceId: string): Promise<StaffRoleRecord[]> {
+    return this.roles.filter((role) => role.workspaceId === workspaceId).map(cloneRole);
+  }
+
+  async getRole(id: string): Promise<StaffRoleRecord | null> {
+    const role = this.roles.find((item) => item.id === id);
+    return role ? cloneRole(role) : null;
+  }
+
+  async saveRole(role: StaffRoleRecord): Promise<void> {
+    const index = this.roles.findIndex((item) => item.id === role.id);
+    if (index >= 0) this.roles[index] = cloneRole(role);
+    else this.roles.push(cloneRole(role));
+  }
+
+  async listStaff(workspaceId: string): Promise<StaffAccountRecord[]> {
+    return this.staff.filter((account) => account.workspaceId === workspaceId).map(cloneAccount);
+  }
+
+  async getStaff(id: string): Promise<StaffAccountRecord | null> {
+    const account = this.staff.find((item) => item.id === id);
+    return account ? cloneAccount(account) : null;
+  }
+
+  async findByUsername(workspaceId: string, username: string): Promise<StaffAccountRecord | null> {
+    const account = this.staff.find((item) => item.workspaceId === workspaceId && item.username.toLowerCase() === username.toLowerCase());
+    return account ? cloneAccount(account) : null;
+  }
+
+  async saveStaff(account: StaffAccountRecord): Promise<void> {
+    const index = this.staff.findIndex((item) => item.id === account.id);
+    if (index >= 0) this.staff[index] = cloneAccount(account);
+    else this.staff.push(cloneAccount(account));
+  }
+
+  async listInvites(workspaceId: string, staffId?: string): Promise<StaffInviteRecord[]> {
+    return this.invites.filter((invite) => invite.workspaceId === workspaceId && (staffId === undefined || invite.staffId === staffId)).map((invite) => ({ ...invite }));
+  }
+
+  async saveInvite(invite: StaffInviteRecord): Promise<void> {
+    const index = this.invites.findIndex((item) => item.id === invite.id);
+    if (index >= 0) this.invites[index] = { ...invite };
+    else this.invites.push({ ...invite });
+  }
+
+  async findInviteByHash(tokenHash: string): Promise<StaffInviteRecord | null> {
+    return this.invites.find((invite) => invite.tokenHash === tokenHash) ?? null;
+  }
+
+  async recoveryCodes(staffId: string): Promise<RecoveryCodeRecord[]> {
+    return this.codes.filter((code) => code.staffId === staffId).map((code) => ({ ...code }));
+  }
+
+  async replaceRecoveryCodes(staffId: string, codes: RecoveryCodeRecord[]): Promise<void> {
+    this.codes = this.codes.filter((code) => code.staffId !== staffId).concat(codes.map((code) => ({ ...code })));
+  }
+
+  async markRecoveryUsed(id: string, at: string): Promise<void> {
+    const code = this.codes.find((item) => item.id === id);
+    if (code) code.usedAt = at;
+  }
+}
+
+function cloneRole(role: StaffRoleRecord): StaffRoleRecord {
+  return { ...role, permissions: [...role.permissions] };
+}
+
+function cloneAccount(account: StaffAccountRecord): StaffAccountRecord {
+  return { ...account };
+}
+
+export class PostgresStaffRepository implements StaffRepository {
+  constructor(private readonly pool: DatabasePool) {}
+
+  async ready(): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<{ present: boolean }>(`SELECT to_regclass('staff_account') IS NOT NULL AS present`);
+      return result.rows[0]?.present === true;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listRoles(workspaceId: string): Promise<StaffRoleRecord[]> {
+    return this.rows<StaffRoleRecord>(
+      `SELECT id, workspace_id, code, name, built_in, permissions FROM staff_role WHERE workspace_id = $1 ORDER BY built_in DESC, name ASC`,
+      [workspaceId],
+      mapRole,
+    );
+  }
+
+  async getRole(id: string): Promise<StaffRoleRecord | null> {
+    const rows = await this.rows<StaffRoleRecord>(
+      `SELECT id, workspace_id, code, name, built_in, permissions FROM staff_role WHERE id = $1`,
+      [id],
+      mapRole,
+    );
+    return rows[0] ?? null;
+  }
+
+  async saveRole(role: StaffRoleRecord): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO staff_role (id, workspace_id, code, name, built_in, permissions)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, permissions = EXCLUDED.permissions, updated_at = now()`,
+        [role.id, role.workspaceId, role.code, role.name, role.builtIn, role.permissions],
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async listStaff(workspaceId: string): Promise<StaffAccountRecord[]> {
+    return this.rows(`SELECT ${STAFF_COLUMNS} FROM staff_account WHERE workspace_id = $1 ORDER BY created_at ASC`, [workspaceId], mapStaff);
+  }
+
+  async getStaff(id: string): Promise<StaffAccountRecord | null> {
+    const rows = await this.rows(`SELECT ${STAFF_COLUMNS} FROM staff_account WHERE id = $1`, [id], mapStaff);
+    return rows[0] ?? null;
+  }
+
+  async findByUsername(workspaceId: string, username: string): Promise<StaffAccountRecord | null> {
+    const rows = await this.rows(
+      `SELECT ${STAFF_COLUMNS} FROM staff_account WHERE workspace_id = $1 AND lower(username) = lower($2)`,
+      [workspaceId, username],
+      mapStaff,
+    );
+    return rows[0] ?? null;
+  }
+
+  async saveStaff(account: StaffAccountRecord): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO staff_account (
+           id, workspace_id, username, display_name, password_hash, status, role_id, permission_version,
+           totp_secret, totp_enabled, last_login_at, auth_source
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (id) DO UPDATE SET
+           display_name = EXCLUDED.display_name,
+           password_hash = EXCLUDED.password_hash,
+           status = EXCLUDED.status,
+           role_id = EXCLUDED.role_id,
+           permission_version = EXCLUDED.permission_version,
+           totp_secret = EXCLUDED.totp_secret,
+           totp_enabled = EXCLUDED.totp_enabled,
+           last_login_at = EXCLUDED.last_login_at,
+           updated_at = now()`,
+        [
+          account.id, account.workspaceId, account.username, account.displayName, account.passwordHash, account.status,
+          account.roleId, account.permissionVersion, account.totpSecret, account.totpEnabled,
+          account.lastLoginAt, account.authSource,
+        ],
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async listInvites(workspaceId: string, staffId?: string): Promise<StaffInviteRecord[]> {
+    return this.rows(
+      `SELECT id, workspace_id, staff_id, token_hash, expires_at, used_at, revoked_at
+         FROM staff_invite WHERE workspace_id = $1 AND ($2::uuid IS NULL OR staff_id = $2)`,
+      [workspaceId, staffId ?? null],
+      mapInvite,
+    );
+  }
+
+  async saveInvite(invite: StaffInviteRecord): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO staff_invite (id, workspace_id, staff_id, token_hash, expires_at, used_at, revoked_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (id) DO UPDATE SET used_at = EXCLUDED.used_at, revoked_at = EXCLUDED.revoked_at`,
+        [invite.id, invite.workspaceId, invite.staffId, invite.tokenHash, invite.expiresAt, invite.usedAt, invite.revokedAt],
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async findInviteByHash(tokenHash: string): Promise<StaffInviteRecord | null> {
+    const rows = await this.rows(
+      `SELECT id, workspace_id, staff_id, token_hash, expires_at, used_at, revoked_at FROM staff_invite WHERE token_hash = $1`,
+      [tokenHash],
+      mapInvite,
+    );
+    return rows[0] ?? null;
+  }
+
+  async recoveryCodes(staffId: string): Promise<RecoveryCodeRecord[]> {
+    return this.rows(
+      `SELECT id, staff_id, code_hash, used_at FROM staff_recovery_code WHERE staff_id = $1`,
+      [staffId],
+      (row) => ({ id: String(row.id), staffId: String(row.staff_id), codeHash: String(row.code_hash), usedAt: row.used_at ? new Date(row.used_at as string).toISOString() : null }),
+    );
+  }
+
+  async replaceRecoveryCodes(staffId: string, codes: RecoveryCodeRecord[]): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(`DELETE FROM staff_recovery_code WHERE staff_id = $1`, [staffId]);
+      for (const code of codes) {
+        await client.query(
+          `INSERT INTO staff_recovery_code (id, staff_id, code_hash) VALUES ($1, $2, $3)`,
+          [code.id, code.staffId, code.codeHash],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markRecoveryUsed(id: string, at: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query(`UPDATE staff_recovery_code SET used_at = $2 WHERE id = $1 AND used_at IS NULL`, [id, at]);
+    } finally {
+      client.release();
+    }
+  }
+
+  private async rows<T>(sql: string, values: unknown[], map: (row: Record<string, unknown>) => T): Promise<T[]> {
+    if (!await this.ready()) return [];
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(sql, values);
+      return result.rows.map((row) => map(row as Record<string, unknown>));
+    } finally {
+      client.release();
+    }
+  }
+}
+
+const STAFF_COLUMNS = `id, workspace_id, username, display_name, password_hash, status, role_id, permission_version,
+  totp_secret, totp_enabled, last_login_at, auth_source`;
+
+function mapRole(row: Record<string, unknown>): StaffRoleRecord {
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    code: String(row.code),
+    name: String(row.name),
+    builtIn: row.built_in === true,
+    permissions: Array.isArray(row.permissions) ? row.permissions.map(String) as StaffPermission[] : [],
+  };
+}
+
+function mapStaff(row: Record<string, unknown>): StaffAccountRecord {
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    username: String(row.username),
+    displayName: String(row.display_name),
+    passwordHash: row.password_hash == null ? null : String(row.password_hash),
+    status: String(row.status) as StaffAccountStatus,
+    roleId: String(row.role_id),
+    permissionVersion: Number(row.permission_version),
+    totpSecret: row.totp_secret == null ? null : String(row.totp_secret),
+    totpEnabled: row.totp_enabled === true,
+    lastLoginAt: row.last_login_at == null ? null : new Date(String(row.last_login_at)).toISOString(),
+    authSource: String(row.auth_source) as "env" | "invite",
+  };
+}
+
+function mapInvite(row: Record<string, unknown>): StaffInviteRecord {
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    staffId: String(row.staff_id),
+    tokenHash: String(row.token_hash),
+    expiresAt: new Date(String(row.expires_at)).toISOString(),
+    usedAt: row.used_at == null ? null : new Date(String(row.used_at)).toISOString(),
+    revokedAt: row.revoked_at == null ? null : new Date(String(row.revoked_at)).toISOString(),
+  };
+}
+
+export function newId(): string {
+  return randomUUID();
+}

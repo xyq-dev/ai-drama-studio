@@ -76,6 +76,7 @@ it("shows the four formal groups and Hongguo admin branding", async () => {
     ["/admin/jobs", "生成任务"],
     ["/admin/usage", "调用记录"],
     ["/admin/users", "用户与权限"],
+    ["/admin/membership", "会员管理"],
     ["/admin/logs", "操作日志"],
   ]);
   expect(within(nav).getByRole("link", { name: "功能配置" }).getAttribute("aria-current")).toBe(
@@ -94,7 +95,7 @@ it("shows the four formal groups and Hongguo admin branding", async () => {
   expect(within(nav).queryByRole("link", { name: "文本模型" })).toBeNull();
   expect(within(nav).queryByRole("link", { name: "媒体密钥" })).toBeNull();
   expect(within(nav).queryByText("充值")).toBeNull();
-  expect(within(nav).queryByText("会员")).toBeNull();
+  expect(within(nav).getByRole("link", { name: "会员管理" })).toBeTruthy();
   expect(screen.getByText("红果")).toBeTruthy();
   expect(screen.getByText("运营管理后台")).toBeTruthy();
   expect(screen.getByText("运营示例")).toBeTruthy();

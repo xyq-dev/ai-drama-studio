@@ -26,6 +26,8 @@ const FAILURES: Record<string, string> = {
 export function LoginPage() {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
+  const [challenge, setChallenge] = useState("");
+  const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -45,7 +47,28 @@ export function LoginPage() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy || !password) return;
+    if (busy) return;
+    if (challenge) {
+      setBusy(true);
+      setError("");
+      try {
+        const totpResponse = await fetch("/api/v1/auth/login/totp", {
+          method: "POST", credentials: "same-origin",
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ challenge, code }),
+        });
+        if (totpResponse.ok) {
+          window.location.replace(returnTo);
+          return;
+        }
+        setError("验证器动态码或恢复码不正确。");
+      } catch {
+        setError("网络连接异常，没有完成登录。请检查网络后重试。");
+      }
+      setBusy(false);
+      return;
+    }
+    if (!password) return;
     setBusy(true);
     setError("");
     const submitted = password;
@@ -57,6 +80,12 @@ export function LoginPage() {
         body: JSON.stringify({ username: username.trim(), password: submitted }),
       });
       if (response.ok) {
+        const body = await response.json().catch(() => ({})) as { totpRequired?: boolean; challenge?: string };
+        if (body.totpRequired && body.challenge) {
+          setChallenge(body.challenge);
+          setBusy(false);
+          return;
+        }
         window.location.replace(returnTo);
         return;
       }
@@ -87,8 +116,11 @@ export function LoginPage() {
             <input ref={passwordRef} name="password" type="password" autoComplete="current-password" value={password} maxLength={1024}
               required autoFocus onChange={(event) => setPassword(event.target.value)} disabled={busy} />
           </label>
+          {challenge ? <label className={styles.field}>验证器动态码或恢复码
+            <input name="code" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} />
+          </label> : null}
           {error ? <div className={styles.error} role="alert">{error}</div> : null}
-          <button className={styles.primary} type="submit" disabled={busy || !password || !username.trim()}>
+          <button className={styles.primary} type="submit" disabled={busy || (!challenge && !password) || !username.trim() || (Boolean(challenge) && !code)}>
             {busy ? "正在登录…" : "登录"}
           </button>
         </form>

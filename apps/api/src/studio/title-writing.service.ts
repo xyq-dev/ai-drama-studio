@@ -39,6 +39,8 @@ import {
 } from "@ai-drama/providers";
 import type { StudioContext } from "./studio.service";
 import { platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
+import { installedCreatorMembership, openCreatorHold } from "../membership/creator-task-guard";
+import type { MembershipStore } from "../membership/membership-store";
 
 export interface TitleWritingDependencies {
   workspaceId: string;
@@ -76,6 +78,8 @@ export interface TitleWritingDependencies {
     providerAdapter?: "bailian.ai-sdk.v1" | "deepseek.ai-sdk.v1";
   } | null>;
   /** Persists the credential reference for a new run before the engine sends. */
+  /** Present after the membership migration. Creators are checked before a new run is stored or sent. */
+  creatorMembership?: MembershipStore;
   featureWritingCommit?: (input: {
     runId: string;
     projectId: string;
@@ -120,7 +124,10 @@ const MESSAGES: Record<string, string> = {
 };
 
 function failure(status: number, code: string, details?: Record<string, unknown>): TitleWritingResult {
-  return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
+  const message = typeof details?.message === "string" ? details.message : (MESSAGES[code] ?? "请求失败");
+  const rest = details ? { ...details } : undefined;
+  if (rest && "message" in rest) delete rest.message;
+  return { status, body: { error: { code, message, ...(rest && Object.keys(rest).length > 0 ? { details: rest } : {}) } } };
 }
 
 
@@ -343,7 +350,14 @@ export class TitleWritingService {
     });
     // The store looks the key up first: a replay of an existing run is returned whatever the quota is now. A new v2
     // run needs N+2 calls left in the rolling 24 hours; this reserves nothing. v1 keeps its existing per-call checks.
-    const created = await this.deps.store.createRun(run, {
+    const membership = this.deps.creatorMembership ?? installedCreatorMembership()?.store;
+    const hold = previous
+      ? { denied: null, holdId: null as string | null, keep() {}, async release() {} }
+      : await openCreatorHold(membership, this.deps.workspaceId, context, "writing", projectId);
+    if (hold.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
+    let created;
+    try {
+    created = await this.deps.store.createRun(run, {
       maxActiveRuns: this.deps.maxActiveRuns,
       ...(frozen.version === 2 ? {
         quota: {
@@ -369,6 +383,8 @@ export class TitleWritingService {
     }
     if (created.bundle.run.projectId !== projectId || isScriptBreakdownRun(created.bundle.run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") {
+      hold.keep();
+      if (hold.holdId) await membership?.bindTask(hold.holdId, created.bundle.run.id);
       if (locked?.apiKey && locked.credentialRef && model) {
         await this.deps.featureWritingCommit?.({
           runId: created.bundle.run.id,
@@ -382,6 +398,9 @@ export class TitleWritingService {
       this.schedule(created.bundle.run.id);
     }
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);
+    } finally {
+      await hold.release();
+    }
   }
 
   /**

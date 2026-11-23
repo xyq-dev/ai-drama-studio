@@ -44,6 +44,7 @@ export function AccountControl({ variant }: { variant: "header" | "drawer" }) {
   return <div className={`${styles.account} ${variant === "drawer" ? styles.drawer : ""}`}>
     <span className={styles.user}><span className={styles.avatar} aria-hidden="true">{mark}</span>{label}</span>
     <a className={styles.logout} href="/account" style={{ textDecoration: "none" }}>用量计划</a>
+    <a className={styles.logout} href="/account/membership" style={{ textDecoration: "none" }}>我的会员</a>
     <button type="button" className={styles.logout} onClick={() => void signOut()} disabled={state === "busy"}>
       {state === "busy" ? "正在退出…" : "退出登录"}
     </button>

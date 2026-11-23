@@ -95,5 +95,5 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
 
 export const config = {
   // Everything except login/register, the API (which enforces the session itself) and built static assets.
-  matcher: ["/((?!login$|register$|api/|_next/static/).*)"],
+  matcher: ["/((?!login$|register$|activate$|api/|_next/static/).*)"],
 };

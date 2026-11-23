@@ -108,6 +108,9 @@ export class VimaxPlanningService {
         leaseUntil: new Date(now.getTime() + 240000).toISOString(), createdAt: now.toISOString() },
       { sinceIso: new Date(now.getTime() - 86400000).toISOString(), maxCallsPerDay: this.deps.maxCallsPerDay, maxActiveRuns: this.deps.maxActiveRuns });
       if (created.kind === "created") {
+        const { acceptCreatorTask } = await import("../membership/creator-task-guard");
+        const denied = await acceptCreatorTask(context, "writing", projectId);
+        if (denied) return { status: 402, body: { error: { code: denied.code, message: denied.message } } };
         const work = () => this.deps.executor.execute(created.record.id);
         if (this.deps.schedule) this.deps.schedule(work); else setImmediate(() => { void work().catch(() => undefined); });
         return this.found(created.record, projectId, episodeId, 202);

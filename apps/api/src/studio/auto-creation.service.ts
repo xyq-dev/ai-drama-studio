@@ -131,7 +131,8 @@ const MESSAGES: Record<string, string> = {
 };
 
 function failure(status: number, code: string, details?: Record<string, unknown>): AutoCreationResult {
-  return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
+  const message = typeof details?.message === "string" ? details.message : (MESSAGES[code] ?? "请求失败");
+  return { status, body: { error: { code, message, ...(details ? { details } : {}) } } };
 }
 
 /**
@@ -354,7 +355,12 @@ export class AutoCreationService {
     if (created.kind === "project_not_empty") return failure(409, "AUTO_CREATION_PROJECT_NOT_EMPTY");
     if (created.kind === "active") return failure(409, "AUTO_CREATION_RUN_ACTIVE", created.runKind === "auto" ? { runId: created.runId } : { runKind: created.runKind });
     if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
-    if (created.kind === "created") this.schedule(created.bundle.run.id);
+    if (created.kind === "created") {
+      const { acceptCreatorTask } = await import("../membership/creator-task-guard");
+      const denied = await acceptCreatorTask(context, "writing", projectId);
+      if (denied) return failure(402, denied.code, { message: denied.message });
+      this.schedule(created.bundle.run.id);
+    }
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);
   }
 

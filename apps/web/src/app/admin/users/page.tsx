@@ -1,7 +1,7 @@
 "use client";
 
-import { AdminDirectory } from "../../../components/admin-directory";
+import { AdminUsersScreen } from "../../../components/admin-users-screen";
 
 export default function AdminUsersPage() {
-  return <AdminDirectory kind="users" />;
+  return <AdminUsersScreen />;
 }

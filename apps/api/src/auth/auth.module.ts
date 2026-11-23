@@ -8,6 +8,13 @@ import {
 import type { ApiEnv } from "../config/env";
 import { AccountController } from "../account/account.controller";
 import { AdminCreatorsController } from "../admin/admin-creators.controller";
+import { AdminMembershipController } from "../admin/membership.controller";
+import { AdminStaffController } from "../admin/staff.controller";
+import { STAFF_ACCESS_SERVICE, StaffAccessService } from "../admin/staff-access.service";
+import { PostgresStaffRepository } from "../admin/staff-repository";
+import { hashPassword, parsePasswordHash, verifyPassword } from "./password-hash";
+import { MEMBERSHIP_STORE, PostgresMembershipStore } from "../membership/membership-store";
+import { noteOperation } from "../admin/operation-log-store";
 import { AuthController } from "./auth.controller";
 import { AUTH_POOL, AUTH_WORKSPACE_ID, CREATOR_ACCOUNT_STORE, CREATOR_PLAN_LEDGER_STORE } from "./auth.tokens";
 import { SITE_AUTH, type SiteAuthState } from "./site-auth";
@@ -37,18 +44,49 @@ export class AuthModule implements NestModule {
     }
     const resolved = state ?? siteAuthFromEnv(env, { creators });
     for (const warning of siteAuthWarnings(env, resolved)) Logger.warn(warning, "SiteAuth");
+    const workspaceId = env.APP_WORKSPACE_ID ?? "00000000-0000-4000-8000-000000000099";
+    let staff: StaffAccessService | null = null;
+    let membership: PostgresMembershipStore | null = null;
+    if (authPool && resolved.kind === "enabled" && env.SITE_AUTH_PASSWORD_HASH) {
+      membership = new PostgresMembershipStore(authPool);
+      staff = new StaffAccessService({
+        workspaceId,
+        repository: new PostgresStaffRepository(authPool),
+        publicOrigin: resolved.auth.publicOrigin,
+        envUsername: resolved.auth.username,
+        envPasswordHash: env.SITE_AUTH_PASSWORD_HASH,
+        hashPassword: (password, cheap) => hashPassword(password, cheap
+          ? { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 }
+          : undefined),
+        verifyPassword: async (password, encoded) => {
+          const parsed = parsePasswordHash(encoded);
+          return parsed ? verifyPassword(password, parsed) : false;
+        },
+        sessions: {
+          sync: (id, access) => resolved.auth.syncStaff(id, access),
+          revokeAccount: (id) => resolved.auth.revokeAccount(id),
+          list: (id) => resolved.auth.listStaffSessions(id),
+          revokeOne: (id, publicId) => resolved.auth.revokeStaffSession(id, publicId),
+        },
+        audit: (entry, forbidden) => noteOperation({ ...entry, source: "管理后台 /admin/users" }, forbidden),
+      });
+      resolved.auth.setStaffDirectory(staff.loginDirectory());
+      void staff.ensureEnvSuperAdmin().catch((error: unknown) => Logger.warn(String(error), "StaffAccess"));
+    }
     return {
       module: AuthModule,
-      controllers: [AuthController, AccountController, AdminCreatorsController],
+      controllers: [AuthController, AccountController, AdminCreatorsController, AdminStaffController, AdminMembershipController],
       providers: [
         { provide: SITE_AUTH, useValue: resolved },
         { provide: CREATOR_ACCOUNT_STORE, useValue: creators },
         { provide: CREATOR_PLAN_LEDGER_STORE, useValue: plans },
-        { provide: AUTH_WORKSPACE_ID, useValue: env.APP_WORKSPACE_ID ?? "00000000-0000-4000-8000-000000000099" },
+        { provide: AUTH_WORKSPACE_ID, useValue: workspaceId },
         { provide: AUTH_POOL, useValue: authPool },
+        { provide: STAFF_ACCESS_SERVICE, useValue: staff },
+        { provide: MEMBERSHIP_STORE, useValue: membership },
         SiteAuthMiddleware,
       ],
-      exports: [SITE_AUTH, CREATOR_ACCOUNT_STORE, CREATOR_PLAN_LEDGER_STORE, AUTH_WORKSPACE_ID],
+      exports: [SITE_AUTH, CREATOR_ACCOUNT_STORE, CREATOR_PLAN_LEDGER_STORE, AUTH_WORKSPACE_ID, STAFF_ACCESS_SERVICE, MEMBERSHIP_STORE],
     };
   }
 

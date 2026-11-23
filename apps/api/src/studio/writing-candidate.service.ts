@@ -63,7 +63,8 @@ const MESSAGES: Record<string, string> = {
 };
 
 function failure(status: number, code: string, details?: Record<string, unknown>): WritingCandidateResult {
-  return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
+  const message = typeof details?.message === "string" ? details.message : (MESSAGES[code] ?? "请求失败");
+  return { status, body: { error: { code, message, ...(details ? { details } : {}) } } };
 }
 
 /** Named in an option's missing list while the database cannot store candidates of that provider. Never a value. */
@@ -210,9 +211,13 @@ export class WritingCandidateService {
       maxCallsPerDay: this.deps.maxCallsPerDay,
     });
     switch (created.kind) {
-      case "created":
+      case "created": {
+        const { acceptCreatorTask } = await import("../membership/creator-task-guard");
+        const denied = await acceptCreatorTask(context, "writing", projectId);
+        if (denied) return failure(402, denied.code, { message: denied.message });
         this.schedule(created.record.id);
         return this.found(created.record, projectId, 202);
+      }
       case "existing":
         return this.found(created.record, projectId);
       case "conflict":

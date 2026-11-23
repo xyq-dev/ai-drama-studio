@@ -137,7 +137,8 @@ const MESSAGES: Record<string, string> = {
 };
 
 function failure(status: number, code: string, details?: Record<string, unknown>): SeriesWritingResult {
-  return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
+  const message = typeof details?.message === "string" ? details.message : (MESSAGES[code] ?? "请求失败");
+  return { status, body: { error: { code, message, ...(details ? { details } : {}) } } };
 }
 
 /** Two bases name exactly the same texts at the same versions. */
@@ -304,7 +305,12 @@ export class SeriesWritingService {
     if (created.kind === "active") return failure(409, "SERIES_RUN_ACTIVE", { runKind: created.runKind });
     if (created.kind === "blocked") return failure(429, "SERIES_ACTIVE_RUN_CAP");
     if (created.kind === "daily_quota_low") return failure(429, "SERIES_DAILY_QUOTA_LOW", { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls });
-    if (created.kind === "created") this.schedule(created.jobId);
+    if (created.kind === "created") {
+      const { acceptCreatorTask } = await import("../membership/creator-task-guard");
+      const denied = await acceptCreatorTask(context, "writing", projectId);
+      if (denied) return failure(402, denied.code, { message: denied.message });
+      this.schedule(created.jobId);
+    }
     const after = await this.deps.store.snapshot(this.deps.workspaceId, projectId);
     return { status: created.kind === "created" ? 201 : 200, body: { grantId: created.grant.id, series: seriesView(after!) } };
   }

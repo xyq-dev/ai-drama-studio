@@ -249,10 +249,15 @@ export class RealMediaService {
     return this.createJob(projectId,shotRevisionId,parsed.data,context);
   }
   private async createJob(projectId:string,shotRevisionId:string,input:{quoteId:string;budgetAuthorizationId:string},context:StudioContext,speech?:SpeechGenerationInput,batchOperation?:SpeechBatchDispatchRef){
+    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
+    let holdId: string | null = null;
+    let kept = false;
     if(!context.idempotencyKey||!/^[-A-Za-z0-9_.:]{1,200}$/.test(context.idempotencyKey))throw new PersistenceError("IDEMPOTENCY_KEY_REQUIRED","An idempotency key is required");
     const routeKey=speech?`/speech-plans/${speech.planRevisionId}/lines/${speech.lineId}/generate`:`/projects/${projectId}/shot-revisions/${shotRevisionId}/real-media/generate`;
     const requestIdentity=speech?{...input,lineInputRevisionId:speech.lineInputRevisionId,inputHash:speech.inputHash}:input;
-    const created=await this.options.jobs.createAndQueueWorkflowJob({workspaceId:this.options.workspaceId,actorId:context.actorId,
+    let created;
+    try {
+    created=await this.options.jobs.createAndQueueWorkflowJob({workspaceId:this.options.workspaceId,actorId:context.actorId,
       httpMethod:"POST",routeKey,key:context.idempotencyKey,requestHash:realMediaInputHash(requestIdentity),expiresAt:new Date("9999-12-31T00:00:00Z")},async client=>{
       await this.ready(client);
       // Also inspect ordinary routes: a batch-owned quote cannot escape its cancellation/dispatch fence.
@@ -289,14 +294,23 @@ export class RealMediaService {
           }
         }else if(text!==snapshot.sourceText)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Saved source text changed; obtain a new quote");
       }
+      const feature: "video" | "voice" | "image" = snapshot.capability.startsWith("video") ? "video" : snapshot.capability === "audio.tts" ? "voice" : "image";
+      const opened = await openInstalledHold(context, feature, projectId);
+      holdId = opened.holdId;
+      if (opened.denied) throw new PersistenceError("MEMBERSHIP_DENIED", opened.denied.message);
       return {workspaceId:this.options.workspaceId,projectId,sourceShotRevisionId:shotRevisionId,type:realMediaJobKind(snapshot.capability),
         requestedBy:context.actorId,kind:realMediaJobKind(snapshot.capability),inputHash:realMediaInputHash(snapshot),inputSnapshot:snapshot,traceId:context.traceId};
     },async(client,created)=>{
       await this.options.store.bindAuthorization(client,input.quoteId,created);
       if(batchOperation)await bindSpeechBatchJobInTransaction(client,batchOperation,created);
     });
+    kept = true;
+    if(holdId&&created.body.jobId)await installedCreatorMembership()?.store.bindTask(holdId,created.body.jobId);
     if(created.body.jobId)await this.options.onFeatureMediaTask?.({jobId:created.body.jobId,projectId,shotRevisionId,actorId:context.actorId}).catch(()=>undefined);
     return created;
+    } finally {
+      if (!kept && holdId) await installedCreatorMembership()?.store.release(holdId);
+    }
   }
   private async configuration(capability:RealMediaCapability,client?:MediaTransactionClient,comfyui=false){
     const config=comfyui?await this.options.comfyUiConfigurationFor?.(client):await this.options.configurationFor(capability,client);

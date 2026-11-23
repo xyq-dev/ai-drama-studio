@@ -13,6 +13,8 @@ const ANONYMOUS = new Set([
   "GET /health/ready", "HEAD /health/ready",
   "GET /auth/session",
   "POST /auth/login",
+  "POST /auth/login/totp",
+  "POST /auth/invites/accept",
   "POST /auth/logout",
   "POST /auth/register",
 ]);

@@ -36,6 +36,14 @@
     "./creator-account-plan": {
       "types": "./dist/creator-account-plan.d.ts",
       "default": "./dist/creator-account-plan.js"
+    },
+    "./staff-access": {
+      "types": "./dist/staff-access.d.ts",
+      "default": "./dist/staff-access.js"
+    },
+    "./creator-membership": {
+      "types": "./dist/creator-membership.d.ts",
+      "default": "./dist/creator-membership.js"
     }
   },
   "dependencies": {

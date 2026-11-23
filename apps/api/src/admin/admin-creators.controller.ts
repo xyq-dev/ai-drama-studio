@@ -4,6 +4,7 @@ import { CREATOR_ACCOUNT_STORE, CREATOR_PLAN_LEDGER_STORE, AUTH_WORKSPACE_ID } f
 import type { CreatorPlanLedgerStore } from "@ai-drama/database";
 import { hashPassword } from "../auth/password-hash";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
+import { StaffAccessError, assertStaffPermission } from "./staff-access.service";
 import { setAdminResponseHeaders } from "./admin-auth";
 
 interface AdminResponse {
@@ -104,6 +105,7 @@ export class AdminCreatorsController {
   private requireOperator(headers: RequestHeaders, auth: SiteAuth): void {
     const session = auth.session(headers);
     if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+    assertStaffPermission(session, "manage_creators");
   }
 
   private async send(response: AdminResponse, work: () => unknown | Promise<unknown>, status = 200): Promise<unknown> {
@@ -113,7 +115,7 @@ export class AdminCreatorsController {
       response.status(status);
       return body;
     } catch (cause) {
-      if (cause instanceof SiteAuthError) {
+      if (cause instanceof SiteAuthError || cause instanceof StaffAccessError) {
         response.status(cause.status);
         return { error: { code: cause.code, message: cause.message } };
       }

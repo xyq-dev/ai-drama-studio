@@ -13,6 +13,7 @@ export {
   SERIES_WRITING_MIGRATION,
   CREATOR_ACCOUNT_PLAN_MIGRATION,
   UPLOAD_SESSION_MIGRATION,
+  STAFF_MEMBERSHIP_MIGRATION,
   runMigrations,
   type MigrationClient,
   type MigrationOptions,

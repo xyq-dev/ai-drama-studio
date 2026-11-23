@@ -117,6 +117,12 @@ export const CREATOR_ACCOUNT_PLAN_MIGRATION = "20261118000100_creator_account_pl
 export const UPLOAD_SESSION_MIGRATION = "20261119000100_upload_session";
 
 /**
+ * Staff accounts, one-time invites, and creator membership quotas.
+ * Requires the creator-account migration. Does not set prices or quotas.
+ */
+export const STAFF_MEMBERSHIP_MIGRATION = "20261123000100_staff_membership";
+
+/**
  * The only migrations a guarded single run may apply, each with the migrations it requires. Each is applied by its own
  * command; none of them takes the script breakdown (or anything else pending) along.
  */
@@ -128,6 +134,7 @@ export const GUARDED_SINGLE_MIGRATIONS: Readonly<Record<string, readonly string[
   [SERIES_WRITING_MIGRATION]: BASE_MIGRATIONS,
   [CREATOR_ACCOUNT_PLAN_MIGRATION]: BASE_MIGRATIONS,
   [UPLOAD_SESSION_MIGRATION]: BASE_MIGRATIONS,
+  [STAFF_MEMBERSHIP_MIGRATION]: [...BASE_MIGRATIONS, CREATOR_ACCOUNT_PLAN_MIGRATION],
 };
 
 export async function runMigrations(
