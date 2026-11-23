@@ -479,7 +479,7 @@ beforeAll(async () => {
     evidence: evidenceRoot ? join(evidenceRoot, "script-breakdown-media") : null };
   for (const dir of [dirs.mock, dirs.composeWork, dirs.composeObjects, dirs.evidence]) if (dir) await mkdir(dir, { recursive: true });
   const applied = (await runMigrations(pool)).applied;
-  expect(applied.slice(-8)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+  expect(applied.slice(-9)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
     AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, UPLOAD_SESSION_MIGRATION, STAFF_MEMBERSHIP_MIGRATION]);
   evidence.database = { name: decision.databaseName, migrationsApplied: applied };
   // Acceptance data in the new database: the workspace row and the existing Mock video/speech provider provisioning.
