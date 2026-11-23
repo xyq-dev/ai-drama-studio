@@ -36,7 +36,7 @@ async function setup() {
   });
   auth.setStaffDirectory(staff.loginDirectory());
   await staff.ensureEnvSuperAdmin();
-  return { auth, staff, audits };
+  return { auth, staff, audits, repository };
 }
 
 const headers = { origin: "http://127.0.0.1:3000", "content-type": "application/json" };
@@ -192,4 +192,21 @@ describe("staff and creator login compatibility", () => {
     const verify = () => staff.loginDirectory().verifySecondFactor(id, recoveryCodes[0]!);
     expect((await Promise.all([verify(), verify()])).sort()).toEqual([false, true]);
   });
+});
+
+it("does not report a password change or reopen the session if the account was disabled while hashing", async () => {
+  const { auth, staff, audits, repository } = await setup();
+  const owner = await login(auth, "owner", "operator-pass");
+  const id = owner.session.staffId!;
+  const before = (await repository.getStaff(id))!;
+  const write = repository.changePassword.bind(repository);
+  vi.spyOn(repository, "changePassword").mockImplementationOnce(async (staffId, previous, next) => {
+    await repository.updateManagement(staffId, before.permissionVersion, { status: "disabled" });
+    auth.syncStaff(staffId, { status: "disabled", permissions: [] });
+    return write(staffId, previous, next);
+  });
+  await expect(staff.changePassword(id, "operator-pass", "next-password")).rejects.toMatchObject({ code: "STAFF_CHANGED" });
+  expect(await repository.getStaff(id)).toMatchObject({ status: "disabled", passwordHash: before.passwordHash });
+  expect(audits.some(entry => entry.includes("修改密码"))).toBe(false);
+  expect(() => auth.session(cookieHeader(owner.cookies))).toThrow();
 });

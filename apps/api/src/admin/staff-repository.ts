@@ -43,6 +43,9 @@ export interface RecoveryCodeRecord {
   usedAt: string | null;
 }
 
+type StaffManagementChange = { displayName?: string; roleId?: string; status?: StaffAccountStatus };
+type StaffRoleMember = Pick<StaffAccountRecord, "id" | "status">;
+
 export interface StaffRepository {
   ready(): Promise<boolean>;
   listRoles(workspaceId: string): Promise<StaffRoleRecord[]>;
@@ -51,7 +54,10 @@ export interface StaffRepository {
   listStaff(workspaceId: string): Promise<StaffAccountRecord[]>;
   getStaff(id: string): Promise<StaffAccountRecord | null>;
   findByUsername(workspaceId: string, username: string): Promise<StaffAccountRecord | null>;
-  saveStaff(account: StaffAccountRecord): Promise<void>;
+  createEnvStaff(account: StaffAccountRecord): Promise<void>;
+  updateManagement(id: string, expectedVersion: number, change: StaffManagementChange): Promise<boolean>;
+  changePassword(id: string, expectedHash: string, nextHash: string): Promise<boolean>;
+  refreshRoleMembers(workspaceId: string, roleId: string): Promise<StaffRoleMember[]>;
   createInvitedStaff(account: StaffAccountRecord): Promise<boolean>;
   recordLogin(id: string, at: string): Promise<void>;
   listInvites(workspaceId: string, staffId?: string): Promise<StaffInviteRecord[]>;
@@ -102,10 +108,35 @@ export class MemoryStaffRepository implements StaffRepository {
     return account ? cloneAccount(account) : null;
   }
 
-  async saveStaff(account: StaffAccountRecord): Promise<void> {
-    const index = this.staff.findIndex((item) => item.id === account.id);
-    if (index >= 0) this.staff[index] = cloneAccount(account);
-    else this.staff.push(cloneAccount(account));
+  async createEnvStaff(account: StaffAccountRecord): Promise<void> {
+    if (!this.staff.some(row => row.workspaceId === account.workspaceId && row.username.toLowerCase() === account.username.toLowerCase())) {
+      this.staff.push(cloneAccount(account));
+    }
+  }
+
+  async updateManagement(id: string, expectedVersion: number, change: StaffManagementChange): Promise<boolean> {
+    const account = this.staff.find(row => row.id === id && row.permissionVersion === expectedVersion);
+    if (!account) return false;
+    account.displayName = change.displayName ?? account.displayName;
+    account.roleId = change.roleId ?? account.roleId;
+    account.status = change.status ?? account.status;
+    account.permissionVersion++;
+    return true;
+  }
+
+  async changePassword(id: string, expectedHash: string, nextHash: string): Promise<boolean> {
+    const account = this.staff.find(row => row.id === id && row.status === "active" && row.passwordHash === expectedHash);
+    if (!account) return false;
+    account.passwordHash = nextHash;
+    return true;
+  }
+
+  async refreshRoleMembers(workspaceId: string, roleId: string): Promise<StaffRoleMember[]> {
+    const members = this.staff.filter(row => row.workspaceId === workspaceId && row.roleId === roleId);
+    return members.map(row => {
+      row.permissionVersion++;
+      return { id: row.id, status: row.status };
+    });
   }
 
   async createInvitedStaff(account: StaffAccountRecord): Promise<boolean> {
@@ -240,29 +271,55 @@ export class PostgresStaffRepository implements StaffRepository {
     return rows[0] ?? null;
   }
 
-  async saveStaff(account: StaffAccountRecord): Promise<void> {
+  async createEnvStaff(account: StaffAccountRecord): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query(
-        `INSERT INTO staff_account (
-           id, workspace_id, username, display_name, password_hash, status, role_id, permission_version,
-           totp_secret, totp_enabled, last_login_at, auth_source
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-         ON CONFLICT (id) DO UPDATE SET
-           display_name = EXCLUDED.display_name,
-           password_hash = EXCLUDED.password_hash,
-           status = EXCLUDED.status,
-           role_id = EXCLUDED.role_id,
-           permission_version = EXCLUDED.permission_version,
-           totp_secret = EXCLUDED.totp_secret,
-           totp_enabled = EXCLUDED.totp_enabled,
-           updated_at = now()`,
-        [
-          account.id, account.workspaceId, account.username, account.displayName, account.passwordHash, account.status,
-          account.roleId, account.permissionVersion, account.totpSecret, account.totpEnabled,
-          account.lastLoginAt, account.authSource,
-        ],
+        `INSERT INTO staff_account(id, workspace_id, username, display_name, password_hash, role_id, status, auth_source)
+         VALUES ($1,$2,$3,$4,$5,$6,'active','env') ON CONFLICT DO NOTHING`,
+        [account.id, account.workspaceId, account.username, account.displayName, account.passwordHash, account.roleId],
       );
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateManagement(id: string, expectedVersion: number, change: StaffManagementChange): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `UPDATE staff_account SET display_name=COALESCE($3,display_name), role_id=COALESCE($4,role_id),
+           status=COALESCE($5,status), permission_version=permission_version+1, updated_at=now()
+         WHERE id=$1 AND permission_version=$2`,
+        [id, expectedVersion, change.displayName ?? null, change.roleId ?? null, change.status ?? null],
+      );
+      return result.rowCount === 1;
+    } finally {
+      client.release();
+    }
+  }
+
+  async changePassword(id: string, expectedHash: string, nextHash: string): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        "UPDATE staff_account SET password_hash=$3, updated_at=now() WHERE id=$1 AND status='active' AND password_hash=$2",
+        [id, expectedHash, nextHash],
+      );
+      return result.rowCount === 1;
+    } finally {
+      client.release();
+    }
+  }
+
+  async refreshRoleMembers(workspaceId: string, roleId: string): Promise<StaffRoleMember[]> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<StaffRoleMember>(
+        "UPDATE staff_account SET permission_version=permission_version+1, updated_at=now() WHERE workspace_id=$1 AND role_id=$2 RETURNING id,status",
+        [workspaceId, roleId],
+      );
+      return result.rows;
     } finally {
       client.release();
     }
