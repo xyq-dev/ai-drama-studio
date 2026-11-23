@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { STAFF_PERMISSIONS, STAFF_PERMISSION_LABELS, type StaffPermission } from "@ai-drama/domain/staff-access";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { STAFF_PERMISSIONS, STAFF_PERMISSION_LABELS, SUPER_ADMIN_ROLE_CODE, type StaffPermission } from "@ai-drama/domain/staff-access";
 import { withSession } from "../lib/site-session";
+import { useModalKeyboard } from "../lib/modal-keyboard";
 import styles from "./admin-directory.module.css";
 
 interface Role { id: string; code: string; name: string; builtIn: boolean; permissions: StaffPermission[] }
@@ -10,6 +11,7 @@ interface StaffRow {
   id: string; username: string; displayName: string; status: "pending" | "active" | "disabled";
   statusLabel: string; roleId: string; roleName: string; lastLoginAt: string | null;
 }
+type StaffSection = "accounts" | "roles" | "security" | "logs";
 interface SessionRow { publicId: string; createdAt: string; lastSeenAt: string }
 
 const fetchJson = withSession(globalThis.fetch.bind(globalThis));
@@ -21,8 +23,27 @@ async function api(path: string, init?: RequestInit) {
   return body;
 }
 
+function post(path: string, data: object) {
+  return api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
+}
+
+function authentication(form: HTMLFormElement) {
+  const data = new FormData(form);
+  const currentPassword = data.get("currentPassword")?.toString();
+  const totpCode = data.get("totpCode")?.toString().trim();
+  for (const field of form.querySelectorAll<HTMLInputElement>('input[type="password"]')) field.value = "";
+  return { currentPassword, totpCode };
+}
+
+function AuthenticationFields({ secondFactor, codeLabel = "动态码或恢复码" }: { secondFactor: boolean; codeLabel?: string }) {
+  return <>
+    <label className={styles.field}>当前密码<input required type="password" name="currentPassword" autoComplete="current-password" /></label>
+    {secondFactor && <label className={styles.field}>{codeLabel}<input required type="password" name="totpCode" autoComplete="one-time-code" /></label>}
+  </>;
+}
+
 export function AdminStaffPanel() {
-  const [section, setSection] = useState<"accounts" | "roles" | "security" | "logs">("accounts");
+  const [section, setSection] = useState<StaffSection>("accounts");
   const [staff, setStaff] = useState<StaffRow[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [query, setQuery] = useState("");
@@ -34,21 +55,75 @@ export function AdminStaffPanel() {
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [roleId, setRoleId] = useState("");
-  const [password, setPassword] = useState("");
+  const [requiresSecondFactor, setRequiresSecondFactor] = useState(false);
+  const [statusTarget, setStatusTarget] = useState<StaffRow | null>(null);
+  const dialog = useRef<HTMLFormElement>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [selected, setSelected] = useState<StaffRow | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [sessionStaffId, setSessionStaffId] = useState("");
   const [totp, setTotp] = useState<{ secret: string; uri: string; codes?: string[] } | null>(null);
   const [logs, setLogs] = useState<Array<{ id: string; at: string; actor: string; action: string; target: string; result: string }>>([]);
 
+  useModalKeyboard(!!(selected || statusTarget), dialog, closeDialog);
+  function closeDialog() {
+    if (submitting) return;
+    setSelected(null);
+    setStatusTarget(null);
+    setError("");
+  }
+
+  function submit(action: () => Promise<void>) {
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    void action().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "请求没有完成。"))
+      .finally(() => setSubmitting(false));
+  }
+
   const load = useCallback(async () => {
-    const body = await api("/api/v1/admin/staff") as { staff: StaffRow[]; roles: Role[] };
+    const body = await api("/api/v1/admin/staff") as { staff: StaffRow[]; roles: Role[]; requiresSecondFactor: boolean; currentStaffId: string | null };
     setStaff(body.staff);
     setRoles(body.roles);
+    setRequiresSecondFactor(body.requiresSecondFactor);
+    setSessionStaffId(current => current || body.currentStaffId || "");
     setRoleId((current) => current || body.roles.find((role) => role.code === "ops_admin")?.id || body.roles[0]?.id || "");
   }, []);
 
   useEffect(() => { void load().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "没有读到管理员。")); }, [load]);
+
+  useEffect(() => {
+    if (section !== "security" || !sessionStaffId) return;
+    const controller = new AbortController();
+    void api(`/api/v1/admin/staff/${sessionStaffId}/sessions`, { signal: controller.signal })
+      .then(body => { if (!controller.signal.aborted) setSessions((body as { items: SessionRow[] }).items); })
+      .catch((cause: unknown) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "没有读到登录会话。"); });
+    return () => controller.abort();
+  }, [section, sessionStaffId]);
+
+  function changeSection(next: StaffSection) {
+    if (section === next) return;
+    setTotp(null);
+    setSessions([]);
+    setError("");
+    setSection(next);
+  }
+  const authenticatorAction = requiresSecondFactor ? "更换验证器" : "开启验证器";
+  const superRoleId = roles.find(role => role.code === SUPER_ADMIN_ROLE_CODE)?.id;
+  const editRequiresAuth = selected && (selected.roleId === superRoleId || staff.find(row => row.id === selected.id)?.roleId === superRoleId);
+  const statusAction = (row: StaffRow) => row.status === "active" ? "停用" : "重新启用";
+  async function updateStatus(row: StaffRow, credentials: Partial<ReturnType<typeof authentication>> = {}) {
+    await post(`/api/v1/admin/staff/${row.id}/status`, { status: row.status === "active" ? "disabled" : "active", ...credentials });
+    setStatusTarget(null);
+    await load();
+  }
+  function statusButton(row: StaffRow, className: string | undefined) {
+    if (row.status === "pending") return null;
+    return <button type="button" className={className} disabled={submitting} onClick={() => {
+      if (row.roleId === superRoleId) { setError(""); setStatusTarget(row); }
+      else submit(() => updateStatus(row));
+    }}>{statusAction(row)}</button>;
+  }
 
   const visible = staff.filter((row) => {
     const text = `${row.username} ${row.displayName}`.toLowerCase();
@@ -58,19 +133,14 @@ export function AdminStaffPanel() {
     return true;
   });
 
-  async function invite() {
+  async function invite(credentials: ReturnType<typeof authentication>) {
     setError("");
     setInviteUrl("");
-    const body = await api("/api/v1/admin/staff/invites", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username, displayName, roleId, currentPassword: password || undefined }),
-    }) as { inviteUrl: string };
+    const body = await post("/api/v1/admin/staff/invites", { username, displayName, roleId, ...credentials }) as { inviteUrl: string };
     setInviteUrl(body.inviteUrl);
     setNotice("邀请已生成。链接 24 小时内有效，只能使用一次。把链接发给对方，由对方设置密码。");
     setUsername("");
     setDisplayName("");
-    setPassword("");
     await load();
   }
 
@@ -87,12 +157,12 @@ export function AdminStaffPanel() {
       </div>
     </div>
     <div className={styles.filters} role="tablist" aria-label="管理员分区">
-      <button type="button" className={section === "accounts" ? styles.primary : styles.secondary} onClick={() => setSection("accounts")}>账号管理</button>
-      <button type="button" className={section === "roles" ? styles.primary : styles.secondary} onClick={() => setSection("roles")}>角色与权限</button>
-      <button type="button" className={section === "security" ? styles.primary : styles.secondary} onClick={() => setSection("security")}>登录与安全</button>
-      <button type="button" className={section === "logs" ? styles.primary : styles.secondary} onClick={() => { setSection("logs"); void api("/api/v1/admin/logs").then((body) => setLogs((body as { items?: typeof logs }).items ?? [])).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "没有读到日志。")); }}>管理日志</button>
+      <button type="button" className={section === "accounts" ? styles.primary : styles.secondary} onClick={() => changeSection("accounts")}>账号管理</button>
+      <button type="button" className={section === "roles" ? styles.primary : styles.secondary} onClick={() => changeSection("roles")}>角色与权限</button>
+      <button type="button" className={section === "security" ? styles.primary : styles.secondary} onClick={() => changeSection("security")}>登录与安全</button>
+      <button type="button" className={section === "logs" ? styles.primary : styles.secondary} onClick={() => { changeSection("logs"); void api("/api/v1/admin/logs").then((body) => setLogs((body as { items?: typeof logs }).items ?? [])).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "没有读到日志。")); }}>管理日志</button>
     </div>
-    {error ? <p className={styles.error} role="alert">{error}</p> : null}
+    {error && !selected && !statusTarget ? <p className={styles.error} role="alert">{error}</p> : null}
     {notice ? <p className={styles.notice} role="status">{notice}</p> : null}
     {section === "accounts" ? <div className={styles.panel}>
       <div className={styles.toolbar}>
@@ -108,15 +178,15 @@ export function AdminStaffPanel() {
           <option value="disabled">已停用</option>
         </select>
       </div>
-      <form className={styles.field} onSubmit={(event) => { event.preventDefault(); void invite().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "邀请没有发出。")); }}>
+      <form className={styles.field} onSubmit={(event) => { event.preventDefault(); const credentials = authentication(event.currentTarget); submit(() => invite(credentials)); }}>
         <span>邀请管理员</span>
         <input aria-label="账号" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="账号" />
         <input aria-label="显示名" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="显示名" />
         <select aria-label="岗位" value={roleId} onChange={(event) => setRoleId(event.target.value)}>
           {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
         </select>
-        <input aria-label="当前密码" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="邀请超级管理员时填写当前密码" />
-        <button className={styles.primary} type="submit">生成邀请链接</button>
+        {roleId === superRoleId && <AuthenticationFields secondFactor={requiresSecondFactor} />}
+        <button className={styles.primary} type="submit" disabled={submitting}>生成邀请链接</button>
       </form>
       {inviteUrl ? <p>邀请链接 <button type="button" className={styles.linkish} onClick={() => void copyLink()}>复制到微信或飞书</button><br /><code>{inviteUrl}</code></p> : null}
       <table className={styles.table}>
@@ -128,11 +198,10 @@ export function AdminStaffPanel() {
             <td>{row.statusLabel}</td>
             <td>{row.lastLoginAt ? new Date(row.lastLoginAt).toLocaleString("zh-CN") : "尚未登录"}</td>
             <td>
-              <button type="button" className={styles.linkish} onClick={() => setSelected(row)}>编辑</button>
+              <button type="button" className={styles.linkish} onClick={() => { setError(""); setSelected(row); }}>编辑</button>
               {row.status === "pending" ? <button type="button" className={styles.linkish} onClick={() => void api(`/api/v1/admin/staff/${row.id}/revoke-invite`, { method: "POST" }).then(load)}>撤销邀请</button> : null}
               {row.status === "pending" ? <button type="button" className={styles.linkish} onClick={() => void api(`/api/v1/admin/staff/${row.id}/resend-invite`, { method: "POST" }).then((body) => setInviteUrl((body as { inviteUrl: string }).inviteUrl))}>重新邀请</button> : null}
-              {row.status === "active" ? <button type="button" className={styles.linkish} onClick={() => void api(`/api/v1/admin/staff/${row.id}/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "disabled", currentPassword: password || undefined }) }).then(load)}>停用</button> : null}
-              {row.status === "disabled" ? <button type="button" className={styles.linkish} onClick={() => void api(`/api/v1/admin/staff/${row.id}/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "active", currentPassword: password || undefined }) }).then(load)}>重新启用</button> : null}
+              {statusButton(row, styles.linkish)}
             </td>
           </tr>)}
         </tbody>
@@ -144,20 +213,38 @@ export function AdminStaffPanel() {
           <span>{row.roleName}</span>
           <span>{row.statusLabel}</span>
           <span>{row.lastLoginAt ? new Date(row.lastLoginAt).toLocaleString("zh-CN") : "尚未登录"}</span>
-          <button type="button" className={styles.secondary} onClick={() => setSelected(row)}>编辑</button>
+          <button type="button" className={styles.secondary} onClick={() => { setError(""); setSelected(row); }}>编辑</button>
           {row.status === "pending" ? <button type="button" className={styles.secondary} onClick={() => void api(`/api/v1/admin/staff/${row.id}/revoke-invite`, { method: "POST" }).then(load)}>撤销邀请</button> : null}
-          {row.status === "active" ? <button type="button" className={styles.secondary} onClick={() => void api(`/api/v1/admin/staff/${row.id}/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "disabled", currentPassword: password || undefined }) }).then(load)}>停用</button> : null}
-          {row.status === "disabled" ? <button type="button" className={styles.secondary} onClick={() => void api(`/api/v1/admin/staff/${row.id}/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "active", currentPassword: password || undefined }) }).then(load)}>重新启用</button> : null}
+          {statusButton(row, styles.secondary)}
         </article>)}
       </div>
-      {selected ? <form className={styles.dialog} onSubmit={(event) => { event.preventDefault(); void api(`/api/v1/admin/staff/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: selected.displayName, roleId: selected.roleId, currentPassword: password || undefined }) }).then(() => { setSelected(null); return load(); }); }}>
-        <h2>编辑管理员</h2>
-        <label className={styles.field}>显示名<input value={selected.displayName} onChange={(event) => setSelected({ ...selected, displayName: event.target.value })} /></label>
-        <label className={styles.field}>岗位<select value={selected.roleId} onChange={(event) => setSelected({ ...selected, roleId: event.target.value })}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>
-        <p>改成或取消超级管理员前，需要填写上方的当前密码。</p>
-        <button className={styles.primary} type="submit">保存</button>
-        <button className={styles.secondary} type="button" onClick={() => setSelected(null)}>关闭</button>
-      </form> : null}
+      {(selected || statusTarget) && <>
+        <div className={styles.backdrop} onClick={closeDialog} />
+        <form ref={dialog} className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="staff-action-title" onSubmit={event => {
+          event.preventDefault();
+          const credentials = authentication(event.currentTarget);
+          submit(async () => {
+            if (statusTarget) await updateStatus(statusTarget, credentials);
+            else if (selected) {
+              await post(`/api/v1/admin/staff/${selected.id}`, { displayName: selected.displayName, roleId: selected.roleId, ...credentials });
+              setSelected(null);
+              await load();
+            }
+          });
+        }}>
+          <h2 id="staff-action-title">{statusTarget ? `${statusAction(statusTarget)}「${statusTarget.displayName}」` : "编辑管理员"}</h2>
+          {selected && <>
+            <label className={styles.field}>显示名<input value={selected.displayName} onChange={event => setSelected({ ...selected, displayName: event.target.value })} /></label>
+            <label className={styles.field}>岗位<select value={selected.roleId} onChange={event => setSelected({ ...selected, roleId: event.target.value })}>{roles.map(role => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>
+          </>}
+          {(statusTarget || editRequiresAuth) && <AuthenticationFields secondFactor={requiresSecondFactor} />}
+          {error && <p role="alert" className={styles.error}>{error}</p>}
+          <div className={styles.dialogActions}>
+            <button className={styles.secondary} type="button" disabled={submitting} onClick={closeDialog}>取消</button>
+            <button className={styles.primary} type="submit" disabled={submitting}>{statusTarget ? statusAction(statusTarget) : "保存"}</button>
+          </div>
+        </form>
+      </>}
     </div> : null}
     {section === "roles" ? <RoleEditor roles={roles} onSaved={() => void load()} onError={setError} /> : null}
     {section === "security" ? <div className={styles.panel}>
@@ -168,21 +255,39 @@ export function AdminStaffPanel() {
         <input name="next" type="password" aria-label="新密码" />
         <button className={styles.primary} type="submit">保存新密码</button>
       </form>
-      <button type="button" className={styles.secondary} onClick={() => void api("/api/v1/admin/staff/totp/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentPassword: password }) }).then((body) => setTotp(body as { secret: string; uri: string }))}>开启验证器</button>
-      {totp ? <form className={styles.field} onSubmit={(event) => { event.preventDefault(); const code = new FormData(event.currentTarget).get("code"); void api("/api/v1/admin/staff/totp/confirm", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) }).then((body) => setTotp({ ...totp, codes: (body as { recoveryCodes: string[] }).recoveryCodes })); }}>
+      {(!totp || totp.codes) && <form className={styles.field} aria-label={authenticatorAction} onSubmit={event => {
+        event.preventDefault();
+        const credentials = authentication(event.currentTarget);
+        submit(async () => setTotp(await post("/api/v1/admin/staff/totp/start", credentials) as { secret: string; uri: string }));
+      }}>
+        <AuthenticationFields secondFactor={requiresSecondFactor} codeLabel="旧验证器动态码或恢复码" />
+        <button type="submit" disabled={submitting} className={styles.secondary}>{authenticatorAction}</button>
+      </form>}
+      {totp && !totp.codes && <form className={styles.field} onSubmit={event => {
+        event.preventDefault();
+        const code = new FormData(event.currentTarget).get("code");
+        submit(async () => {
+          const result = await post("/api/v1/admin/staff/totp/confirm", { code }) as { recoveryCodes: string[] };
+          setRequiresSecondFactor(true);
+          setTotp({ secret: "", uri: "", codes: result.recoveryCodes });
+        });
+      }}>
         <p>密钥 {totp.secret}</p>
-        <p>把密钥加入验证器后，填写 6 位动态码。</p>
-        <input name="code" aria-label="动态码" inputMode="numeric" />
-        <button className={styles.primary} type="submit">确认开启</button>
-        {totp.codes ? <p>恢复码只显示这一次：{totp.codes.join("、")}</p> : null}
-      </form> : null}
+        <p>{requiresSecondFactor ? "把密钥加入新验证器，填写新的 6 位动态码。确认前仍使用旧验证器。" : "把密钥加入验证器后，填写 6 位动态码。"}</p>
+        <input name="code" aria-label="动态码" inputMode="numeric" autoComplete="one-time-code" required />
+        <button className={styles.primary} type="submit" disabled={submitting}>{requiresSecondFactor ? "确认更换" : "确认开启"}</button>
+      </form>}
+      {requiresSecondFactor && (!totp || totp.codes) && <p>{totp?.codes ? `请保存恢复码，仅显示一次：${totp.codes.join("、")}` : "验证器已开启"}</p>}
       <label className={styles.field}>查看会话的账号
-        <select value={sessionStaffId} onChange={(event) => { const id = event.target.value; setSessionStaffId(id); setSessions([]); if (id) void api(`/api/v1/admin/staff/${id}/sessions`).then((body) => setSessions((body as { items: SessionRow[] }).items)); }}>
+        <select value={sessionStaffId} onChange={(event) => { const id = event.target.value; setSessionStaffId(id); setSessions([]); setError(""); }}>
           <option value="">选择管理员</option>
           {staff.map((row) => <option key={row.id} value={row.id}>{row.displayName}</option>)}
         </select>
       </label>
-      <ul>{sessions.map((session) => <li key={session.publicId}>{new Date(session.lastSeenAt).toLocaleString("zh-CN")} <button type="button" className={styles.linkish} onClick={() => void api(`/api/v1/admin/staff/${sessionStaffId}/sessions/${session.publicId}/revoke`, { method: "POST" }).then(() => api(`/api/v1/admin/staff/${sessionStaffId}/sessions`).then((body) => setSessions((body as { items: SessionRow[] }).items)))}>撤销</button></li>)}</ul>
+      <ul>{sessions.map((session) => <li key={session.publicId}>{new Date(session.lastSeenAt).toLocaleString("zh-CN")} <button type="button" className={styles.linkish} disabled={submitting} onClick={() => submit(async () => {
+        await post(`/api/v1/admin/staff/${sessionStaffId}/sessions/${session.publicId}/revoke`, {});
+        setSessions(current => current.filter(item => item.publicId !== session.publicId));
+      })}>撤销</button></li>)}</ul>
     </div> : null}
     {section === "logs" ? <div className={styles.panel}>
       <h2>管理日志</h2>

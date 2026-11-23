@@ -21,6 +21,7 @@ function backend() {
     saveDraft: vi.fn(async () => ({ revision: 1, validation: "local_only", features: [] })),
     testDraft: vi.fn(async () => ({ view: { revision: 2, validation: "local_only", features: [] }, probe: { ok: true, message: "ok" } })),
     enable: vi.fn(),
+    rollback: vi.fn(async () => ({})),
     operatorUsage: vi.fn(async () => ({ scope: "episode_production", records: [], totals: [], projects: [], episodes: [], footnote: "未知", projectId: null, episodeId: null })),
     operatorUsageDetail: vi.fn(),
   };
@@ -40,7 +41,7 @@ describe("feature config HTTP boundary", () => {
     app = undefined;
   });
 
-  async function start(options: { creator?: boolean; backendMissing?: boolean } = {}) {
+  async function start(options: { backendMissing?: boolean; staff?: boolean } = {}) {
     await app?.close();
     store = backend();
     const state: SiteAuthState = {
@@ -56,6 +57,11 @@ describe("feature config HTTP boundary", () => {
         },
       ),
     };
+    if (options.staff) state.auth.setStaffDirectory({
+      findByUsername: async (username) => username === "staff"
+        ? { id: "staff", username, passwordHash: HASH, status: "active", permissions: [], totpEnabled: false } : null,
+      recordLogin: async () => {}, verifySecondFactor: async () => false,
+    });
     const module = await Test.createTestingModule({
       imports: [AuthModule.register({ NODE_ENV: "test" } as ApiEnv, state)],
       controllers: [FeatureConfigController],
@@ -70,7 +76,7 @@ describe("feature config HTTP boundary", () => {
     app.useGlobalFilters(new SafeExceptionFilter());
     await app.listen(0, "127.0.0.1");
     base = `${await app.getUrl()}/api/v1`;
-    void options.creator;
+    return state.auth;
   }
 
   const request = (path: string, init?: RequestInit) => fetch(`${base}${path}`, init);
@@ -114,5 +120,33 @@ describe("feature config HTTP boundary", () => {
     expect(response.status).toBe(400);
     expect(store.testDraft).not.toHaveBeenCalled();
     expect(JSON.stringify(await response.json())).not.toContain(SECRET);
+  });
+
+  it("requires key maintenance to change or bind credentials and activation permission to roll back", async () => {
+    const auth = await start({ staff: true });
+    const session = await login("staff");
+    const headers = { cookie: session.cookie, origin: ORIGIN, "content-type": "application/json", "x-csrf-token": session.csrf };
+    const draft = (secretAction: string) => request("/admin/features/writing/draft", {
+      method: "PUT", headers, body: JSON.stringify({ expectedRevision: 0, vendor: "bailian", model: "qwen-plus", secretAction,
+        ...(secretAction === "replace" ? { apiKey: SECRET } : {}) }),
+    });
+    const rollback = () => request("/admin/features/writing/rollback", {
+      method: "POST", headers, body: JSON.stringify({ expectedRevision: 1 }),
+    });
+    for (const action of ["replace", "clear", "bind_vendor"]) expect((await draft(action)).status).toBe(403);
+    expect(store.saveDraft).not.toHaveBeenCalled();
+    expect((await draft("keep")).status).toBe(200);
+    auth.syncStaff("staff", { status: "active", permissions: ["maintain_model_keys"] });
+    for (const action of ["replace", "clear", "bind_vendor"]) expect((await draft(action)).status).toBe(200);
+    expect((await rollback()).status).toBe(403);
+    expect(store.rollback).not.toHaveBeenCalled();
+    auth.syncStaff("staff", { status: "active", permissions: ["enable_models"] });
+    expect((await rollback()).status).toBe(200);
+    expect(store.rollback).toHaveBeenCalledTimes(1);
+    const legacy = await login("admin");
+    const legacyHeaders = { ...headers, cookie: legacy.cookie, "x-csrf-token": legacy.csrf };
+    expect((await request("/admin/features/writing/rollback", {
+      method: "POST", headers: legacyHeaders, body: JSON.stringify({ expectedRevision: 1 }),
+    })).status).toBe(200);
   });
 });

@@ -378,6 +378,8 @@ export class TitleWritingService {
         ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
         : failure(429, created.code);
     }
+    // Both contenders reserved the same unit only for the same project and run kind.
+    if (created.kind !== "active" && created.bundle.run.projectId === projectId && !isScriptBreakdownRun(created.bundle.run)) hold.keep();
     // A start stored with prompt v2 or v3 and replayed after an upgrade is the same request, not a reused key.
     if (created.kind === "conflict" && !sameStartBeforeGuidance(created.bundle.run, run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     // One AI task per work. Only a running title run is offered to be opened; a running script breakdown is named as the
@@ -389,7 +391,6 @@ export class TitleWritingService {
     }
     if (created.bundle.run.projectId !== projectId || isScriptBreakdownRun(created.bundle.run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") {
-      hold.keep();
       if (hold.holdId) await membership?.bindTask(hold.holdId, created.bundle.run.id);
       if (locked?.apiKey && locked.credentialRef && model) {
         await this.deps.featureWritingCommit?.({

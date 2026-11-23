@@ -6,7 +6,7 @@ import {
   type AdminVendorKey, type AdminVendorSave, type AdminVendorCheck, type AdminVendorView, type AdminVendorCheckResult,
 } from "@ai-drama/contracts";
 import type { AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, ComfyUiAdminCheck, TitleWritingProviderKey } from "@ai-drama/contracts";
-import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
+import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteSessionView, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
 import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
 import { StaffAccessError, assertStaffPermission } from "./staff-access.service";
 import type { StaffPermission } from "@ai-drama/domain";
@@ -43,7 +43,7 @@ export class AdminModelsController {
 
   @Get("models")
   models(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
-    return this.send(response, () => this.authorizedBackend(headers).view());
+    return this.send(response, () => this.authorizedBackend(headers).backend.view());
   }
 
   @Post("models/comfyui/check")
@@ -66,10 +66,11 @@ export class AdminModelsController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
-      const backend = this.authorizedBackend(headers, true, "enable_models");
+      const { backend, session } = this.authorizedBackend(headers, true, "enable_models");
       const key = adminProviderKeySchema.safeParse(providerKey);
       const input = adminProviderUpdateSchema.safeParse(body);
       if (!key.success || !input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      assertCredentialPermission(session, input.data);
       return backend.updateProvider(key.data, input.data);
     });
   }
@@ -81,7 +82,7 @@ export class AdminModelsController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
-      const backend = this.authorizedBackend(headers, true, "enable_models");
+      const { backend } = this.authorizedBackend(headers, true, "enable_models");
       const input = adminLimitsUpdateSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       return backend.updateLimits(input.data);
@@ -90,21 +91,22 @@ export class AdminModelsController {
 
   @Get("models/vendors")
   vendors(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
-    return this.send(response, () => this.authorizedBackend(headers).vendors());
+    return this.send(response, () => this.authorizedBackend(headers).backend.vendors());
   }
 
   @Get("models/vendors/:vendor")
   vendor(@Param("vendor") id: string, @Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
-    return this.send(response, () => this.authorizedBackend(headers).vendor(vendorKey(id)));
+    return this.send(response, () => this.authorizedBackend(headers).backend.vendor(vendorKey(id)));
   }
 
   @Put("models/vendors/:vendor")
   saveVendor(@Param("vendor") id: string, @Headers() headers: RequestHeaders, @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const backend = this.authorizedBackend(headers, true, "enable_models");
+      const { backend, session } = this.authorizedBackend(headers, true, "enable_models");
       const input = adminVendorSaveSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      assertCredentialPermission(session, input.data);
       return backend.saveVendor(vendorKey(id), input.data);
     });
   }
@@ -113,14 +115,14 @@ export class AdminModelsController {
   checkVendor(@Param("vendor") id: string, @Headers() headers: RequestHeaders, @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const backend = this.authorizedBackend(headers, true, "probe_models");
+      const { backend } = this.authorizedBackend(headers, true, "probe_models");
       const input = adminVendorCheckSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       return backend.checkVendor(vendorKey(id), input.data);
     });
   }
 
-  private authorizedBackend(headers: RequestHeaders, write = false, permission?: StaffPermission): AdminModelsBackend {
+  private authorizedBackend(headers: RequestHeaders, write = false, permission?: StaffPermission) {
     if (this.site?.kind !== "enabled") throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
     const auth = this.site.auth;
     const session = auth.session(headers);
@@ -128,7 +130,7 @@ export class AdminModelsController {
     if (permission) assertStaffPermission(session, permission);
     if (!this.backend) throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
     if (write) authorizeJsonWrite(auth, headers);
-    return this.backend;
+    return { backend: this.backend, session };
   }
 
   private async send(response: AdminResponse, work: () => unknown | Promise<unknown>, status = 200): Promise<unknown> {
@@ -146,6 +148,12 @@ export class AdminModelsController {
       response.status(error.status);
       return { error: { code: error.code, message: error.message } };
     }
+  }
+}
+
+function assertCredentialPermission(session: SiteSessionView, update: AdminProviderUpdate | AdminVendorSave): void {
+  if (update.secretAction !== "keep" || update.workspaceAction === "replace" || update.workspaceAction === "clear") {
+    assertStaffPermission(session, "maintain_model_keys");
   }
 }
 

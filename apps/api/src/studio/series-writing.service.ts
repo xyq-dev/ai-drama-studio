@@ -301,7 +301,10 @@ export class SeriesWritingService {
     if (hold?.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
     try {
     const created = await this.deps.store.createGrant(grant, this.limits(at), (state) => admitSeriesGrant(state, grant, { jobId: randomUUID(), nowIso: at.toISOString() }));
-    if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
+    if (created.kind === "conflict") {
+      if (hold?.holdId && (await this.deps.store.findGrantByKey(this.deps.workspaceId, context.actorId, context.idempotencyKey))?.projectId === projectId) hold.keep();
+      return failure(409, "IDEMPOTENCY_KEY_REUSED");
+    }
     if (created.kind === "refused") {
       if (created.code === "NOT_FOUND") return failure(404, "SERIES_NOT_FOUND");
       return failure(409, created.code, created.details);
@@ -309,8 +312,8 @@ export class SeriesWritingService {
     if (created.kind === "active") return failure(409, "SERIES_RUN_ACTIVE", { runKind: created.runKind });
     if (created.kind === "blocked") return failure(429, "SERIES_ACTIVE_RUN_CAP");
     if (created.kind === "daily_quota_low") return failure(429, "SERIES_DAILY_QUOTA_LOW", { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls });
+    hold?.keep();
     if (created.kind === "created") {
-      hold?.keep();
       if (hold?.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.jobId);
       this.schedule(created.jobId);
     }

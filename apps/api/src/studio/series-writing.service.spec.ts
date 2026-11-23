@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { withInstalledWritingUnit } from "../../test/writing-resume-membership";
+import { describe, expect, it, vi } from "vitest";
 import { SERIES_RESEARCH_CONTRACT, seriesScopeCalls, type SeriesResearchContract, type SeriesScope } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import type { SeriesView } from "@ai-drama/domain";
@@ -48,6 +49,23 @@ function body(view: SeriesView, scope: SeriesScope, extra: Record<string, unknow
 }
 
 describe("series writing service", () => {
+  it.each([false, true])("keeps the first grant's quota when the keyed request races (different input: %s)", async (different) => {
+    await withInstalledWritingUnit(WS, async member => {
+      const { service, store } = setup();
+      const view = await created(service);
+      const scope = { plan: true, batchFrom: 1, batchTo: 1, final: false };
+      const grant = (batchTo: number) => service.grant(view.projectId, body(view, { ...scope, batchTo }), TOKEN, member.actor("racing"));
+      const create = store.createGrant.bind(store);
+      vi.spyOn(store, "createGrant").mockImplementationOnce(async (...args) => {
+        expect((await grant(1)).status).toBe(201);
+        return create(...args);
+      });
+      expect((await grant(different ? 2 : 1)).status).toBe(different ? 409 : 200);
+      expect(store.grants).toHaveLength(1);
+      expect((await member.membership.balances(WS, member.accountId)).writing).toBe(0);
+    });
+  });
+
   it("off, without the operator, or without an idempotency key: refused before anything is written", async () => {
     const off = setup({ enabled: false });
     expect((await off.service.create({ title: "x", episodeCount: 3, episodeSeconds: 60 }, TOKEN, CONTEXT("k"))).status).toBe(404);

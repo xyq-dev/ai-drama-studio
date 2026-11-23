@@ -52,11 +52,12 @@ export class FeatureConfigController {
   ) {
     return this.send(response, async () => {
       const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
+      const session = this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       const key = this.feature(feature);
       const input = featureDraftSaveSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      if (input.data.secretAction !== "keep") assertStaffPermission(session, "maintain_model_keys");
       const view = await backend.saveDraft(key, input.data);
       const label = `${FEATURE_LABELS[key]} · ${vendorLabel(input.data.vendor)}`;
       if (input.data.secretAction === "replace" && input.data.apiKey) {
@@ -129,7 +130,7 @@ export class FeatureConfigController {
   ) {
     return this.send(response, async () => {
       const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
+      this.requireOperator(headers, auth, "enable_models");
       authorizeJsonWrite(auth, headers);
       const input = featureRollbackRequestSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -190,10 +191,11 @@ export class FeatureConfigController {
     return { auth: this.site.auth, backend: this.backend };
   }
 
-  private requireOperator(headers: RequestHeaders, auth: SiteAuth, permission?: "probe_models" | "enable_models"): void {
+  private requireOperator(headers: RequestHeaders, auth: SiteAuth, permission?: "probe_models" | "enable_models") {
     const session = auth.session(headers);
     if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
     if (permission) assertStaffPermission(session, permission);
+    return session;
   }
 
   private async send(response: AdminResponse, work: () => unknown | Promise<unknown>): Promise<unknown> {

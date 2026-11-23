@@ -39,6 +39,7 @@ export const SESSION_ABSOLUTE_MS = 12 * 60 * 60 * 1_000;
 const MAX_SESSIONS = 20;
 const LOGIN_WINDOW_MS = 60_000;
 const MAX_LOGIN_ATTEMPTS = 5;
+const MAX_SECOND_FACTOR_ATTEMPTS = 5;
 const OPAQUE_TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 /** The cookie of the earlier token-only model console, cleared on every login and logout. */
 const LEGACY_ADMIN_COOKIE = "ads_admin_session";
@@ -126,7 +127,7 @@ export class SiteAuth {
   private readonly creators: CreatorLoginDirectory | null;
   private staff: StaffLoginDirectory | null = null;
   private readonly staffLive = new Map<string, { status: StaffLoginAccount["status"]; permissions: readonly string[] }>();
-  private readonly challenges = new Map<string, { staffId: string; username: string; expires: number }>();
+  private readonly challenges = new Map<string, { staffId: string; username: string; expires: number; attemptsLeft: number }>();
   private readonly publicRegistrationEnabled: boolean;
   readonly username: string;
   readonly publicOrigin: string;
@@ -231,8 +232,13 @@ export class SiteAuth {
     const operatorUsernameOk = same(username, this.usernameDigest);
     const operatorPasswordOk = await verifyPassword(password, this.hash);
     const staffAccount = this.staff ? await this.staff.findByUsername(username) : null;
-    let role: CreatorAccountRole = "operator";
-    let accountId = LEGACY_OWNER_ACCOUNT_ID;
+    const envOperator = !staffAccount && operatorUsernameOk && operatorPasswordOk;
+    const creator = !envOperator && this.creators ? await this.creators.findActiveByUsername(username) : null;
+    const creatorHash = creator ? parsePasswordHash(creator.passwordHash) : null;
+    // Historical duplicate credentials can only select the lower-privilege creator identity.
+    if (creator && creatorHash && await verifyPassword(password, creatorHash)) {
+      return this.issueSession(headers, now, { role: "creator", accountId: creator.id, username: creator.username, staffId: null });
+    }
     let sessionUsername = this.username;
     let staffId: string | null = null;
     if (staffAccount) {
@@ -240,28 +246,23 @@ export class SiteAuth {
       const staffOk = staffHash ? await verifyPassword(password, staffHash) : false;
       if (!staffHash || !staffOk || staffAccount.status !== "active") throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
       if (staffAccount.totpEnabled) {
+        this.prune(now);
         const challenge = randomBytes(32).toString("base64url");
-        this.challenges.set(challenge, { staffId: staffAccount.id, username: staffAccount.username, expires: now + 5 * 60_000 });
+        this.challenges.set(challenge, {
+          staffId: staffAccount.id, username: staffAccount.username, expires: now + 5 * 60_000, attemptsLeft: MAX_SECOND_FACTOR_ATTEMPTS,
+        });
         return { session: null, cookies: [], totpRequired: true, challenge };
       }
-      role = "operator";
-      accountId = LEGACY_OWNER_ACCOUNT_ID;
       sessionUsername = staffAccount.username;
       staffId = staffAccount.id;
-      this.staffLive.set(staffAccount.id, { status: "active", permissions: staffAccount.permissions });
+      if (!this.staffLive.has(staffAccount.id)) this.staffLive.set(staffAccount.id, { status: "active", permissions: staffAccount.permissions });
       await this.staff?.recordLogin(staffAccount.id);
-    } else if (operatorUsernameOk && operatorPasswordOk) {
-      // Env operator until a staff row exists for this username. Works stay on the legacy owner unless ops view is on.
-    } else {
-      const creator = this.creators ? await this.creators.findActiveByUsername(username) : null;
-      const creatorHash = creator ? parsePasswordHash(creator.passwordHash) : null;
-      const creatorOk = creatorHash ? await verifyPassword(password, creatorHash) : await verifyPassword(password, this.hash);
-      if (!creator || !creatorHash || !creatorOk) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
-      role = "creator";
-      accountId = creator.id;
-      sessionUsername = creator.username;
+      if (this.staffLive.get(staffAccount.id)?.status !== "active") throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    } else if (!envOperator) {
+      if (!creatorHash) await verifyPassword(password, this.hash);
+      throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
     }
-    return this.issueSession(headers, now, { role, accountId, username: sessionUsername, staffId });
+    return this.issueSession(headers, now, { role: "operator", accountId: LEGACY_OWNER_ACCOUNT_ID, username: sessionUsername, staffId });
   }
 
   async completeTotp(headers: RequestHeaders, body: unknown): Promise<{ session: SiteSessionView; cookies: string[] }> {
@@ -273,12 +274,18 @@ export class SiteAuth {
     const challenge = typeof input.challenge === "string" ? input.challenge : "";
     const code = typeof input.code === "string" ? input.code.trim() : "";
     const pending = this.challenges.get(challenge);
+    // Claim before the asynchronous verifier so concurrent submissions cannot reuse one challenge.
+    this.challenges.delete(challenge);
     if (!pending || pending.expires <= this.now() || !this.staff) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
     const ok = await this.staff.verifySecondFactor(pending.staffId, code);
-    if (!ok) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
-    this.challenges.delete(challenge);
+    if (pending.expires <= this.now()) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    if (!ok) {
+      pending.attemptsLeft -= 1;
+      if (pending.attemptsLeft > 0) this.challenges.set(challenge, pending);
+      throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    }
     const account = await this.staff.findByUsername(pending.username);
-    if (!account || account.status !== "active") throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    if (!account || account.id !== pending.staffId || account.status !== "active") throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
     this.staffLive.set(account.id, { status: "active", permissions: account.permissions });
     await this.staff.recordLogin(account.id);
     const issued = this.issueSession(headers, this.now(), {
@@ -409,6 +416,9 @@ export class SiteAuth {
   private prune(now: number): void {
     for (const [key, value] of this.sessions) {
       if (this.expiresAt(value) <= now) this.sessions.delete(key);
+    }
+    for (const [key, pending] of this.challenges) {
+      if (pending.expires <= now) this.challenges.delete(key);
     }
   }
 

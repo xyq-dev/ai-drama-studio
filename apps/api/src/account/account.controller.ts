@@ -5,6 +5,7 @@ import {
   formatCreatorPlanRemaining,
   formatCreatorPlanUnitPrice,
   mayPostCreatorLedgerEntry,
+  sessionAllowsStaffPermission,
 } from "@ai-drama/domain";
 import { CREATOR_PLAN_LEDGER_STORE, AUTH_WORKSPACE_ID } from "../auth/auth.tokens";
 import { MEMBERSHIP_STORE, type MembershipStore } from "../membership/membership-store";
@@ -198,14 +199,14 @@ export class AccountController {
       response.status(200);
       return { operator: true, opsViewAvailable: true };
     }
-    const session = this.requireSession(headers);
+    const session = this.auth().session(headers);
     const scope: CreatorAccessScope = {
       kind: "scoped", role: session.role, accountId: session.accountId, username: session.username, opsView: false,
     };
     response.status(200);
     return {
       operator: requireOperatorAccess(scope),
-      opsViewAvailable: session.role === "operator",
+      opsViewAvailable: sessionAllowsStaffPermission({ ...session, required: "review_works" }),
       ownerFilterActive: ownerAccountFilter() !== null,
     };
   }

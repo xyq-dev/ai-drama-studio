@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { WritingQuotaDenial, WritingQuotaTransaction } from "./title-writing-store";
 import { vimaxCandidateCreateSchema, vimaxCandidateTargetSchema } from "./vimax-candidate";
 import { vimaxPlatformPreviewRequestSchema, vimaxPlatformSourceSnapshotSchema } from "./vimax-platform-preview";
 import { TITLE_WRITING_PROVIDER_KEYS, type TitleWritingProviderKey, type TitleWritingUsageView } from "./title-writing";
@@ -42,6 +43,7 @@ export interface VimaxPlanningReservation {
 }
 export type VimaxPlanningCreation =
   | { kind: "created" | "existing"; record: VimaxPlanningRecord }
+  | { kind: "quota_denied"; denial: WritingQuotaDenial }
   | { kind: "conflict" }
   | { kind: "active" | "needs_confirmation"; requestId: string }
   | { kind: "blocked"; code: string };
@@ -53,7 +55,8 @@ export interface VimaxPlanningFinish {
 export interface VimaxPlanningStore {
   storageReady(): Promise<boolean>;
   findByKey(workspaceId: string, actorId: string, key: string): Promise<VimaxPlanningRecord | null>;
-  create(input: VimaxPlanningReservation, limits: { sinceIso: string; maxCallsPerDay: number; maxActiveRuns: number }): Promise<VimaxPlanningCreation>;
+  create(input: VimaxPlanningReservation, limits: { sinceIso: string; maxCallsPerDay: number; maxActiveRuns: number },
+    reserveForCreate?: (transaction: WritingQuotaTransaction) => Promise<WritingQuotaDenial | null>): Promise<VimaxPlanningCreation>;
   get(workspaceId: string, projectId: string, episodeId: string, actorId: string, requestId: string): Promise<VimaxPlanningRecord | null>;
   getById(workspaceId: string, requestId: string): Promise<VimaxPlanningRecord | null>;
   list(workspaceId: string, projectId: string, episodeId: string, actorId: string, limit: number): Promise<VimaxPlanningRecord[]>;

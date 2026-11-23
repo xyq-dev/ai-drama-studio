@@ -1,10 +1,15 @@
-import type { TitleRunRecord, WritingResumeQuotaCheck } from "@ai-drama/contracts";
+import type { TitleRunRecord, WritingQuotaTransaction, WritingResumeQuotaCheck } from "@ai-drama/contracts";
 import { creatorAccountIdFromActor, type MembershipFeature } from "@ai-drama/domain";
 import type { MembershipStore, ReserveResult } from "./membership-store";
 
 interface CreatorTaskContext {
   actorId: string;
   idempotencyKey?: string;
+}
+
+interface TaskBinding {
+  taskKey: string;
+  transaction: WritingQuotaTransaction;
 }
 
 export interface OpenCreatorHold {
@@ -32,9 +37,10 @@ export async function openInstalledHold(
   feature: MembershipFeature,
   projectId: string,
   operation: string,
+  binding?: TaskBinding,
 ): Promise<OpenCreatorHold> {
   if (!installed) return noopHold();
-  return openCreatorHold(installed.store, installed.workspaceId, context, feature, projectId, operation);
+  return openCreatorHold(installed.store, installed.workspaceId, context, feature, projectId, operation, binding);
 }
 
 /** Reserve and keep the hold. Call only when a new task is about to be sent. */
@@ -57,6 +63,7 @@ export async function openCreatorHold(
   feature: MembershipFeature,
   projectId: string,
   operation: string,
+  binding?: TaskBinding,
 ): Promise<OpenCreatorHold> {
   const accountId = creatorAccountIdFromActor(context.actorId);
   const key = context.idempotencyKey;
@@ -69,7 +76,8 @@ export async function openCreatorHold(
     idempotencyKey: key,
     operation,
     projectId,
-  });
+    ...(binding && { taskKey: binding.taskKey }),
+  }, binding?.transaction);
   if (!reserved.ok) return { denied: { code: reserved.code, message: reserved.message }, holdId: null, keep() {}, async release() {} };
   if ("skipped" in reserved) return { denied: null, holdId: null, keep() {}, async release() {} };
   let kept = reserved.replay;
@@ -87,7 +95,7 @@ export async function openCreatorHold(
 export function writingResumeQuotaCheck(
   store: MembershipStore | undefined,
   run: Pick<TitleRunRecord, "id" | "workspaceId" | "projectId" | "actorId" | "idempotencyKey">,
-  operation: "title-writing" | "auto-creation",
+  operation: "title-writing" | "auto-creation" | "script-breakdown",
 ): WritingResumeQuotaCheck | undefined {
   const accountId = creatorAccountIdFromActor(run.actorId);
   if (!store || !accountId) return undefined;
