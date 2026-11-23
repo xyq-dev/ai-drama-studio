@@ -4,23 +4,14 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type R
 import { useModalKeyboard } from "../lib/modal-keyboard";
 import { useOperatorGate, type AdminGate } from "./admin-access";
 import { withSession } from "../lib/site-session";
+import { AdminWorkManagement, type WorkItem } from "./admin-work-management";
+import { formatShanghai } from "../lib/admin-directory-date";
 import styles from "./admin-directory.module.css";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type Kind = "works" | "assets" | "jobs" | "users" | "logs";
 type Phase = "loading" | "ready" | "empty" | "failed";
 
-interface WorkItem {
-  id: string;
-  title: string;
-  updatedAt: string;
-  ownerName: string;
-  ownerLegacy: boolean;
-  productionLabel: string;
-  episodeProgress: string;
-  recentTask: string;
-  reviewHref: string;
-}
 interface AssetItem {
   id: string;
   name: string;
@@ -84,7 +75,7 @@ const COPY: Record<Kind, {
 }> = {
   works: {
     title: "作品管理",
-    summary: "查看全部创作者的作品，按标题、所属人和制作状态筛选。打开作品仅供运营核对，不会发布到任何平台。",
+    summary: "",
     emptyTitle: "还没有作品",
     emptyBody: "当前没有可供运营核对的作品。创作者在工作台创建后，会显示在此列表。运营不会在此创建或发布作品。",
     loadingTitle: "正在加载作品列表",
@@ -93,8 +84,8 @@ const COPY: Record<Kind, {
     deniedBody: "作品总览仅平台管理员可查看。普通创作者请返回创作工作台，只能看到自己的作品。",
     failedTitle: "作品列表加载失败",
     failedBody: "暂时无法读取作品数据，请重试。本次不会改动任何作品。",
-    footnote: "创作者在 /studio 只能看到自己的作品。此处为运营总览，不提供批量删除或平台发布。",
-    search: "搜索作品标题",
+    footnote: "",
+    search: "搜索作品或创作者",
     count: (total) => `${total} 部作品`,
     time: "full",
   },
@@ -164,7 +155,6 @@ const COPY: Record<Kind, {
   },
 };
 
-const WORK_STATUS = [["all", "全部状态"], ["draft", "草稿"], ["script_review", "剧本待审"], ["storyboard", "分镜中"], ["producing", "制作中"], ["finished", "已完结"], ["unknown", "未知"]];
 const ASSET_TYPES = [["all", "全部类型"], ["image", "分镜图"], ["voice", "角色配音"], ["video", "成片视频"]];
 const JOB_TYPES = [["all", "全部类型"], ["writing", "剧本编写"], ["image", "分镜生图"], ["voice", "角色配音"], ["video", "视频生成"]];
 const JOB_STATUS = [["all", "全部状态"], ["succeeded", "成功"], ["running", "进行中"], ["failed", "失败"], ["unknown", "结果未知"], ["canceled", "已取消"], ["queued", "排队中"]];
@@ -180,9 +170,8 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
   const { gate, reload } = useOperatorGate(impl);
   const [wide, setWide] = useState(true);
   const [phase, setPhase] = useState<Phase>("loading");
-  const [items, setItems] = useState<Array<WorkItem | AssetItem | JobItem | UserItem | LogItem>>([]);
+  const [items, setItems] = useState<Array<AssetItem | JobItem | UserItem | LogItem>>([]);
   const [total, setTotal] = useState(0);
-  const [owners, setOwners] = useState<Array<{ id: string; name: string }>>([]);
   const [projects, setProjects] = useState<Array<{ id: string; title: string }>>([]);
   const [actors, setActors] = useState<string[]>([]);
   const [q, setQ] = useState("");
@@ -220,13 +209,11 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
   const requestCursor = cursor.filters === filters ? cursor.value : null;
 
   useEffect(() => {
-    if (gate !== "ready") return;
+    if (gate !== "ready" || kind === "works") return;
     let live = true;
     setPhase("loading");
     const params = new URLSearchParams();
     if (q.trim()) params.set("q", q.trim());
-    if (kind === "works" && status !== "all") params.set("status", status);
-    if (kind === "works" && owner !== "all") params.set("owner", owner);
     if (kind === "assets" && type !== "all") params.set("type", type);
     if (kind === "assets" && owner !== "all") params.set("project", owner);
     if (kind === "jobs" && type !== "all") params.set("type", type);
@@ -246,10 +233,9 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
           return;
         }
         const body = await response.json() as {
-          items?: Array<WorkItem | AssetItem | JobItem | UserItem | LogItem>;
+          items?: Array<AssetItem | JobItem | UserItem | LogItem>;
           total?: number;
           nextCursor?: string | null;
-          owners?: Array<{ id: string; name: string }>;
           projects?: Array<{ id: string; title: string }>;
           actors?: string[];
           storage?: string;
@@ -267,7 +253,6 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
           return;
         }
         setItems(next);
-        setOwners(body.owners ?? []);
         setProjects(body.projects ?? []);
         setActors(body.actors ?? []);
         setPhase(next.length === 0 ? "empty" : "ready");
@@ -311,6 +296,15 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
     }
   }
 
+  if (kind === "works") {
+    return <div className={styles.page} data-page="works" data-layout={wide ? "table" : "cards"}>
+      <header className={styles.intro}><h1>作品管理</h1></header>
+      {gate === "ready" ? <AdminWorkManagement wide={wide} fetchImpl={impl} onWork={setWork} />
+        : <StateCard gate={gate} copy={copy} onRetry={reload} />}
+      {work && gate === "ready" ? <WorkDrawer item={work} onClose={() => setWork(null)} /> : null}
+    </div>;
+  }
+
   const filtering = Boolean(q.trim() || status !== "all" || owner !== "all" || type !== "all" || role !== "all" || (kind === "logs" && range !== "7d"));
   const showToolbar = gate === "ready";
   const showList = gate === "ready" && (phase === "ready" || (phase === "loading" && items.length > 0) || (phase === "empty" && filtering));
@@ -336,7 +330,7 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
             <input value={q} placeholder={copy.search} aria-label={copy.search} onChange={(event) => setQ(event.target.value)} />
           </label>
           <div className={styles.filters}>
-            <Filters kind={kind} status={status} setStatus={setStatus} owner={owner} setOwner={setOwner} type={type} setType={setType} role={role} setRole={setRole} range={range} setRange={setRange} owners={owners} projects={projects} actors={actors} />
+            <Filters kind={kind} status={status} setStatus={setStatus} owner={owner} setOwner={setOwner} type={type} setType={setType} role={role} setRole={setRole} range={range} setRange={setRange} projects={projects} actors={actors} />
           </div>
         </form>
       ) : null}
@@ -347,13 +341,13 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
         <>
           <section className={styles.panel}>
             <div className={styles.panelHead}>
-              <h2>{kind === "works" ? "全部作品" : kind === "assets" ? "可预览素材" : kind === "jobs" ? "任务队列" : kind === "users" ? "账号列表" : "审计记录"}</h2>
+              <h2>{kind === "assets" ? "可预览素材" : kind === "jobs" ? "任务队列" : kind === "users" ? "账号列表" : "审计记录"}</h2>
               <span>{copy.count(total)}</span>
             </div>
             {phase === "empty" ? <p className={styles.footnote}>没有符合当前筛选的记录。</p> : wide ? (
-              <Table kind={kind} items={items} time={copy.time} onWork={setWork} onAsset={setAsset} onJob={setJobView} onRetry={openRetry} onUser={setUser} onLog={setLog} />
+              <Table kind={kind} items={items} time={copy.time} onAsset={setAsset} onJob={setJobView} onRetry={openRetry} onUser={setUser} onLog={setLog} />
             ) : (
-              <Cards kind={kind} items={items} time={copy.time} onWork={setWork} onAsset={setAsset} onJob={setJobView} onRetry={openRetry} onUser={setUser} onLog={setLog} />
+              <Cards kind={kind} items={items} time={copy.time} onAsset={setAsset} onJob={setJobView} onRetry={openRetry} onUser={setUser} onLog={setLog} />
             )}
             {nextCursor ? (
               <div className={styles.pager}>
@@ -364,7 +358,6 @@ export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: Fe
           </section>
         </>
       ) : null}
-      {work ? <WorkDrawer item={work} onClose={() => setWork(null)} /> : null}
       {asset ? <AssetDrawer item={asset} fetchImpl={impl} onClose={() => setAsset(null)} /> : null}
       {jobView ? <JobDrawer item={jobView} onClose={() => setJobView(null)} /> : null}
       {retryJob ? (
@@ -449,24 +442,9 @@ function Filters(props: {
   setRole: (value: string) => void;
   range: string;
   setRange: (value: string) => void;
-  owners: Array<{ id: string; name: string }>;
   projects: Array<{ id: string; title: string }>;
   actors: string[];
 }) {
-  if (props.kind === "works") {
-    return (
-      <>
-        <select className={styles.select} aria-label="制作状态" value={props.status} onChange={(event) => props.setStatus(event.target.value)}>
-          {WORK_STATUS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-        <select className={styles.select} aria-label="所属创作者" value={props.owner} onChange={(event) => props.setOwner(event.target.value)}>
-          <option value="all">全部创作者</option>
-          {props.owners.map((owner) => <option key={owner.id} value={owner.id}>{owner.name}</option>)}
-          <option value="legacy">历史作品</option>
-        </select>
-      </>
-    );
-  }
   if (props.kind === "assets") {
     return (
       <>
@@ -534,38 +512,7 @@ function Pill({ label }: { label: string }) {
   return <span className={`${styles.pill} ${tone(label)}`}>{label}</span>;
 }
 
-function formatShanghai(iso: string | null, style: "full" | "short"): string {
-  if (!iso) return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).formatToParts(date);
-  const pick = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
-  const clock = `${pick("hour")}:${pick("minute")}`;
-  return style === "short" ? `${pick("month")}-${pick("day")} ${clock}` : `${pick("year")}-${pick("month")}-${pick("day")} ${clock}`;
-}
-
-function Table({ kind, items, time, onWork, onAsset, onJob, onRetry, onUser, onLog }: RowHandlers & { kind: Kind; items: Array<WorkItem | AssetItem | JobItem | UserItem | LogItem>; time: "full" | "short" }) {
-  if (kind === "works") {
-    const rows = items as WorkItem[];
-    return (
-      <table className={styles.table}>
-        <thead><tr><th>作品名称</th><th>所属创作者</th><th>更新时间</th><th>制作状态</th><th>操作</th></tr></thead>
-        <tbody>
-          {rows.map((item) => (
-            <tr key={item.id}>
-              <td>{item.title}</td>
-              <td>{item.ownerName}</td>
-              <td>{formatShanghai(item.updatedAt, time)}</td>
-              <td><Pill label={item.productionLabel} /></td>
-              <td><button type="button" className={styles.linkish} onClick={() => onWork(item)}>查看</button></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    );
-  }
+function Table({ kind, items, time, onAsset, onJob, onRetry, onUser, onLog }: RowHandlers & { kind: Kind; items: Array<AssetItem | JobItem | UserItem | LogItem>; time: "full" | "short" }) {
   if (kind === "assets") {
     const rows = items as AssetItem[];
     return (
@@ -651,7 +598,6 @@ function Table({ kind, items, time, onWork, onAsset, onJob, onRetry, onUser, onL
 }
 
 interface RowHandlers {
-  onWork: (item: WorkItem) => void;
   onAsset: (item: AssetItem) => void;
   onJob: (item: JobItem) => void;
   onRetry: (item: JobItem) => void;
@@ -659,16 +605,7 @@ interface RowHandlers {
   onLog: (item: LogItem) => void;
 }
 
-function Cards({ kind, items, time, onWork, onAsset, onJob, onRetry, onUser, onLog }: RowHandlers & { kind: Kind; items: Array<WorkItem | AssetItem | JobItem | UserItem | LogItem>; time: "full" | "short" }) {
-  if (kind === "works") {
-    return <div className={styles.cards}>{(items as WorkItem[]).map((item) => (
-      <article className={styles.card} key={item.id}>
-        <div className={styles.cardHead}><strong>{item.title}</strong><Pill label={item.productionLabel} /></div>
-        <small>{item.ownerName} · {formatShanghai(item.updatedAt, time)}</small>
-        <button type="button" className={styles.linkish} onClick={() => onWork(item)}>查看</button>
-      </article>
-    ))}</div>;
-  }
+function Cards({ kind, items, time, onAsset, onJob, onRetry, onUser, onLog }: RowHandlers & { kind: Kind; items: Array<AssetItem | JobItem | UserItem | LogItem>; time: "full" | "short" }) {
   if (kind === "assets") {
     return <div className={styles.cards}>{(items as AssetItem[]).map((item) => (
       <article className={styles.card} key={item.id}>

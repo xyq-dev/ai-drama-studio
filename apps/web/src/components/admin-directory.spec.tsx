@@ -42,8 +42,8 @@ it("shows works for an operator and keeps 打开核对 on the read-only review r
   expect(await screen.findByText("雨夜来信")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "发布" })).toBeNull();
   expect(screen.queryByRole("button", { name: /删除/ })).toBeNull();
-  expect(screen.getByText(/不提供批量删除或平台发布/)).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "查看" }));
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
   const open = screen.getByRole("link", { name: "打开核对" });
   expect(open.getAttribute("href")).toBe(WORK.reviewHref);
   expect(open.getAttribute("href")).not.toContain("/projects/");
@@ -253,18 +253,19 @@ it("keeps search mounted while the next query loads and pages with the cursor", 
     return json({ items: [WORK], total: 2, nextCursor: "cursor-2" });
   });
   render(<AdminDirectory kind="works" fetchImpl={fetchImpl} />);
-  const input = await screen.findByLabelText("搜索作品标题");
+  const input = await screen.findByLabelText("搜索作品或创作者");
   expect(await screen.findByText("雨夜来信")).toBeTruthy();
   input.focus();
   fireEvent.change(input, { target: { value: "雨" } });
-  expect(document.activeElement).toBe(screen.getByLabelText("搜索作品标题"));
-  expect(screen.getByText("雨夜来信")).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByLabelText("搜索作品或创作者"));
+  expect(screen.queryByText("雨夜来信")).toBeNull();
   release?.(json({ items: [WORK], total: 2, nextCursor: "cursor-2" }));
-  const more = await screen.findByRole("button", { name: "加载更多" });
+  const more = await screen.findByRole("button", { name: "下一页" });
   await vi.waitFor(() => expect(more.hasAttribute("disabled")).toBe(false));
   fireEvent.click(more);
   expect(await screen.findByText("旧巷灯火")).toBeTruthy();
   expect(urls.some((url) => url.includes("cursor=cursor-2"))).toBe(true);
+  expect(screen.queryByText("雨夜来信")).toBeNull();
 });
 
 it("keeps the log time filter when the default window is empty", async () => {

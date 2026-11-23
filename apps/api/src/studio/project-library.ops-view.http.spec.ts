@@ -10,6 +10,7 @@ import { AuthModule } from "../auth/auth.module";
 import { hashPassword } from "../auth/password-hash";
 import { SiteAuth, type CreatorLoginDirectory } from "../auth/site-auth";
 import { PROJECT_LIBRARY_SERVICE, ProjectLibraryController } from "./project-library.controller";
+import { ScriptWorkbenchController, SCRIPT_WORKBENCH_SERVICE } from "./script-workbench.controller";
 import { ProjectLibraryService } from "./project-library.service";
 
 const ORIGIN = "https://drama.example.test";
@@ -67,6 +68,11 @@ describe("library projects ops view (DEF-01)", () => {
     app = undefined;
   });
 
+  const creatorBin = {
+    snapshot: () => ({ owner: storeOwnerAccountFilter() }),
+    previewProject: vi.fn(), listTrash: vi.fn(), restoreProject: vi.fn(), trashProject: vi.fn(() => ({ owner: storeOwnerAccountFilter() })),
+  };
+
   async function start() {
     const creators: CreatorLoginDirectory = {
       findActiveByUsername: async (username) => username === "alice"
@@ -82,7 +88,7 @@ describe("library projects ops view (DEF-01)", () => {
         { NODE_ENV: "test", APP_WORKSPACE_ID: WORKSPACE } as ApiEnv,
         { kind: "enabled", auth },
       )],
-      controllers: [ProjectLibraryController],
+      controllers: [ProjectLibraryController, ScriptWorkbenchController],
       providers: [{
         provide: PROJECT_LIBRARY_SERVICE,
         useValue: new ProjectLibraryService({
@@ -90,13 +96,14 @@ describe("library projects ops view (DEF-01)", () => {
           createCategory: vi.fn(),
           assignCategory: vi.fn(),
         }, WORKSPACE),
-      }],
+      }, { provide: SCRIPT_WORKBENCH_SERVICE, useValue: creatorBin }],
     }).compile();
     app = module.createNestApplication({ logger: false });
     app.setGlobalPrefix("api/v1");
     app.useGlobalFilters(new SafeExceptionFilter());
     await app.listen(0, "127.0.0.1");
     base = `${await app.getUrl()}/api/v1`;
+    return auth;
   }
 
   async function login(username: string, password: string) {
@@ -146,6 +153,41 @@ describe("library projects ops view (DEF-01)", () => {
     expect(without.status).toBe(200);
     const plain = await without.json() as { items: Array<{ id: string }> };
     expect(plain.items.map((item) => item.id)).toEqual([ALICE_PROJECT]);
+  });
+
+  it("limits a bound staff operations view to the authorized list and keeps shared legacy recycling on audited routes", async () => {
+    const auth = await start();
+    const staffId = "00000000-0000-4000-8000-000000000092";
+    auth.setStaffDirectory({
+      findByUsername: async username => username === "staff" ? {
+        id: staffId, username, passwordHash: HASH, status: "active", permissions: [], totpEnabled: false,
+      } : null,
+      recordLogin: async () => {}, verifySecondFactor: async () => false,
+    });
+    const cookie = await login("staff", PASSWORD);
+    const get = (path: string) => fetch(base + path, { headers: { cookie } });
+    expect(await (await get("/account/ops-access")).json()).toMatchObject({ opsViewAvailable: false });
+    expect((await (await get("/library/projects?view=ops")).json()).items).toHaveLength(1);
+    auth.syncStaff(staffId, { status: "active", permissions: ["review_works", "manage_works"] });
+    expect(await (await get("/account/ops-access")).json()).toMatchObject({ opsViewAvailable: true });
+    expect((await (await get("/library/projects?view=ops")).json()).items).toHaveLength(3);
+    const path = "/projects/" + LEGACY_PROJECT + "/script-workbench";
+    expect(await (await get(path + "?view=ops")).json()).toEqual({ owner: LEGACY_OWNER_ACCOUNT_ID });
+    expect((await get("/script-workbench/trash?view=ops")).status).toBe(403);
+    expect((await get(path + "/deletion-preview")).status).toBe(403);
+    const write = (route: string, sessionCookie: string) => fetch(base + route, {
+      method: "POST", headers: { origin: ORIGIN, cookie: sessionCookie, "x-csrf-token": auth.peek({ cookie: sessionCookie }).csrfToken },
+    });
+    expect((await write(path + "/trash?view=ops", cookie)).status).toBe(403);
+    expect((await write(path + "/restore", cookie)).status).toBe(403);
+    expect(creatorBin.listTrash).not.toHaveBeenCalled();
+    expect(creatorBin.previewProject).not.toHaveBeenCalled();
+    expect(creatorBin.trashProject).not.toHaveBeenCalled();
+    expect(creatorBin.restoreProject).not.toHaveBeenCalled();
+    const alice = await login("alice", "alice-fixture-password");
+    const ownTrash = await write("/projects/" + ALICE_PROJECT + "/script-workbench/trash?view=ops", alice);
+    expect(ownTrash.status).toBe(201);
+    expect(await ownTrash.json()).toEqual({ owner: ALICE });
   });
 
   it("rejects invalid library query fields with the same validation error", async () => {

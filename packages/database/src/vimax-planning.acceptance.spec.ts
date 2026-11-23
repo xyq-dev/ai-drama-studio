@@ -10,6 +10,7 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { vimaxEvaluationInputSchema, vimaxPlanningStartSchema, type VimaxPlanningRecord, type VimaxPlanningReservation, type WritingCandidateRecord, type TitleRunRecord } from "@ai-drama/contracts";
 import { hashVimaxPlanningRequest } from "@ai-drama/domain";
+import { AdminOpsStore } from "./admin-ops-store";
 import { runMigrations } from "./migrations";
 import { PostgresTitleWritingStore } from "./title-writing-store";
 import { TextChainService } from "./text-chain";
@@ -69,6 +70,20 @@ describe("ViMax planning reviewed drafts on a new empty PostgreSQL database",()=
     const changed=structuredClone(r);changed.request.requirements.style+=" ";changed.requestHash=hashVimaxPlanningRequest(w.projectId,w.episodeId,changed.request);
     expect(await store.create(changed,limits())).toEqual({kind:"conflict"});expect(await count(w)).toBe(1);
     const replay=await store.create({...r,providerKey:"deepseek",model:"different-default"},limits(0));expect(replay.kind).toBe("existing");
+  });
+  it("hides archived planning inputs, outputs, lists and idempotent replays",async()=>{
+    const w=await world(), r=reservation(w);
+    const created=await create(w,r);
+    const scope=[w.workspaceId,w.projectId,w.episodeId,actor] as const;
+    await store.cancel(...scope,created.id,new Date().toISOString());
+    const admin=new AdminOpsStore(pool);
+    await admin.adminTrashWork(w.workspaceId,w.projectId,{expectedVersion:await version("project",w.projectId),actor:"qa-admin",reason:"清理测试"});
+    expect(await store.findByKey(w.workspaceId,actor,r.idempotencyKey)).toBeNull();
+    expect(await store.get(...scope,created.id)).toBeNull();
+    expect(await store.getById(w.workspaceId,created.id)).toBeNull();
+    expect(await store.list(...scope,10)).toEqual([]);
+    expect(await store.cancel(...scope,created.id,new Date().toISOString())).toBeNull();
+    await expect(store.create(r,limits())).rejects.toMatchObject({code:"NOT_FOUND"});
   });
   it("source changes before reserve or submitted CAS produce no paid send state",async()=>{
     const before=await world();await pool.query("UPDATE episode SET approved_script_revision_id=NULL WHERE id=$1",[before.episodeId]);

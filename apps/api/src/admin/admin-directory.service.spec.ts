@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import type { AdminOpsStore, JobSignalRow } from "@ai-drama/database";
+import { PersistenceError, type AdminOpsStore, type JobSignalRow } from "@ai-drama/database";
 import { AdminDirectoryService } from "./admin-directory.service";
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
@@ -127,16 +127,16 @@ it("keeps the all-time log range and defaults a missing range to seven days", as
     logRecord("old", new Date(now - 40 * 86_400_000).toISOString()),
   ];
   const directory = new AdminDirectoryService({
-    store: {} as AdminOpsStore,
+    store: { listAdminWorkLogs: async () => [] } as unknown as AdminOpsStore,
     creators: null,
     workspaceId: WORKSPACE,
     logs: { list: async () => records, get: async () => null } as never,
     retry: vi.fn(),
     readContent: vi.fn(),
   });
-  expect((await directory.logs({})).items.map((item) => item.target)).toEqual(["recent"]);
-  expect((await directory.logs({ range: "7d" })).items.map((item) => item.target)).toEqual(["recent"]);
-  expect((await directory.logs({ range: "all" })).items.map((item) => item.target)).toEqual(["recent", "old"]);
+  expect((await directory.logs({}, true)).items.map((item) => item.target)).toEqual(["recent"]);
+  expect((await directory.logs({ range: "7d" }, true)).items.map((item) => item.target)).toEqual(["recent"]);
+  expect((await directory.logs({ range: "all" }, true)).items.map((item) => item.target)).toEqual(["recent", "old"]);
 });
 
 function logRecord(label: string, at: string) {
@@ -146,3 +146,68 @@ function logRecord(label: string, at: string) {
     secretStatus: null, secretMask: null, source: "管理后台", detail: "",
   };
 }
+
+const selectedIds = [
+  "00aaaaaa-1111-4111-8111-111111111111",
+  "00aaaaaa-2222-4222-8222-222222222222",
+  "00aaaaaa-3333-4333-8333-333333333333",
+];
+const operator = { accountId: "operator-id", username: "operator-name" };
+
+function management(store: Partial<AdminOpsStore>) {
+  return new AdminDirectoryService({
+    store: store as AdminOpsStore, creators: null, workspaceId: WORKSPACE, logs: null,
+    retry: vi.fn(), readContent: vi.fn(),
+  });
+}
+
+it("refuses the entire change before writing on duplicate IDs, missing approval, invalid reasons, or spoofed attribution", async () => {
+  const trash = vi.fn(), restore = vi.fn(), preview = vi.fn();
+  const directory = management({ adminTrashWork: trash, adminRestoreWork: restore, previewAdminWorkTrash: preview });
+  const item = { id: selectedIds[0]!, version: 1 };
+  for (const body of [
+    { confirmed: true, reason: "清理", items: [item, { ...item, id: item.id.toUpperCase() }] },
+    { confirmed: true, reason: "清理", items: [item, { ...item, version: -1 }] },
+    { confirmed: false, reason: "清理", items: [item] },
+    { confirmed: true, reason: "  ", items: [item] },
+    { confirmed: true, reason: "长".repeat(301), items: [item] },
+    { confirmed: true, reason: "清理", items: [item], actor: "pretend-admin" },
+    { confirmed: true, reason: "清理", items: [] },
+    { confirmed: true, reason: "清理", items: Array(51).fill(item) },
+  ]) await expect(directory.changeWorkTrash(operator, "trash", body)).rejects.toMatchObject({ status: 400 });
+  await expect(directory.changeWorkTrash(operator, "restore", { confirmed: true, reason: "清理", items: [item] })).rejects.toMatchObject({ status: 400 });
+  await expect(directory.previewWorkTrash({ ids: [item.id, item.id] })).rejects.toMatchObject({ status: 400 });
+  expect(preview).not.toHaveBeenCalled();
+  expect(trash).not.toHaveBeenCalled();
+  expect(restore).not.toHaveBeenCalled();
+});
+
+it("attributes successful changes to the server session and preserves per-item conflicts and uncertain results", async () => {
+  const trash = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new PersistenceError("REVISION_CONFLICT", "conflict")).mockRejectedValueOnce(new Error("private DB error"));
+  const restore = vi.fn();
+  const directory = management({ adminTrashWork: trash, adminRestoreWork: restore });
+  const items = selectedIds.map((id) => ({ id, version: 2 }));
+  const page = await directory.changeWorkTrash(operator, "trash", { confirmed: true, reason: " 清理测试 ", items });
+  expect(trash).toHaveBeenCalledTimes(3);
+  expect(trash).toHaveBeenCalledWith(WORKSPACE, selectedIds[0], { expectedVersion: 2, actor: operator.username, reason: "清理测试" });
+  expect(page.items.map((item) => item.status)).toEqual(["succeeded", "skipped", "unknown"]);
+  expect(JSON.stringify(page)).not.toContain("private DB error");
+  const back = await directory.changeWorkTrash(operator, "restore", { confirmed: true, items: [items[0]] });
+  expect(restore).toHaveBeenCalledWith(WORKSPACE, selectedIds[0], { expectedVersion: 2, actor: operator.username });
+  expect(back.items[0]).toEqual({ id: selectedIds[0], status: "succeeded", message: null });
+});
+
+it("retains the readable works list when the management schema is unavailable", async () => {
+  const directory = management({ listWorks: vi.fn().mockResolvedValue({ items: [], owners: [], total: 0, nextCursor: null, workManagementReady: false }) });
+  expect(await directory.works({}, true)).toMatchObject({ items: [], canManageWorks: false });
+});
+
+it("reads the authoritative work log without the optional file journal", async () => {
+  const row = { id: selectedIds[1]!, projectId: selectedIds[0]!, title: "作品", at: new Date().toISOString(),
+    actor: "值班员", action: "trash" as const, reason: "清理测试" };
+  const directory = management({ listAdminWorkLogs: vi.fn().mockResolvedValue([row]), getAdminWorkLog: vi.fn().mockResolvedValue(row) });
+  const log = await directory.logDetail(row.id, true);
+  expect(log).toMatchObject({ id: row.id, actor: row.actor, action: "作品移入回收站", detail: row.reason });
+  expect(await directory.logs({ actor: row.actor, q: "回收站" }, true)).toMatchObject({ storage: "ready", items: [log] });
+  expect(await directory.logs({ actor: "另一个人" }, true)).toMatchObject({ items: [] });
+});

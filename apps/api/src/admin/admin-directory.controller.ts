@@ -3,10 +3,16 @@ import { PersistenceError } from "@ai-drama/database";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
 import { setAdminResponseHeaders } from "./admin-auth";
 import { StaffAccessError, assertStaffPermission } from "./staff-access.service";
-import type { StaffPermission } from "@ai-drama/domain";
+import { sessionAllowsStaffPermission, type StaffPermission } from "@ai-drama/domain";
 import { AdminDirectoryError, AdminDirectoryService } from "./admin-directory.service";
 
 export const ADMIN_DIRECTORY_SERVICE = "ADMIN_DIRECTORY_SERVICE";
+
+const workManagementPermissions = ["review_works", "manage_works"] as const;
+
+function canManageWorks(session: ReturnType<SiteAuth["session"]>) {
+  return workManagementPermissions.every(required => sessionAllowsStaffPermission({ ...session, required }));
+}
 
 interface AdminResponse {
   setHeader(name: string, value: string): void;
@@ -31,8 +37,36 @@ export class AdminDirectoryController {
   @Get("works")
   works(@Headers() headers: RequestHeaders, @Query() query: Record<string, string | undefined>, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const { directory } = this.operator(headers, "review_works");
-      return directory.works({ q: query.q, status: query.status, owner: query.owner, cursor: query.cursor, limit: number(query.limit) });
+      const { directory, session } = this.operator(headers, "review_works");
+      return directory.works({ q: query.q, status: query.status, owner: query.owner, cursor: query.cursor, limit: number(query.limit) }, canManageWorks(session));
+    });
+  }
+
+  @Get("works/trash")
+  trashedWorks(@Headers() headers: RequestHeaders, @Query() query: Record<string, string | undefined>, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => this.operator(headers, ...workManagementPermissions).directory.trashedWorks({
+      q: query.q, cursor: query.cursor, limit: number(query.limit),
+    }));
+  }
+
+  @Post("works/trash-preview")
+  trashPreview(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => this.workWriter(headers).directory.previewWorkTrash(body));
+  }
+
+  @Post("works/trash")
+  trashWorks(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => {
+      const { directory, session } = this.workWriter(headers);
+      return directory.changeWorkTrash(session, "trash", body);
+    });
+  }
+
+  @Post("works/restore")
+  restoreWorks(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => {
+      const { directory, session } = this.workWriter(headers);
+      return directory.changeWorkTrash(session, "restore", body);
     });
   }
 
@@ -138,24 +172,30 @@ export class AdminDirectoryController {
   @Get("logs")
   logs(@Headers() headers: RequestHeaders, @Query() query: Record<string, string | undefined>, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const { directory } = this.operator(headers);
-      return directory.logs({ q: query.q, actor: query.actor, range: query.range });
+      const { directory, session } = this.operator(headers);
+      return directory.logs({ q: query.q, actor: query.actor, range: query.range }, canManageWorks(session));
     });
   }
 
   @Get("logs/:id")
   log(@Headers() headers: RequestHeaders, @Param("id") id: string, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const { directory } = this.operator(headers);
-      return directory.logDetail(id);
+      const { directory, session } = this.operator(headers);
+      return directory.logDetail(id, canManageWorks(session));
     });
   }
 
-  private operator(headers: RequestHeaders, permission?: StaffPermission): { directory: AdminDirectoryService; auth: SiteAuth; session: { username: string; accountId: string; role: string } } {
+  private workWriter(headers: RequestHeaders) {
+    const access = this.operator(headers, ...workManagementPermissions);
+    authorizeJsonWrite(access.auth, headers);
+    return access;
+  }
+
+  private operator(headers: RequestHeaders, ...permissions: StaffPermission[]) {
     if (!this.directory || this.site?.kind !== "enabled") throw new SiteAuthError(503, "AUTH_NOT_CONFIGURED");
     const session = this.site.auth.session(headers);
     if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
-    if (permission) assertStaffPermission(session, permission);
+    for (const permission of permissions) assertStaffPermission(session, permission);
     return { directory: this.directory, auth: this.site.auth, session };
   }
 
@@ -179,7 +219,7 @@ export class AdminDirectoryController {
         return { error: { code: "VALIDATION_ERROR", message: "查询参数无效。" } };
       }
       response.status(503);
-      return { error: { code: "ADMIN_DIRECTORY_UNAVAILABLE", message: "暂时无法读取运营数据。本次没有改动作品、素材或任务。" } };
+      return { error: { code: "ADMIN_DIRECTORY_UNAVAILABLE", message: "运营数据暂不可用，请刷新核对。" } };
     }
   }
 }

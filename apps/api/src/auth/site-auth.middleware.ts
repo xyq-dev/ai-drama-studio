@@ -1,4 +1,5 @@
 import { Inject, Injectable, type NestMiddleware } from "@nestjs/common";
+import { sessionAllowsStaffPermission } from "@ai-drama/domain";
 import { runWithCreatorAccess, type CreatorAccessScope } from "./creator-access";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuthState } from "./site-auth";
 
@@ -75,7 +76,10 @@ export class SiteAuthMiddleware implements NestMiddleware {
         this.state.auth.authorizeWrite(request.headers);
         session = this.state.auth.peek(request.headers);
       }
-      const opsView = session.role === "operator" && opsViewRequested(request);
+      // Bound staff may browse the cross-owner library. Changes to other creators' works use audited admin routes.
+      const staffListRead = ["GET", "HEAD"].includes(request.method.toUpperCase()) && routeOf(request.originalUrl) === "/library/projects";
+      const opsView = opsViewRequested(request) && sessionAllowsStaffPermission({ ...session, required: "review_works" })
+        && (!session.staffId || staffListRead);
       const scope: CreatorAccessScope = {
         kind: "scoped",
         role: session.role,

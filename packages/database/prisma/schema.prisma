@@ -777,3 +777,20 @@ model TitleWritingResume {
   @@id([runId, idempotencyKey])
   @@map("title_writing_resume")
 }
+
+model AdminWorkAction {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  projectVersion Int      @map("project_version")
+  archivedAt     DateTime @map("archived_at") @db.Timestamptz(6)
+  occurredAt     DateTime @default(dbgenerated("clock_timestamp()")) @map("occurred_at") @db.Timestamptz(6)
+  title          String
+  action         String
+  actorKind      String   @map("actor_kind")
+  actor          String
+  reason         String?
+
+  @@unique([workspaceId, projectId, projectVersion])
+  @@map("admin_work_action")
+}

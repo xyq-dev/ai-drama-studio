@@ -194,7 +194,7 @@ jobs:
           provider="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000100_writing_provider_anthropic)"
           echo "provider: ${provider}"
           printf '%s\n' "${provider}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
-          printf '%s\n' "${provider}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261016000200_writing_candidate","20261017000100_writing_candidate_deepseek","20261019000100_auto_creation","20261023000100_series_writing","20261118000100_creator_account_plan","20261119000100_upload_session","20261123000100_staff_membership"\]'
+          printf '%s\n' "${provider}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261016000200_writing_candidate","20261017000100_writing_candidate_deepseek","20261019000100_auto_creation","20261023000100_series_writing","20261118000100_creator_account_plan","20261119000100_upload_session","20261123000100_staff_membership","20261123000200_admin_work_actions"\]'
           # Before the candidate table exists the DeepSeek command refuses and records nothing.
           if DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261017000100_writing_candidate_deepseek; then exit 1; fi
           early="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM schema_migration WHERE name = '20261017000100_writing_candidate_deepseek'")"
@@ -202,20 +202,20 @@ jobs:
           candidate="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000200_writing_candidate)"
           echo "candidate: ${candidate}"
           printf '%s\n' "${candidate}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
-          printf '%s\n' "${candidate}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261017000100_writing_candidate_deepseek","20261019000100_auto_creation","20261023000100_series_writing","20261118000100_creator_account_plan","20261119000100_upload_session","20261123000100_staff_membership"\]'
+          printf '%s\n' "${candidate}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261017000100_writing_candidate_deepseek","20261019000100_auto_creation","20261023000100_series_writing","20261118000100_creator_account_plan","20261119000100_upload_session","20261123000100_staff_membership","20261123000200_admin_work_actions"\]'
           again="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000200_writing_candidate)"
           printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
           deepseek="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261017000100_writing_candidate_deepseek)"
           echo "deepseek: ${deepseek}"
           printf '%s\n' "${deepseek}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
-          printf '%s\n' "${deepseek}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261019000100_auto_creation","20261023000100_series_writing","20261118000100_creator_account_plan","20261119000100_upload_session","20261123000100_staff_membership"\]'
+          printf '%s\n' "${deepseek}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261019000100_auto_creation","20261023000100_series_writing","20261118000100_creator_account_plan","20261119000100_upload_session","20261123000100_staff_membership","20261123000200_admin_work_actions"\]'
           deepseekAgain="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261017000100_writing_candidate_deepseek)"
           printf '%s\n' "${deepseekAgain}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
           # Fourth release command: the automatic creation tables, alone; the script breakdown and series writing stay pending.
           auto="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261019000100_auto_creation)"
           echo "auto: ${auto}"
           printf '%s\n' "${auto}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
-          printf '%s\n' "${auto}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261023000100_series_writing","20261118000100_creator_account_plan","20261119000100_upload_session","20261123000100_staff_membership"\]'
+          printf '%s\n' "${auto}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261023000100_series_writing","20261118000100_creator_account_plan","20261119000100_upload_session","20261123000100_staff_membership","20261123000200_admin_work_actions"\]'
           autoAgain="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261019000100_auto_creation)"
           printf '%s\n' "${autoAgain}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
           autoTables="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('auto_creation_run', 'auto_creation_stage', 'auto_creation_call', 'auto_creation_resume')")"
@@ -254,7 +254,7 @@ jobs:
 
       - name: Run the deploy migration command on a new database, then again
         # The real deploy command (pnpm --filter @ai-drama/database migrate) on a second database of this job's container.
-        # It must apply all sixteen migrations once and nothing the second time; the four title writing tables, the script
+        # It must apply all seventeen migrations once and nothing the second time; the four title writing tables, the script
         # breakdown scene table and the online candidate table must exist, and both provider CHECKs must allow anthropic.
         run: |
           name="ads_title_acceptance_deploy_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
@@ -262,7 +262,7 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
           first="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "first run: ${first}"
-          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 16 migration\(s\)\.$"
+          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 17 migration\(s\)\.$"
           second="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "second run: ${second}"
           printf '%s\n' "${second}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
@@ -281,16 +281,16 @@ jobs:
       - name: Run the deploy migration command again on the upgraded acceptance database
         # The store acceptance upgraded this database, with its title writing data, to the episode plan release. The real
         # deploy command must add exactly the script breakdown, provider, candidate, DeepSeek candidate, automatic creation,
-        # series writing, creator-plan, upload-session and staff-membership migrations, and a
+        # series writing, creator-plan, upload-session, staff-membership and work-management migrations, and a
         # second run must find nothing.
         run: |
           name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
           again="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "redeploy: ${again}"
-          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 9 migration\(s\)\.$"
-          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT string_agg(name, ',' ORDER BY name) FROM (SELECT name FROM schema_migration ORDER BY name DESC LIMIT 9) AS latest")"
-          test "${last}" = "20261012000100_script_breakdown,20261016000100_writing_provider_anthropic,20261016000200_writing_candidate,20261017000100_writing_candidate_deepseek,20261019000100_auto_creation,20261023000100_series_writing,20261118000100_creator_account_plan,20261119000100_upload_session,20261123000100_staff_membership"
+          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 10 migration\(s\)\.$"
+          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT string_agg(name, ',' ORDER BY name) FROM (SELECT name FROM schema_migration ORDER BY name DESC LIMIT 10) AS latest")"
+          test "${last}" = "20261012000100_script_breakdown,20261016000100_writing_provider_anthropic,20261016000200_writing_candidate,20261017000100_writing_candidate_deepseek,20261019000100_auto_creation,20261023000100_series_writing,20261118000100_creator_account_plan,20261119000100_upload_session,20261123000100_staff_membership,20261123000200_admin_work_actions"
           final="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "final redeploy: ${final}"
           printf '%s\n' "${final}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"

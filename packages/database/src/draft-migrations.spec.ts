@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EPISODE_PLAN_COLUMNS, EPISODE_PLAN_MIGRATION } from "./episode-plan";
 import { SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES, WRITING_PROVIDER_MIGRATION } from "./title-writing-store";
-import { AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, UPLOAD_SESSION_MIGRATION, STAFF_MEMBERSHIP_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION } from "./migrations";
+import { AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, UPLOAD_SESSION_MIGRATION, STAFF_MEMBERSHIP_MIGRATION, ADMIN_WORK_ACTIONS_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION } from "./migrations";
 
 const drafts = join(__dirname, "..", "prisma", "drafts");
 const applied = join(__dirname, "..", "prisma", "migrations");
@@ -78,7 +78,7 @@ describe("title writing formal migration", () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
     expect(names.indexOf(TITLE_WRITING_MIGRATION)).toBe(Object.keys(RELEASED).indexOf(TITLE_WRITING_MIGRATION));
     expect(names).toEqual([...Object.keys(RELEASED), SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION,
-      WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, UPLOAD_SESSION_MIGRATION, STAFF_MEMBERSHIP_MIGRATION]);
+      WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, UPLOAD_SESSION_MIGRATION, STAFF_MEMBERSHIP_MIGRATION, ADMIN_WORK_ACTIONS_MIGRATION]);
     const draft = await readFile(draftPath, "utf8");
     expect(draft.split("\n")[0]).toBe("-- SUPERSEDED DRAFT. Do not apply. Kept only as the record of what passed the isolated acceptances.");
     expect(draft).toContain(`prisma/migrations/${TITLE_WRITING_MIGRATION}/migration.sql`);
@@ -153,11 +153,10 @@ describe("episode plan migration", () => {
 describe("script breakdown migration", () => {
   const migrationPath = join(applied, SCRIPT_BREAKDOWN_MIGRATION, "migration.sql");
 
-  it("follows every released migration; only the independent provider, candidate, automatic creation, series, creator-plan and upload-session migrations sort after it", async () => {
+  it("follows the released migrations and keeps later migrations in release order", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
-    expect(names.slice(0, -9)).toEqual(Object.keys(RELEASED));
-    expect(names.slice(-9)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
-    AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, UPLOAD_SESSION_MIGRATION, STAFF_MEMBERSHIP_MIGRATION]);
+    expect(names).toEqual([...Object.keys(RELEASED), SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+    AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, UPLOAD_SESSION_MIGRATION, STAFF_MEMBERSHIP_MIGRATION, ADMIN_WORK_ACTIONS_MIGRATION]);
   });
 
   it("only expands: adds columns, one table, one index and wider CHECKs, and writes, rewrites or drops no data", async () => {

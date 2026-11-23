@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  BUILTIN_STAFF_ROLES,
   INVITE_TTL_MS,
+  SUPER_ADMIN_ROLE_CODE,
   inviteUsability,
   inviteUsabilityMessage,
   lastSuperAdminAllows,
@@ -14,6 +16,11 @@ describe("staff access rules", () => {
       "review_works",
       "adjust_quota",
     ]);
+  });
+
+  it("grants work recycling only to the built-in super administrator by default", () => {
+    expect(BUILTIN_STAFF_ROLES.filter(role => role.permissions.includes("manage_works")).map(role => role.code))
+      .toEqual([SUPER_ADMIN_ROLE_CODE]);
   });
 
   it("lets an unbound operator through and a creator through nothing", () => {

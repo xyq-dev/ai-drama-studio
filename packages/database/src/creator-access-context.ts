@@ -53,7 +53,7 @@ export async function ownedProjectBind(
   const owner = storeOwnerAccountFilter(ownerAccountId);
   if (!owner || !(await projectOwnerColumnReady(client))) return { sql: "", params: [] };
   return {
-    sql: `AND ${projectAlias}.owner_account_id = $${String(paramIndex)}::uuid`,
+    sql: `AND ${projectAlias}.archived_at IS NULL AND ${projectAlias}.status = 'ACTIVE' AND ${projectAlias}.owner_account_id = $${String(paramIndex)}::uuid`,
     params: [owner],
   };
 }

@@ -231,3 +231,71 @@
   .panel { padding-bottom: 8px; }
   .drawerActions, .dialogActions { margin-top: 20px; }
 }
+
+.workTabs, .workFilters, .workBulk, .workPager, .workRowActions, .workSelectAll {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+}
+.workTabs { margin-top: 18px; border-bottom: 1px solid var(--admin-line); }
+.workTabs button {
+  padding: 8px 12px; border: 0; border-bottom: 3px solid transparent; background: transparent;
+  color: var(--admin-text); font: inherit; cursor: pointer;
+}
+.workTabs button[aria-pressed="true"] { border-color: var(--admin-blue); color: var(--admin-blue-ink); font-weight: 600; }
+.worksPanel { padding: 16px; }
+.worksPanel td, .workCheck li, .workReport li, .worksPanel .card { overflow-wrap: anywhere; }
+.workFilters { margin-bottom: 14px; }
+.workFilters .search { border: 1px solid var(--admin-line); border-radius: 8px; padding: 0 10px; max-width: 420px; }
+.workFilters .search input { flex: 1; min-width: 0; }
+.workBulk { margin-bottom: 12px; padding: 10px 14px; background: var(--admin-blue-soft); border-radius: 8px; }
+.workDanger {
+  min-height: 40px; padding: 0 14px; border: 1px solid var(--admin-red); border-radius: 8px;
+  color: var(--admin-red); background: white; font: inherit; cursor: pointer;
+}
+.workState { padding: 20px 8px; }
+.workState h2 { margin: 0 0 12px; font-size: 17px; }
+.workState button { margin: 8px; }
+.workReport { margin: 8px 0 14px; padding: 12px; background: var(--admin-soft); border-radius: 8px; font-size: 14px; }
+.workReport ul { margin: 6px 0 0; padding-inline-start: 20px; }
+.workPager { justify-content: flex-end; padding-top: 12px; }
+.workPager span { margin-inline-end: auto; font-size: 13px; color: var(--admin-muted); }
+.workSelectAll { padding-left: 12px; }
+.workRowActions { gap: 8px; }
+.workMenu { position: relative; }
+.workMenu summary {
+  padding: 6px; list-style: none; cursor: pointer; color: var(--admin-ink);
+  border-radius: 6px; font-weight: 700; line-height: 24px;
+}
+.workMenu summary::-webkit-details-marker { display: none; }
+.workMenu > div {
+  position: absolute; z-index: 4; right: 0; min-width: 120px; padding: 4px;
+  border: 1px solid var(--admin-line); border-radius: 8px; background: white; box-shadow: 0 4px 12px #1018281a;
+}
+.workMenu button { width: 100%; border: 0; background: white; color: var(--admin-text); cursor: pointer; padding: 9px 10px; text-align: left; font: inherit; }
+.workMenu button:last-child { color: var(--admin-red); }
+.workMenu button:focus-visible, .workMenu button:hover { background: var(--admin-soft); }
+.workDialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.workDialog .dialogActions { margin-top: 20px; flex-wrap: wrap; }
+.workCheck { margin-top: 16px; border: 1px solid var(--admin-line); border-radius: 8px; overflow: hidden; }
+.workCheck h3 { margin: 0; padding: 8px 12px; background: var(--admin-soft); font-size: 14px; }
+.workCheck ul { padding: 0; margin: 0; list-style: none; }
+.workCheck li { display: grid; grid-template-columns: 2fr 1fr; gap: 4px 10px; padding: 8px 12px; border-top: 1px solid var(--admin-line); }
+.workCheck small { grid-column: 1/-1; color: var(--admin-muted); }
+.workBlocked h3 { background: #fff4d6; color: #87530a; }
+.workDialog textarea { padding: 10px; min-height: 62px; resize: vertical; border: 1px solid var(--admin-line); border-radius: 8px; font: inherit; }
+.workDialog button:disabled { opacity: .55; cursor: default; }
+.workDialog p.workInvalid { color: var(--admin-red); }
+@media (max-width: 1023px) {
+  .worksPanel { padding: 12px; }
+  .workFilters { align-items: stretch; flex-direction: column; }
+  .workFilters .search { max-width: none; }
+  .worksPanel .card { margin: 10px 0; }
+  .workTabs button, .workRowActions button, .workRowActions summary { min-height: 44px; }
+  .workMenu > div { right: auto; left: 0; }
+}
+@media (min-width: 1024px) {
+  .workDialog { width: min(750px, calc(100vw - 64px)); padding: 28px 32px; }
+  .workDialog h2 { font-size: 24px; line-height: 34px; }
+  .workDialog > p, .workCheck h3 { font-size: 16px; line-height: 24px; }
+  .workCheck li { padding: 10px 14px; }
+  .workDialog .dialogActions { margin-top: 24px; }
+}

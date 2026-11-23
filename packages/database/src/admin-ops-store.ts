@@ -2,6 +2,9 @@ import { Buffer } from "node:buffer";
 import type { QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
 
+import { adminWorkAuditReady, changeProjectTrash, activeWork } from "./script-workbench-trash";
+import type { PoolClient } from "pg";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE = 20;
 
@@ -68,6 +71,9 @@ export interface OwnerFacetRow {
   username: string;
   status: string;
 }
+
+export interface AdminTrashedWork { id: string; title: string; ownerName: string; deletedAt: string; deletedBy: string | null; reason: string | null; version: number }
+export interface AdminWorkLog { id: string; at: string; actor: string; action: "trash" | "restore"; projectId: string; title: string; reason: string | null }
 
 interface SchemaFlags {
   owner: boolean;
@@ -138,15 +144,10 @@ function nullableNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/**
- * Read-only operator aggregation over existing tables.
- * Missing phase-4 columns (owner_account_id) and optional production tables degrade to empty signals.
- * No new table and no write, except none — this store never inserts.
- */
 export class AdminOpsStore {
   constructor(private readonly pool: DatabasePool) {}
 
-  async listWorks(workspaceId: string, input: AdminPageQuery = {}): Promise<{ items: WorkSignalRow[]; total: number; nextCursor: string | null; owners: OwnerFacetRow[] }> {
+  async listWorks(workspaceId: string, input: AdminPageQuery = {}): Promise<{ items: WorkSignalRow[]; total: number; nextCursor: string | null; owners: OwnerFacetRow[]; workManagementReady: boolean }> {
     const limit = pageLimit(input.limit);
     const q = (input.q ?? "").trim();
     if (q.length > 200) throw new PersistenceError("VALIDATION_ERROR", "作品查询参数无效。");
@@ -160,48 +161,28 @@ export class AdminOpsStore {
     return this.read(async (client) => {
       const flags = await this.flags(client);
       const sql = new Params();
-      const workspace = sql.add(workspaceId);
-      const where = [`p.workspace_id = ${workspace}::uuid`];
-      if (q) where.push(`p.title ILIKE ${sql.add(like(q))} ESCAPE '\\'`);
-      if (owner === "legacy") {
-        if (flags.owner && flags.creators) where.push(`(c.status = 'LEGACY' OR c.username = 'legacy-owner' OR c.id IS NULL)`);
-        else where.push("TRUE");
-      } else if (owner && flags.owner) where.push(`p.owner_account_id = ${sql.add(owner)}::uuid`);
-      if (cursor) {
-        where.push(`(p.updated_at, p.id) < (${sql.add(cursor.at)}::timestamptz, ${sql.add(cursor.id)}::uuid)`);
-      }
       const shape = this.workShape(flags);
+      const hasOwner = flags.owner && flags.creators;
+      const where = [`p.workspace_id = ${sql.add(workspaceId)}::uuid`, "p.archived_at IS NULL", "p.status='ACTIVE'"];
+      if (q) where.push(workSearch(sql.add(like(q)), hasOwner));
+      if (owner === "legacy") {
+        if (hasOwner) where.push("(c.status='LEGACY' OR c.username='legacy-owner' OR c.id IS NULL)");
+      } else if (owner) where.push(flags.owner ? `p.owner_account_id = ${sql.add(owner)}::uuid` : "FALSE");
       if (status) where.push(`${shape.statusSql} = ${sql.add(status)}`);
-      const listed = await client.query<QueryResultRow>(`
-        SELECT ${shape.columns}
-          FROM project p
-          ${flags.owner && flags.creators ? "LEFT JOIN creator_account c ON c.id = p.owner_account_id AND c.workspace_id = p.workspace_id" : ""}
-          ${shape.join}
-         WHERE ${where.join(" AND ")}
-         ORDER BY p.updated_at DESC, p.id DESC
-         LIMIT ${sql.add(limit + 1)}`, sql.values());
-      const rows = listed.rows.map(mapWork);
-      const next = rows.length > limit ? rows[limit - 1] : undefined;
-      const items = rows.slice(0, limit);
-      const countParams = new Params();
-      const countWorkspace = countParams.add(workspaceId);
-      const countWhere = [`p.workspace_id = ${countWorkspace}::uuid`];
-      if (q) countWhere.push(`p.title ILIKE ${countParams.add(like(q))} ESCAPE '\\'`);
-      if (owner === "legacy" && flags.owner && flags.creators) countWhere.push(`(c.status = 'LEGACY' OR c.username = 'legacy-owner' OR c.id IS NULL)`);
-      else if (owner && flags.owner) countWhere.push(`p.owner_account_id = ${countParams.add(owner)}::uuid`);
-      if (status) countWhere.push(`${shape.statusSql} = ${countParams.add(status)}`);
-      const total = await client.query<{ n: number }>(`
-        SELECT count(*)::int AS n
-          FROM project p
-          ${flags.owner && flags.creators ? "LEFT JOIN creator_account c ON c.id = p.owner_account_id AND c.workspace_id = p.workspace_id" : ""}
-          ${shape.join}
-         WHERE ${countWhere.join(" AND ")}`, countParams.values());
+      const from = `FROM project p ${hasOwner ? "LEFT JOIN creator_account c ON c.id=p.owner_account_id AND c.workspace_id=p.workspace_id" : ""}
+        ${shape.join} WHERE ${where.join(" AND ")}`;
+      const total = await client.query<{ n: number }>(`SELECT count(*)::int AS n ${from}`, sql.values());
+      const after = cursor ? `AND (p.updated_at,p.id) < (${sql.add(cursor.at)}::timestamptz,${sql.add(cursor.id)}::uuid)` : "";
+      const listed = await client.query<QueryResultRow>(`SELECT ${shape.columns}, p.updated_at::text AS sort_at ${from} ${after}
+         ORDER BY p.updated_at DESC,p.id DESC LIMIT ${sql.add(limit + 1)}`, sql.values());
+      const items = listed.rows.slice(0, limit).map(mapWork);
+      const next = listed.rows.length > limit ? listed.rows[limit - 1] : undefined;
       const owners = flags.owner && flags.creators
         ? (await client.query<QueryResultRow>(`
             SELECT DISTINCT c.id::text AS id, c.username, c.status
               FROM project p
               JOIN creator_account c ON c.id = p.owner_account_id AND c.workspace_id = p.workspace_id
-             WHERE p.workspace_id = $1::uuid AND c.status <> 'LEGACY' AND c.username <> 'legacy-owner'
+             WHERE p.workspace_id = $1::uuid AND p.archived_at IS NULL AND p.status='ACTIVE' AND c.status <> 'LEGACY' AND c.username <> 'legacy-owner'
              ORDER BY c.username ASC
              LIMIT 100`, [workspaceId])).rows.map((row) => ({
           id: String(row.id),
@@ -212,8 +193,9 @@ export class AdminOpsStore {
       return {
         items,
         total: num(total.rows[0]?.n),
-        nextCursor: next ? encodeCursor(next.updatedAt, next.id) : null,
+        nextCursor: next ? encodeCursor(String(next.sort_at), String(next.id)) : null,
         owners,
+        workManagementReady: await adminWorkAuditReady(client),
       };
     });
   }
@@ -228,10 +210,99 @@ export class AdminOpsStore {
           FROM project p
           ${flags.owner && flags.creators ? "LEFT JOIN creator_account c ON c.id = p.owner_account_id AND c.workspace_id = p.workspace_id" : ""}
           ${shape.join}
-         WHERE p.workspace_id = $1::uuid AND p.id = $2::uuid`, [workspaceId, id]);
+         WHERE p.workspace_id = $1::uuid AND p.id = $2::uuid AND p.status='ACTIVE' AND p.archived_at IS NULL`, [workspaceId, id]);
       const row = result.rows[0];
       return row ? mapWork(row) : null;
     });
+  }
+
+  async listTrashedWorks(workspaceId: string, input: AdminPageQuery = {}): Promise<{
+    items: AdminTrashedWork[]; total: number; nextCursor: string | null;
+  }> {
+    const q = (input.q ?? "").trim();
+    if (q.length > 200) throw new PersistenceError("VALIDATION_ERROR", "作品查询参数无效。");
+    const cursor = decodeCursor(input.cursor);
+    const limit = pageLimit(input.limit);
+    return this.read(async (client) => {
+      const flags = await this.flags(client);
+      const hasOwner = flags.owner && flags.creators;
+      const sql = new Params();
+      const filters = [`p.workspace_id=${sql.add(workspaceId)}::uuid`, "p.archived_at IS NOT NULL"];
+      if (q) filters.push(workSearch(sql.add(like(q)), hasOwner));
+      const from = `FROM project p ${hasOwner ? "LEFT JOIN creator_account c ON c.workspace_id=p.workspace_id AND c.id=p.owner_account_id" : ""}`;
+      const where = `WHERE ${filters.join(" AND ")}`;
+      const total = await client.query<{ n: number }>(`SELECT count(*)::int AS n ${from} ${where}`, sql.values());
+      const hasAudit = await adminWorkAuditReady(client);
+      const deletedBy = hasAudit && hasOwner
+        ? "CASE WHEN a.actor_kind='creator' AND a.actor='creator:' || c.id::text THEN c.username ELSE a.actor END"
+        : hasAudit ? "a.actor" : "NULL::text";
+      const after = cursor ? `AND (p.archived_at,p.id) < (${sql.add(cursor.at)}::timestamptz,${sql.add(cursor.id)}::uuid)` : "";
+      const listed = await client.query<QueryResultRow>(`SELECT p.id,p.title,p.archived_at,p.archived_at::text AS sort_at,p.version,
+          ${hasOwner ? "CASE WHEN c.status='LEGACY' OR c.username='legacy-owner' THEN NULL ELSE c.username END" : "NULL::text"} AS owner_name,
+          ${deletedBy} AS deleted_by, ${hasAudit ? "a.reason" : "NULL::text"} AS reason
+        ${from} ${hasAudit ? "LEFT JOIN admin_work_action a ON a.workspace_id=p.workspace_id AND a.project_id=p.id AND a.action='trash' AND a.archived_at=p.archived_at" : ""}
+        ${where} ${after} ORDER BY p.archived_at DESC,p.id DESC LIMIT ${sql.add(limit+1)}`, sql.values());
+      const page = listed.rows.slice(0, limit);
+      const last = page.at(-1);
+      return {
+        items: page.map((row) => ({ id: String(row.id), title: String(row.title), ownerName: String(row.owner_name ?? "历史作品"),
+          deletedAt: iso(row.archived_at), deletedBy: row.deleted_by, reason: row.reason, version: Number(row.version) })),
+        total: num(total.rows[0]?.n),
+        nextCursor: listed.rows.length > limit && last ? encodeCursor(String(last.sort_at), String(last.id)) : null,
+      };
+    });
+  }
+
+  async previewAdminWorkTrash(workspaceId: string, id: string) {
+    if (!UUID.test(id)) throw new PersistenceError("VALIDATION_ERROR", "作品标识无效。");
+    return this.read(async (client) => {
+      if (!await adminWorkAuditReady(client)) throw new PersistenceError("WORKBENCH_UNAVAILABLE", "作品管理操作尚未启用。");
+      const found = await client.query<{version: number}>(`SELECT p.version FROM project p JOIN workspace w ON w.id=p.workspace_id
+        WHERE p.workspace_id=$1 AND p.id=$2 AND w.status='ACTIVE' AND p.status='ACTIVE' AND p.archived_at IS NULL`, [workspaceId,id]);
+      if (!found.rows[0]) return { id, eligible: false, version: null, message: "作品不存在或已移入回收站。" };
+      const busy = await activeWork(client, workspaceId, id);
+      return { id, eligible: !busy, version: found.rows[0].version, message: busy ? "作品有进行中的任务，任务结束后可操作。" : null };
+    });
+  }
+
+  async adminTrashWork(workspaceId: string, id: string, input: {expectedVersion: number; actor: string; reason: string}) {
+    return this.changeWork(workspaceId, id, "trash", input);
+  }
+
+  async adminRestoreWork(workspaceId: string, id: string, input: {expectedVersion: number; actor: string}) {
+    return this.changeWork(workspaceId, id, "restore", input);
+  }
+
+  private async changeWork(workspaceId: string, id: string, action: "trash" | "restore", input: {expectedVersion: number; actor: string; reason?: string}) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const workspace = await client.query("SELECT 1 FROM workspace WHERE id=$1 AND status='ACTIVE' FOR SHARE", [workspaceId]);
+      if (!workspace.rowCount) throw new PersistenceError("NOT_FOUND", "工作空间不可用。");
+      const result = await changeProjectTrash(client, workspaceId, id, action, input.expectedVersion, input);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally { client.release(); }
+  }
+
+  async listAdminWorkLogs(workspaceId: string): Promise<AdminWorkLog[]> {
+    return this.read((client) => this.workLogs(client, workspaceId));
+  }
+
+  async getAdminWorkLog(workspaceId: string, id: string): Promise<AdminWorkLog | null> {
+    if (!UUID.test(id)) return null;
+    return this.read(async (client) => (await this.workLogs(client, workspaceId, id))[0] ?? null);
+  }
+
+  private async workLogs(client: PoolClient, workspaceId: string, id?: string): Promise<AdminWorkLog[]> {
+    if (!await adminWorkAuditReady(client)) return [];
+    const logs = await client.query<AdminWorkLog & {occurred_at: Date}>(`SELECT id, occurred_at, actor, action, project_id AS "projectId", title, reason
+      FROM admin_work_action WHERE workspace_id=$1 AND actor_kind='admin' ${id ? "AND id=$2" : ""}
+      ORDER BY occurred_at DESC,id DESC LIMIT 500`, id ? [workspaceId,id] : [workspaceId]);
+    return logs.rows.map(({occurred_at, ...row}) => ({ ...row, at: iso(occurred_at) }));
   }
 
   async listAssets(workspaceId: string, input: AdminPageQuery = {}): Promise<{ items: AssetSignalRow[]; total: number; nextCursor: string | null; projects: Array<{ id: string; title: string }> }> {
@@ -589,7 +660,7 @@ export class AdminOpsStore {
     };
   }
 
-  private async read<T>(work: (client: Queryable) => Promise<T>): Promise<T> {
+  private async read<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -603,6 +674,10 @@ export class AdminOpsStore {
       client.release();
     }
   }
+}
+
+function workSearch(pattern: string, hasOwner: boolean): string {
+  return hasOwner ? `(p.title ILIKE ${pattern} OR c.username ILIKE ${pattern})` : `p.title ILIKE ${pattern}`;
 }
 
 class Params {

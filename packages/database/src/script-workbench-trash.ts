@@ -1,4 +1,5 @@
 import type { PoolClient, QueryResultRow } from "pg";
+import { storeActorId, storeOwnerAccountFilter } from "./creator-access-context";
 import { PersistenceError, type DatabasePool } from "./job-service";
 
 export interface WorkbenchDependencies { scenes: number; shots: number; speech: number; video: number; other: number; total: number }
@@ -12,7 +13,7 @@ export interface WorkbenchTrashItem {
   kind: "project" | "script"; id: string; projectId: string; title: string; version: number; deletedAt: string;
   episodeId?: string; episodeNo?: number; revisionNo?: number;
 }
-interface ProjectRow extends QueryResultRow { id: string; title: string; version: number; archived_at: Date | null; status: string; episode_count: number }
+interface ProjectRow extends QueryResultRow { id: string; title: string; version: number; archived_at: string | null; status: string; episode_count: number }
 interface RevisionRow extends QueryResultRow {
   id: string; revision_no: number; review_status: string; deleted_at: Date | null; episode_no: number; row_version: number;
 }
@@ -32,11 +33,13 @@ async function ready(client: PoolClient, workspaceId: string): Promise<void> {
       AND table_name = 'script_revision' AND column_name = 'deleted_at') AS present`);
   if (!result.rows[0]?.present) throw new PersistenceError("WORKBENCH_UNAVAILABLE", "回收站尚未启用，请先完成剧本工作台数据库更新。");
 }
-async function project(client: PoolClient, workspaceId: string, projectId: string, lock = false, archived = false): Promise<ProjectRow> {
-  const result = await client.query<ProjectRow>(`SELECT id, title, version, archived_at, status,
+async function project(client: PoolClient, workspaceId: string, projectId: string, lock = false, archived = false, admin = false): Promise<ProjectRow> {
+  const owner = admin ? null : storeOwnerAccountFilter();
+  const result = await client.query<ProjectRow>(`SELECT id, title, version, archived_at::text AS archived_at, status,
     coalesce((to_jsonb(project)->>'episode_count')::integer, 3) AS episode_count FROM project
     WHERE id = $1 AND workspace_id = $2 ${archived ? "" : "AND archived_at IS NULL AND status = 'ACTIVE'"}
-    ${lock ? "FOR UPDATE" : ""}`, [projectId, workspaceId]);
+    ${owner ? "AND to_jsonb(project)->>'owner_account_id' = $3" : ""}
+    ${lock ? "FOR UPDATE" : ""}`, owner ? [projectId, workspaceId, owner] : [projectId, workspaceId]);
   if (!result.rows[0]) throw new PersistenceError("NOT_FOUND", "作品不存在或已移入回收站。");
   return result.rows[0];
 }
@@ -52,7 +55,7 @@ async function revision(client: PoolClient, workspaceId: string, projectId: stri
 }
 
 const OPTIONAL_WORK = ["title_writing_run", "auto_creation_run", "series_writing_run", "writing_candidate_request", "vimax_planning_request"] as const;
-async function activeWork(client: PoolClient, workspaceId: string, projectId: string): Promise<boolean> {
+export async function activeWork(client: PoolClient, workspaceId: string, projectId: string): Promise<boolean> {
   const jobs = await client.query(`SELECT 1 FROM workflow_run WHERE workspace_id=$1 AND project_id=$2 AND status IN ('PENDING','RUNNING')
     UNION ALL SELECT 1 FROM generation_job WHERE workspace_id=$1 AND project_id=$2
       AND state IN ('PENDING','QUEUED','RUNNING','WAITING_EXTERNAL') LIMIT 1`, [workspaceId, projectId]);
@@ -152,6 +155,55 @@ async function dependencies(client: PoolClient, workspaceId: string, projectId: 
   return { dependencies: counts, references: references.slice(0, 100) };
 }
 
+type ActionClient = Pick<PoolClient, "query">;
+export async function adminWorkAuditReady(client: ActionClient): Promise<boolean> {
+  const result = await client.query<{ present: boolean }>("SELECT to_regclass('admin_work_action') IS NOT NULL AS present");
+  return result.rows[0]?.present === true;
+}
+
+// Match the timestamp of this specific archive, including PostgreSQL microseconds.
+// A later creator deletion after an admin restore is a different archive.
+const adminArchived = `EXISTS (SELECT 1 FROM admin_work_action audit WHERE audit.workspace_id=p.workspace_id
+  AND audit.project_id=p.id AND audit.archived_at=p.archived_at AND audit.action='trash' AND audit.actor_kind='admin')`;
+
+export async function changeProjectTrash(client: PoolClient, workspaceId: string, projectId: string, action: "trash" | "restore",
+  expectedVersion: number, admin?: { actor: string; reason?: string }): Promise<{ projectId: string; version: number }> {
+  ids(workspaceId, projectId);
+  mutableVersion(expectedVersion);
+  const actor = admin?.actor.trim() ?? storeActorId();
+  const reason = admin?.reason?.trim() || null;
+  if (!actor || actor.length > 200 || (admin && action === "trash" && (!reason || reason.length > 400))) {
+    throw new PersistenceError("VALIDATION_ERROR", "操作人或移入原因无效。");
+  }
+  const auditReady = await adminWorkAuditReady(client);
+  if (admin && !auditReady) throw new PersistenceError("WORKBENCH_UNAVAILABLE", "作品管理操作尚未启用。");
+  const found = await project(client, workspaceId, projectId, true, action === "restore", Boolean(admin));
+  if (action === "restore") {
+    if (!found.archived_at) throw new PersistenceError("NOT_FOUND", "作品不在回收站。");
+    if (!admin && auditReady && (await client.query(
+      `SELECT 1 FROM project p WHERE p.workspace_id=$1 AND p.id=$2 AND ${adminArchived}`, [workspaceId, projectId])).rowCount) {
+      throw new PersistenceError("NOT_FOUND", "作品不在个人回收站。");
+    }
+  }
+  if (found.version !== expectedVersion) throw new PersistenceError("REVISION_CONFLICT", "作品已更新，请刷新后重新确认。");
+  if (action === "trash" && await activeWork(client, workspaceId, projectId)) {
+    throw new PersistenceError("REVISION_CONFLICT", "作品仍有进行中的任务，暂不能删除。");
+  }
+  const change = action === "trash" ? "archived_at=clock_timestamp(), status='ARCHIVED'" : "archived_at=NULL, status='ACTIVE'";
+  const updated = await client.query<{ archived_at: string | null; version: number }>(
+    `UPDATE project SET ${change}, version=version+1, updated_at=clock_timestamp()
+     WHERE workspace_id=$1 AND id=$2 RETURNING archived_at::text AS archived_at, version`, [workspaceId, projectId]);
+  const result = updated.rows[0]!;
+  if (auditReady) {
+    await client.query(`INSERT INTO admin_work_action
+      (workspace_id,project_id,project_version,archived_at,title,action,actor_kind,actor,reason)
+      VALUES ($1,$2,$3,$4::timestamptz,$5,$6,$7,$8,$9)`,
+      [workspaceId, projectId, result.version, result.archived_at ?? found.archived_at, found.title, action,
+        admin ? "admin" : "creator", actor, reason]);
+  }
+  return { projectId, version: result.version };
+}
+
 /** Workspace-scoped soft deletion. No row, object-storage object, or immutable dependency is physically removed. */
 export class ScriptWorkbenchTrashStore {
   constructor(private readonly pool: DatabasePool) {}
@@ -194,25 +246,11 @@ export class ScriptWorkbenchTrashStore {
   }
 
   async trashProject(workspaceId: string, projectId: string, input: { expectedVersion: number }): Promise<{ projectId: string; version: number }> {
-    ids(workspaceId, projectId); mutableVersion(input.expectedVersion);
-    return this.transaction(workspaceId, async (client) => {
-      const found = await project(client, workspaceId, projectId, true);
-      if (found.version !== input.expectedVersion) throw new PersistenceError("REVISION_CONFLICT", "作品已更新，请重新确认删除范围。");
-      if (await activeWork(client, workspaceId, projectId)) throw new PersistenceError("REVISION_CONFLICT", "作品仍有进行中的任务，暂不能删除。");
-      await client.query("UPDATE project SET archived_at=clock_timestamp(), status='ARCHIVED', version=version+1, updated_at=clock_timestamp() WHERE id=$1 AND workspace_id=$2", [projectId, workspaceId]);
-      return { projectId, version: found.version + 1 };
-    });
+    return this.transaction(workspaceId, (client) => changeProjectTrash(client, workspaceId, projectId, "trash", input.expectedVersion));
   }
 
   async restoreProject(workspaceId: string, projectId: string, input: { expectedVersion: number }): Promise<{ projectId: string; version: number }> {
-    ids(workspaceId, projectId); mutableVersion(input.expectedVersion);
-    return this.transaction(workspaceId, async (client) => {
-      const found = await project(client, workspaceId, projectId, true, true);
-      if (!found.archived_at) throw new PersistenceError("NOT_FOUND", "作品不在回收站。");
-      if (found.version !== input.expectedVersion) throw new PersistenceError("REVISION_CONFLICT", "作品已更新，请刷新回收站。");
-      await client.query("UPDATE project SET archived_at=NULL, status='ACTIVE', version=version+1, updated_at=clock_timestamp() WHERE id=$1 AND workspace_id=$2", [projectId, workspaceId]);
-      return { projectId, version: found.version + 1 };
-    });
+    return this.transaction(workspaceId, (client) => changeProjectTrash(client, workspaceId, projectId, "restore", input.expectedVersion));
   }
 
   async trashRevision(workspaceId: string, projectId: string, episodeId: string, revisionId: string,
@@ -261,17 +299,22 @@ export class ScriptWorkbenchTrashStore {
       } catch { throw new PersistenceError("VALIDATION_ERROR", "回收站分页已失效，请重新加载。"); }
     }
     return this.transaction(workspaceId, async (client) => {
+      const owner = storeOwnerAccountFilter();
+      const ownerSql = owner ? "AND to_jsonb(p)->>'owner_account_id'=$5" : "";
+      const adminExclusion = await adminWorkAuditReady(client) ? `AND NOT ${adminArchived}` : "";
+      const params = [workspaceId, after?.at ?? null, after?.kind ?? null, after?.id ?? null];
+      if (owner) params.push(owner);
       const result = await client.query<QueryResultRow>(`WITH trash AS (
         SELECT 'project'::text AS kind, p.id, p.id AS project_id, p.title, p.version, p.archived_at AS deleted_at,
           NULL::uuid AS episode_id, NULL::smallint AS episode_no, NULL::integer AS revision_no FROM project p
-          WHERE p.workspace_id=$1 AND p.archived_at IS NOT NULL
+          WHERE p.workspace_id=$1 AND p.archived_at IS NOT NULL ${ownerSql} ${adminExclusion}
         UNION ALL SELECT 'script', r.id, p.id, p.title, e.row_version, r.deleted_at, e.id, e.episode_no, r.revision_no
           FROM script_revision r JOIN project p ON p.id=r.project_id AND p.workspace_id=r.workspace_id
             JOIN episode e ON e.id=r.episode_id AND e.workspace_id=r.workspace_id AND e.project_id=r.project_id
-          WHERE r.workspace_id=$1 AND r.deleted_at IS NOT NULL AND p.archived_at IS NULL AND p.status='ACTIVE'
+          WHERE r.workspace_id=$1 AND r.deleted_at IS NOT NULL AND p.archived_at IS NULL AND p.status='ACTIVE' ${ownerSql}
         ) SELECT *, to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS sort_at FROM trash
         WHERE $2::timestamptz IS NULL OR (deleted_at, kind, id) < ($2::timestamptz, $3::text, $4::uuid)
-        ORDER BY deleted_at DESC, kind DESC, id DESC LIMIT 51`, [workspaceId, after?.at ?? null, after?.kind ?? null, after?.id ?? null]);
+        ORDER BY deleted_at DESC, kind DESC, id DESC LIMIT 51`, params);
       const rows = result.rows.slice(0, 50); const last = rows.at(-1);
       return { items: rows.map((row) => ({ kind: row.kind as "project" | "script", id: String(row.id), projectId: String(row.project_id),
         title: String(row.title), version: Number(row.version), deletedAt: new Date(row.deleted_at as Date).toISOString(),

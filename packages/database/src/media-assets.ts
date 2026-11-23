@@ -377,6 +377,7 @@ export class MediaAssetStore {
         ownerSql = `AND EXISTS (
           SELECT 1 FROM project p
            WHERE p.id = asset.project_id AND p.workspace_id = asset.workspace_id
+             AND p.archived_at IS NULL AND p.status = 'ACTIVE'
              AND p.owner_account_id = $3::uuid
         )`;
       }
@@ -1132,7 +1133,7 @@ async function inspectEpisodeCompositeExportWithClient(
     ownerSql = "AND owner_account_id = $3::uuid";
   }
   const project = await client.query(
-    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2 ${ownerSql} FOR UPDATE`,
+    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE' ${ownerSql} FOR UPDATE`,
     ownerParams,
   );
   if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");

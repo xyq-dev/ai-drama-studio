@@ -103,7 +103,7 @@ describe("ViMax candidate permanent receipts and scoped transactions", () => {
     expect(await h.store.storageReady()).toBe(false);
     await expect(h.store.get(W, h.source.projectId, h.source.episodeId, ACTOR, ID)).rejects.toMatchObject({ code: "VIMAX_CANDIDATE_STORAGE_UNAVAILABLE" });
     expect(mutations(h.calls)).toEqual([]);
-    expect(h.calls.some((c) => c.sql.includes("FROM project"))).toBe(false);
+    expect(h.calls.some((c) => c.sql.includes("FROM project WHERE"))).toBe(false);
     expect(h.calls.at(-1)!.sql).toBe("ROLLBACK");
   });
   it("propagates a failed readiness query instead of pretending storage is missing", async () => {
@@ -118,7 +118,7 @@ describe("ViMax candidate permanent receipts and scoped transactions", () => {
     expect(view.eligibility.canSaveScene).toBe(true);
     expect(h.calls[0]!.sql).toBe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     expect(h.calls.at(-1)!.sql).toBe("ROLLBACK");
-    expect(h.calls.find((c) => c.sql.includes("WHERE c.id"))!.values).toEqual([ID, W, h.source.projectId, h.source.episodeId, ACTOR]);
+    expect(h.calls.find((c) => c.sql.includes("WHERE c.id"))!.values).toEqual([ID, W, h.source.projectId, h.source.episodeId, ACTOR, null]);
     expect(h.calls.some((c) => /FOR UPDATE/.test(c.sql))).toBe(false);
     expect(mutations(h.calls)).toEqual([]);
   });
@@ -140,20 +140,20 @@ describe("ViMax candidate permanent receipts and scoped transactions", () => {
     expect(value.replayed).toBe(true);
     expect(value.candidate.candidateId).toBe(ID);
     expect(mutations(h.calls)).toEqual([]);
-    expect(h.calls.some((c) => c.sql.includes("FROM project") && c.sql.includes("FOR UPDATE"))).toBe(false);
+    expect(h.calls.some((c) => c.sql.includes("FROM project WHERE") && c.sql.includes("FOR UPDATE"))).toBe(false);
     expect(h.calls.at(-1)!.sql).toBe("COMMIT");
   });
   it("refuses a reused create key with changed content before reading a source", async () => {
     const h = setup(); const body = structuredClone(h.body); body.request.requirements.style += "不同";
     await expect(h.store.create(W, h.source.projectId, h.source.episodeId, ACTOR, KEY, body, "trace")).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
-    expect(h.calls.some((c) => c.sql.includes("FROM project"))).toBe(false);
+    expect(h.calls.some((c) => c.sql.includes("FROM project WHERE"))).toBe(false);
     expect(mutations(h.calls)).toEqual([]);
   });
   it("replays an immutable scene receipt before every live source, expected-version or approval gate", async () => {
     const h = setup({ state: "scene_saved", sourceUnavailable: true, pending: true, active: true });
     const value = await h.store.saveScene(W, h.source.projectId, h.source.episodeId, ACTOR, ID, SCENE_KEY, save, "trace");
     expect(value).toEqual({ schema: "ads.vimax-candidate.write-response.v1", replayed: true, receipt: h.sceneReceipt });
-    expect(h.calls.some((c) => c.sql.includes("FROM project"))).toBe(false);
+    expect(h.calls.some((c) => c.sql.includes("FROM project WHERE"))).toBe(false);
     expect(mutations(h.calls)).toEqual([]);
   });
   it("rejects changed content under the original operation key and rejects a new key for a saved stage", async () => {
@@ -192,7 +192,7 @@ describe("ViMax candidate permanent receipts and scoped transactions", () => {
     await expect(h.store.saveScene(W, h.source.projectId, h.source.episodeId, ACTOR, ID, SCENE_KEY, save, "trace"))
       .rejects.toMatchObject({ code: "VIMAX_CANDIDATE_CORRUPT" });
     expect(mutations(h.calls)).toEqual([]);
-    expect(h.calls.some((c) => c.sql.includes("FROM project"))).toBe(false);
+    expect(h.calls.some((c) => c.sql.includes("FROM project WHERE"))).toBe(false);
   });
   it("keeps the chosen scene identity, ordinal and location while creating a new draft under ordered locks", async () => {
     const h = setup();
@@ -205,7 +205,7 @@ describe("ViMax candidate permanent receipts and scoped transactions", () => {
     }));
     const advisory = h.calls.findIndex((c) => c.sql.includes("pg_advisory_xact_lock"));
     const candidate = h.calls.findIndex((c) => c.sql.includes("WHERE c.id") && c.sql.includes("FOR UPDATE"));
-    const project = h.calls.findIndex((c) => c.sql.includes("FROM project") && c.sql.includes("FOR UPDATE"));
+    const project = h.calls.findIndex((c) => c.sql.includes("FROM project WHERE") && c.sql.includes("FOR UPDATE"));
     const episode = h.calls.findIndex((c) => c.sql.includes("FROM episode") && c.sql.includes("FOR UPDATE"));
     const scene = h.calls.findIndex((c) => c.sql.includes("FOR UPDATE OF s"));
     expect(advisory).toBeLessThan(candidate); expect(candidate).toBeLessThan(project);

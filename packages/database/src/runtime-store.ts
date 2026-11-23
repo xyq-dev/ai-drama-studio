@@ -591,6 +591,7 @@ export class RuntimeStore {
         ownerSql = `AND EXISTS (
           SELECT 1 FROM project p
            WHERE p.id = j.project_id AND p.workspace_id = j.workspace_id
+             AND p.archived_at IS NULL AND p.status = 'ACTIVE'
              AND p.owner_account_id = $3::uuid
         )`;
       }
@@ -651,6 +652,7 @@ export class RuntimeStore {
       ownerSql = `AND EXISTS (
         SELECT 1 FROM project p
          WHERE p.id = workflow_run.project_id AND p.workspace_id = workflow_run.workspace_id
+           AND p.archived_at IS NULL AND p.status = 'ACTIVE'
            AND p.owner_account_id = $3::uuid
       )`;
     }
@@ -730,6 +732,7 @@ export class RuntimeStore {
         ownerSql = `AND e.project_id IS NOT NULL AND EXISTS (
           SELECT 1 FROM project p
            WHERE p.id = e.project_id AND p.workspace_id = e.workspace_id
+             AND p.archived_at IS NULL AND p.status = 'ACTIVE'
              AND p.owner_account_id = $4::uuid
         )`;
       }
