@@ -114,7 +114,7 @@ writeFileSync(
     "password_env=ADMIN_MODELS_TEST_PASSWORD",
     `secrets_dir=${secretsDir}`,
     "auth=operator site login; default username is the SITE_AUTH_USERNAME value (admin).",
-    "providers=mock probe only; no paid outbound.",
+    "providers=in-process DeepSeek writing probe stub + mock probe for other vendors; no paid outbound.",
   ].join("\n") + "\n",
 );
 writeFileSync(
@@ -133,7 +133,7 @@ writeFileSync(
 
 console.log(`Isolated admin preview ready at ${origin}`);
 console.log(
-  "Login: SITE_AUTH_USERNAME (see secrets dir for ADMIN_MODELS_TEST_PASSWORD). Mock probe only.",
+  "Login: SITE_AUTH_USERNAME (see secrets dir for ADMIN_MODELS_TEST_PASSWORD). In-process probe stub only.",
 );
 
 const stop = () => {

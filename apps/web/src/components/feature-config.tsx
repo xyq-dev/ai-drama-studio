@@ -146,7 +146,8 @@ export function FeatureConfig() {
   const draftKey = fieldKey ? (keys[fieldKey] ?? "") : "";
   const replacingKey = fieldKey ? replacing[fieldKey] === true : false;
   const model = fieldKey ? (models[fieldKey] ?? slot?.model ?? slot?.models[0]?.id ?? "") : "";
-  const enteringKey = Boolean(slot && (replacingKey || !slot.keyConfigured));
+  const canBindVendor = Boolean(slot?.connected && !slot.keyConfigured && slot.vendorKeyConfigured && !replacingKey);
+  const enteringKey = Boolean(slot && (replacingKey || (!slot.keyConfigured && !slot.vendorKeyConfigured)));
   const dirtyModel = Boolean(slot && model && model !== (slot.model ?? slot.models[0]?.id ?? ""));
   const dirtyKey = enteringKey && draftKey.length > 0;
   const needsKey = Boolean(slot?.connected && enteringKey && draftKey.trim().length < 8);
@@ -240,7 +241,11 @@ export function FeatureConfig() {
     setBusy("save");
     setError("");
     setNotice("");
-    const secretAction = enteringKey && draftKey ? ("replace" as const) : ("keep" as const);
+    const secretAction = enteringKey && draftKey
+      ? ("replace" as const)
+      : canBindVendor
+        ? ("bind_vendor" as const)
+        : ("keep" as const);
     try {
       const next = await client.saveDraft(feature, {
         expectedRevision: view.revision,
@@ -278,11 +283,13 @@ export function FeatureConfig() {
       if (!result.probe?.ok) {
         const message = result.probe?.message ?? "";
         setFailureCopy(
-          message && !message.includes(draftKey) ? message : "测试没有通过，草稿已保留，可以重试。",
+          message && !(draftKey && message.includes(draftKey)) ? message : "测试没有通过，草稿已保留，可以重试。",
         );
         setDialog("failed");
       } else {
-        setNotice("测试已通过。线上任务仍使用当前生效配置，启用后只影响新任务。");
+        const message = result.probe?.message?.trim() ?? "";
+        const safe = message && !(draftKey && message.includes(draftKey)) ? message : "测试已通过。";
+        setNotice(`${safe} 线上任务仍使用当前生效配置，启用后只影响新任务。`);
       }
     } catch (caught) {
       setError(featureErrorCopy(caught));
@@ -431,6 +438,7 @@ export function FeatureConfig() {
                 model={model}
                 draftKey={draftKey}
                 replacing={replacingKey}
+                bindingVendorKey={canBindVendor}
                 busy={busy}
                 canSave={canSave}
                 needsKey={needsKey}
@@ -676,6 +684,7 @@ function Editor({
   model,
   draftKey,
   replacing,
+  bindingVendorKey,
   busy,
   canSave,
   needsKey,
@@ -692,6 +701,7 @@ function Editor({
   model: string;
   draftKey: string;
   replacing: boolean;
+  bindingVendorKey: boolean;
   busy: string;
   canSave: boolean;
   needsKey: boolean;
@@ -749,7 +759,7 @@ function Editor({
         </label>
         <div className={styles.field}>
           <span>凭证 · {slot.label}</span>
-          {slot.keyConfigured && !replacing ? (
+          {(slot.keyConfigured || bindingVendorKey) && !replacing ? (
             <div className={styles.keyRow}>
               <span aria-label="已保存密钥">{SAVED_SECRET_MASK}</span>
               <button type="button" onClick={onReplace}>
@@ -769,6 +779,11 @@ function Editor({
           )}
         </div>
       </div>
+      {bindingVendorKey && !replacing ? (
+        <small className={styles.hint}>
+          将使用已在「AI 大模型」保存的凭证。保存草稿不会把完整密钥再显示在页面上。
+        </small>
+      ) : null}
       {needsKey ? (
         <small className={styles.hint}>
           请填写这一家服务商的 API Key。密钥只在这次保存时发送，页面不会记住它。

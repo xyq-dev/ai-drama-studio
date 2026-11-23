@@ -1,5 +1,14 @@
 # DeepSeek 重新接入（2026-10-17）
 
+> 2026-11-23 更新（官方文档再次核对：https://api-docs.deepseek.com/zh-cn/）：
+>
+> - 官方模型候选为 `deepseek-flash`（默认）与 `deepseek-v4-pro`。
+> - 在「AI 大模型 → DeepSeek」保存或更换官方 API Key，刷新后只显示掩码；**保存密钥不会切换当前编剧供应商**。
+> - 在「功能配置 → 编剧」选择 DeepSeek、模型和已保存的凭证，依次保存草稿、检测连接、确认启用后，新编剧任务才使用该配置。历史任务保留原模型记录。
+> - 检测连接对 DeepSeek 发起一次 `POST https://api.deepseek.com/chat/completions` JSON Output 最小探测（不是只调用 `GET /models`）。空白内容、截断或非法 JSON 不得视为通过，且不会自动重试或改投其他供应商。
+> - 功能配置启用后的新任务走 `deepseek.ai-sdk.v1`（`sendAiSdkWriting`），请求官方端点并带 `response_format: {type: "json_object"}`。未启用功能配置时，旧的进程供应商路径仍使用 `deepseek.chat-completions.v1`（`deepseekWritingAdapter`）。
+
+
 文本创作的活动供应商现为三家：DeepSeek（`deepseek`）、Claude（`anthropic`）、OpenAI（`openai`）。千问（`qwen`）仍为退役，历史只读。Claude 的内部 key 仍是 `anthropic`，不使用 Claude Code 登录凭据或订阅额度。其余说明（Claude、OpenAI、在线候选、调用授权）见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。
 
 ## 官方依据（2026-10-17 核对）
@@ -27,7 +36,7 @@
 
 - 只在 `/admin/models` 的「DeepSeek 快速配置」填写官方 API Key（DeepSeek 开放平台创建）。不需要 URL、Workspace、操作者令牌或模型列表。
 - 格式检查不要求任何前缀（官方未公布）：16–256 个可打印 ASCII 字符、无空格/换行/控制字符/非 ASCII。通过只表示“可以保存”，认证与余额以 DeepSeek 实际响应为准。
-- **保存 DeepSeek Key 会把 DeepSeek 设为新创作的默认供应商**——快速配置和高级设置的供应商表单都是如此，两处都在保存前写明；在高级设置里清除 DeepSeek Key 会把“默认=DeepSeek”改为暂不指定。只影响新请求，不改变已有任务。OpenAI、Claude 的 Key、Claude Workspace、模型和限额保持不变。
+- （历史行为，2026-11-23 起已取消）旧的 `/admin/models` 快速配置在保存 DeepSeek Key 时会把 DeepSeek 设为默认供应商。当前「AI 大模型 → DeepSeek」保存密钥不再切换默认；请在「功能配置 → 编剧」中启用。
 - 供应商表单保存后若服务端默认供应商变了，“默认选择与使用限额”表单随之同步；如果管理员已在该表单里改过默认但未保存，则保留其选择并明确提示，不静默覆盖；其他未保存的限额保持不变。
 
 ### 默认供应商规则

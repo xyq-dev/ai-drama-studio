@@ -103,7 +103,7 @@ describe("title writing options", () => {
     expect(body.providers).toEqual([
       expect.objectContaining({ providerKey: "openai", label: "OpenAI", ready: false, models: ["d-1"], missing: ["OPENAI_API_KEY"] }),
       expect.objectContaining({ providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1", "q-2"], missing: [] }),
-      expect.objectContaining({ providerKey: "deepseek", label: "DeepSeek", ready: false, models: ["deepseek-flash"], missing: ["DEEPSEEK_API_KEY"] }),
+      expect.objectContaining({ providerKey: "deepseek", label: "DeepSeek", ready: false, models: ["deepseek-flash", "deepseek-v4-pro"], missing: ["DEEPSEEK_API_KEY"] }),
     ]);
     expect(JSON.stringify(result.body)).not.toContain(SECRET);
     expect(JSON.stringify(result.body)).not.toContain(TOKEN);

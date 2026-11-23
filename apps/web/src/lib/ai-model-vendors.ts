@@ -22,7 +22,7 @@ export const AI_MODEL_VENDORS: readonly AiModelVendorDef[] = [
     mark: "D",
     href: "/admin/ai-models/deepseek",
     sdk: "@ai-sdk/deepseek",
-    capability: "1 个候选模型 · 编剧已接入",
+    capability: "2 个候选模型 · 编剧已接入",
   },
   {
     id: "openai",

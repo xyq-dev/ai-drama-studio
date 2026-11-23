@@ -24,7 +24,10 @@ function deepseekAnswer(arc: SeriesArc) {
 function sentSchema(exchange: SeriesFixtureExchange): unknown {
   const marker = "JSON Schema：\n";
   expect(exchange.system).toContain(marker);
-  return JSON.parse(exchange.system.slice(exchange.system.indexOf(marker) + marker.length));
+  let raw = exchange.system.slice(exchange.system.indexOf(marker) + marker.length);
+  const example = raw.indexOf("\nEXAMPLE JSON OUTPUT:");
+  if (example >= 0) raw = raw.slice(0, example);
+  return JSON.parse(raw);
 }
 
 function historicalSeries(setup: Setup): void {

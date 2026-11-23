@@ -498,22 +498,27 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect((await (await open(env)).adminModels!.view()).activeRevision).toBe(2);
   });
 
-  it("a DeepSeek key saved in the console is applied only at the next idle start, becomes the default and is never sent here", async () => {
+  it("a DeepSeek key saved in the console is applied only at the next idle start, does not switch the writing default, and is never sent here", async () => {
     const env = await environment();
     const current = await open(env);
+    const before = await options(current);
     const saved = await current.adminModels!.updateProvider("deepseek", { expectedRevision: 0, models: [], secretAction: "replace",
       apiKey: "fake-deepseek-runtime-key-0123456789" });
     expect(saved).toMatchObject({ pendingRestart: true, savedRevision: 1 });
-    expect(saved.saved.defaultProvider).toBe("deepseek");
-    expect(saved.saved.providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({ keyConfigured: true, models: ["deepseek-flash"] });
+    expect(saved.saved.defaultProvider).toBe(before.defaultProvider);
+    expect(saved.saved.providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({
+      keyConfigured: true, models: ["deepseek-flash", "deepseek-v4-pro"],
+    });
     expect(JSON.stringify(saved)).not.toContain("fake-deepseek-runtime-key");
     // The running service keeps its configuration until the restart.
     expect((await options(current)).providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({ ready: false });
     await close(current);
     const restarted = await open(env);
     const view = await options(restarted);
-    expect(view.defaultProvider).toBe("deepseek");
-    expect(view.providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({ ready: true, models: ["deepseek-flash"], missing: [] });
+    expect(view.defaultProvider).toBe(before.defaultProvider);
+    expect(view.providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({
+      ready: true, models: ["deepseek-flash", "deepseek-v4-pro"], missing: [],
+    });
     // Claude from the environment seed is kept as it was.
     expect(view.providers.find((provider) => provider.providerKey === "anthropic")).toMatchObject({ ready: true, models: ["environment-claude-model"] });
     expect(JSON.stringify(view)).not.toContain("fake-deepseek-runtime-key");

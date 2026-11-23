@@ -145,7 +145,7 @@ describe("DeepSeek, active again", () => {
     expect(TITLE_WRITING_RETIRED_PROVIDER_KEYS).toEqual(["qwen"]);
     expect(isActiveTitleWritingProvider("deepseek")).toBe(true);
     expect(isActiveTitleWritingProvider("qwen")).toBe(false);
-    expect(TITLE_WRITING_DEFAULT_MODELS.deepseek).toEqual(["deepseek-flash"]);
+    expect(TITLE_WRITING_DEFAULT_MODELS.deepseek).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
   });
 
   it("a key needs no prefix, only a plausible length and header-safe characters (fake test keys)", () => {

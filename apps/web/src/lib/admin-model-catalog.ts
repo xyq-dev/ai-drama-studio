@@ -37,7 +37,8 @@ export const MODEL_CANDIDATES: Readonly<Record<TitleWritingProviderKey, readonly
     { id: "claude-fable-5-1", name: "Claude Fable 5.1", note: "官方说明：适合高难度推理与长周期任务" },
   ],
   deepseek: [
-    { id: "deepseek-flash", name: "DeepSeek Flash", note: "官方模型版本：DeepSeek-V4.1-Flash，支持 JSON 输出" },
+    { id: "deepseek-flash", name: "DeepSeek Flash", note: "官方默认候选：DeepSeek-V4.1-Flash-1017，支持 JSON 输出" },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", note: "官方模型版本：DeepSeek-V4-Pro，支持 JSON 输出，可按需选择" },
   ],
 };
 

@@ -6,6 +6,7 @@ import {
   FEATURE_PROBE_COST_NOTE,
   FEATURE_PROBE_SCALE,
   FEATURE_VENDOR_LABELS,
+  deepseekKeyProblem,
   featureChoiceBlock,
   featureModelLabel,
   formatCost,
@@ -176,12 +177,22 @@ export class FeatureConfigService {
 
   async saveDraft(feature: FeatureKey, body: FeatureDraftSave): Promise<FeatureConfigView> {
     await this.assertChoice(feature, body.vendor, body.model);
+    let boundSecret: string | null = null;
+    if (body.secretAction === "bind_vendor") {
+      boundSecret = this.legacy ? await this.legacy.secret(feature, body.vendor) : null;
+      if (!boundSecret) {
+        throw new FeatureConfigError(400, "FEATURE_VENDOR_KEY_MISSING", "请先在「AI 大模型」保存这一家的 API Key，或在此填写新密钥。");
+      }
+      if (feature === "writing" && body.vendor === "deepseek" && deepseekKeyProblem(boundSecret) !== null) {
+        throw new FeatureConfigError(400, "FEATURE_VENDOR_KEY_FORMAT", "已保存的 DeepSeek 密钥格式无法使用，请重新填写。");
+      }
+    }
     const retained = new Set((await this.usage.read()).locks.map((item) => item.credentialRef));
     const doc = await this.vault.update((current) => {
       const slot = this.slot(current, feature, body.vendor);
-      if (body.secretAction === "replace") {
+      if (body.secretAction === "replace" || body.secretAction === "bind_vendor") {
         const ref = id("fc");
-        current.credentials[ref] = body.apiKey!;
+        current.credentials[ref] = body.secretAction === "replace" ? body.apiKey! : boundSecret!;
         slot.credentialRef = ref;
         this.pruneCredentials(current, retained);
       } else if (body.secretAction === "clear") {
@@ -708,14 +719,25 @@ export class FeatureConfigService {
 
   private async toView(doc: FeatureVaultDocument): Promise<FeatureConfigView> {
     const legacy = this.legacy ? await this.legacy.live() : { writing: null, storyboard: null, voice: null };
+    const vendorKeys: Record<FeatureKey, ReadonlySet<string>> = { writing: new Set(), storyboard: new Set(), voice: new Set() };
+    if (this.legacy) {
+      for (const feature of FEATURE_KEYS) {
+        const found = new Set<string>();
+        for (const capability of FEATURE_CAPABILITIES[feature]) {
+          const secret = await this.legacy.secret(feature, capability.vendor);
+          if (secret) found.add(capability.vendor);
+        }
+        vendorKeys[feature] = found;
+      }
+    }
     return {
       revision: doc.revision,
       validation: "local_only",
-      features: FEATURE_KEYS.map((feature) => this.card(feature, doc, legacy[feature])),
+      features: FEATURE_KEYS.map((feature) => this.card(feature, doc, legacy[feature], vendorKeys[feature])),
     };
   }
 
-  private card(feature: FeatureKey, doc: FeatureVaultDocument, legacy: LegacyFeatureHint | null): FeatureCardView {
+  private card(feature: FeatureKey, doc: FeatureVaultDocument, legacy: LegacyFeatureHint | null, vendorKeys: ReadonlySet<string>): FeatureCardView {
     const record = doc.features[feature];
     const live = record.live
       ? {
@@ -727,7 +749,7 @@ export class FeatureConfigService {
         version: record.live.versionId,
       }
       : legacyView(legacy);
-    const slots = FEATURE_CAPABILITIES[feature].map((capability) => this.slotView(feature, capability, record.slots[capability.vendor] ?? emptySlot(), record.live ?? null));
+    const slots = FEATURE_CAPABILITIES[feature].map((capability) => this.slotView(feature, capability, record.slots[capability.vendor] ?? emptySlot(), record.live ?? null, vendorKeys.has(capability.vendor)));
     const drafted = Object.values(record.slots).some((slot) => slot && slot.draftStatus !== "blank");
     return {
       feature,
@@ -741,7 +763,7 @@ export class FeatureConfigService {
     };
   }
 
-  private slotView(feature: FeatureKey, capability: { vendor: FeatureVendor; connected: boolean; gap: string | null; models: readonly { id: string; label: string }[] }, slot: FeatureSlotRecord, live: { vendor: string; model: string; credentialRef: string } | null): FeatureSlotView {
+  private slotView(feature: FeatureKey, capability: { vendor: FeatureVendor; connected: boolean; gap: string | null; models: readonly { id: string; label: string }[] }, slot: FeatureSlotRecord, live: { vendor: string; model: string; credentialRef: string } | null, vendorKeyConfigured: boolean): FeatureSlotView {
     return {
       vendor: capability.vendor,
       label: feature === "writing" && capability.vendor === "bailian" ? "百炼千问" : FEATURE_VENDOR_LABELS[capability.vendor],
@@ -754,6 +776,7 @@ export class FeatureConfigService {
       testToken: slot.draftStatus === "passed" ? slot.testToken : null,
       failureMessage: slot.failureMessage,
       isLive: Boolean(live && live.vendor === capability.vendor && live.model === slot.model && slot.credentialRef && live.credentialRef === slot.credentialRef),
+      vendorKeyConfigured,
     };
   }
 }

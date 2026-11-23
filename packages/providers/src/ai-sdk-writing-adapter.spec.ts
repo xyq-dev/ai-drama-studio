@@ -60,18 +60,45 @@ describe("AI SDK writing adapters", () => {
     expect(JSON.stringify(exchange)).not.toContain(SENTINEL);
   });
 
-  it("posts DeepSeek to the official host and does not use the gateway", async () => {
+  it("posts DeepSeek to the official host with JSON Output and does not use the gateway", async () => {
     const deepseek: WritingRequest = { ...request, model: "deepseek-flash" };
-    const { fetchImpl, calls } = install((url) => {
+    const { fetchImpl, calls } = install((url, init) => {
       expect(url).toBe(`${DEEPSEEK_AI_SDK_BASE_URL}/chat/completions`);
       expect(url).not.toContain("ai-gateway");
       expect(url).not.toContain("vercel");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe(`Bearer ${SENTINEL}`);
+      const body = JSON.parse(String(init?.body)) as { model?: string; response_format?: { type?: string }; messages?: unknown };
+      expect(body.model).toBe("deepseek-flash");
+      expect(body.response_format).toEqual({ type: "json_object" });
+      expect(JSON.stringify(body.messages ?? body)).toContain("json");
+      expect(JSON.stringify(body.messages ?? body)).toContain("EXAMPLE JSON OUTPUT");
+      expect(String(init?.body)).not.toContain(SENTINEL);
       return chat("{}", { model: "deepseek-flash" });
     });
     const exchange = await sendAiSdkWriting({ kind: "deepseek", apiKey: SENTINEL, request: deepseek, fetchImpl });
     expect(calls).toEqual([sdkWritingChatUrl("deepseek")]);
     expect(exchange.outcome).toBe("answered");
     expect(JSON.stringify(exchange)).not.toContain(SENTINEL);
+  });
+
+  it("treats blank JSON Output content as invalid and does not send again", async () => {
+    const deepseek: WritingRequest = { ...request, model: "deepseek-v4-pro" };
+    const { fetchImpl, calls } = install(() => chat("   ", { model: "deepseek-v4-pro", finish: "stop" }));
+    const exchange = await sendAiSdkWriting({ kind: "deepseek", apiKey: SENTINEL, request: deepseek, fetchImpl });
+    expect(calls).toHaveLength(1);
+    expect(exchange).toMatchObject({ outcome: "rejected", errorCode: "invalid_output", content: null });
+  });
+
+  it("classifies insufficient balance and rate limits without retrying or leaking the key", async () => {
+    const deepseek: WritingRequest = { ...request, model: "deepseek-flash" };
+    for (const [status, errorCode] of [[402, "quota"], [429, "rate_limited"]] as const) {
+      const { fetchImpl, calls } = install(() => new Response(JSON.stringify({ error: { message: SENTINEL } }), { status }));
+      const exchange = await sendAiSdkWriting({ kind: "deepseek", apiKey: SENTINEL, request: deepseek, fetchImpl });
+      expect(calls).toHaveLength(1);
+      expect(exchange).toMatchObject({ outcome: "rejected", errorCode, content: null });
+      expect(JSON.stringify(exchange)).not.toContain(SENTINEL);
+    }
   });
 
   it("does not retry a provider error and classifies auth without copying the body", async () => {

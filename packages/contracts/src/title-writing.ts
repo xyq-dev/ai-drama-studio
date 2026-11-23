@@ -131,13 +131,23 @@ export function isActiveTitleWritingProvider(key: string): key is TitleWritingPr
  * and adaptive thinking — every capability the Claude request uses. A pinned API ID, never a CLI alias. OpenAI keeps
  * needing its own explicit list, as before.
  */
+/**
+ * Official DeepSeek chat models, re-checked 2026-11-23 at https://api-docs.deepseek.com/zh-cn/ and
+ * https://api-docs.deepseek.com/quick_start/pricing/ : `deepseek-flash` (DeepSeek-V4.1-Flash-1017; default
+ * candidate) and `deepseek-v4-pro`. The retired deepseek-chat / deepseek-reasoner list is not restored.
+ * Legacy names deepseek-v4-flash / deepseek-v4-flash-vision-exp are not offered in the admin catalog.
+ */
+export const DEEPSEEK_WRITING_MODELS = ["deepseek-flash", "deepseek-v4-pro"] as const;
+export type DeepseekWritingModel = (typeof DEEPSEEK_WRITING_MODELS)[number];
+
+export function isDeepseekWritingModel(value: string): value is DeepseekWritingModel {
+  return (DEEPSEEK_WRITING_MODELS as readonly string[]).includes(value);
+}
+
 export const TITLE_WRITING_DEFAULT_MODELS: Readonly<Record<TitleWritingProviderKey, readonly string[]>> = {
   openai: [],
   anthropic: ["claude-opus-5-5"],
-  // DeepSeek: deepseek-flash (DeepSeek-V4.1-Flash), checked 2026-10-17 at https://api-docs.deepseek.com/ and
-  // https://api-docs.deepseek.com/quick_start/pricing/ ("Use deepseek-flash as the model name"; JSON output supported).
-  // The retired deepseek-chat / deepseek-reasoner list is not restored.
-  deepseek: ["deepseek-flash"],
+  deepseek: [...DEEPSEEK_WRITING_MODELS],
 };
 
 /**

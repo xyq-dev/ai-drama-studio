@@ -2,7 +2,7 @@
 
 入口：`/admin/models`（`/admin` 跳转）。这是独立的管理员入口，不加入创作者导航。
 支持文本创作的 DeepSeek、Claude（Anthropic 官方 API）与 OpenAI 三家：密钥、固定官方端点、模型白名单、默认供应商、每日调用次数和同时运行数。
-千问已退役：后台没有它的入口，也不能设为默认供应商；历史任务仍按真实供应商显示。DeepSeek 于 2026-10-17 重新接入：页面顶部「DeepSeek 快速配置」只填官方 API Key，保存即设为新创作的默认供应商（只影响新请求），旧版配置中的 DeepSeek Key 不会恢复，环境变量 `DEEPSEEK_*` 不读取。详见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md) 与 [`DEEPSEEK_WRITING.md`](DEEPSEEK_WRITING.md)。
+千问已退役：后台没有它的入口，也不能设为默认供应商；历史任务仍按真实供应商显示。DeepSeek 于 2026-10-17 重新接入；2026-11-23 起官方 API Key 在「AI 大模型 → DeepSeek」填写，保存密钥不会切换当前编剧供应商，需在「功能配置 → 编剧」选择模型并检测、启用。旧版配置中的 DeepSeek Key 不会恢复，环境变量 `DEEPSEEK_*` 不读取。详见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md) 与 [`DEEPSEEK_WRITING.md`](DEEPSEEK_WRITING.md)。
 正式媒体密钥（`OPENAI_MEDIA_API_KEY` / `DASHSCOPE_MEDIA_API_KEY` / `MINIMAX_API_KEY`）在旁路入口 `/admin/media-keys` 填写：同目录下的 `media-keys.enc`、同一把 `MODEL_ADMIN_MASTER_KEY`；按槽位 keep/replace/clear，托管后清除不会回退旧环境变量；API 热更新，Worker 在提交前重读同一文件。写作密钥与 ElevenLabs / 百炼 TTS 不是替补。保存配置不会调用模型、不会自动启用标题创作、不会修改数据库。
 
 > 2026-10-16 起页面顶部有「Claude 快速配置」：只填 Claude API Key 即可，默认模型 `claude-opus-5-5` 与 Claude 默认供应商由服务端补全，状态逐项区分「已保存 / 等待重启 / 迁移未执行 / 开关未开 / 可以创作」。站点登录开启时，登录的管理员就是付费调用的操作者，不再需要操作者令牌。见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。

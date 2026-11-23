@@ -587,6 +587,16 @@
   border: 0;
   box-shadow: none;
 }
+.drawer .fields {
+  grid-template-columns: 1fr;
+}
+.drawer .field,
+.drawer .field select {
+  min-width: 0;
+}
+.drawer .field select {
+  overflow: visible;
+}
 @media (max-width: 1023px) {
   .facts {
     grid-template-columns: 1fr;
@@ -624,7 +634,8 @@
     flex: 1 1 0;
     padding: 0 8px;
   }
-  .fields,
+  /* Usage tables can share a row. The 修改配置 editor keeps one column so official
+     model names such as “DeepSeek Flash” stay fully visible at 390px. */
   .totals,
   .record {
     grid-template-columns: 1fr 1fr;
