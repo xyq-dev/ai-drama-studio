@@ -43,6 +43,7 @@ describe("AI SDK writing adapters", () => {
     vi.stubGlobal("fetch", () => { throw new Error("global fetch"); });
     const { fetchImpl, calls } = install((url, init) => {
       expect(url).toBe(`${BAILIAN_COMPATIBLE_BASE_URL}/chat/completions`);
+      expect(init?.redirect).toBe("error");
       expect(url).not.toContain("dashscope-intl");
       expect(url).not.toContain("gateway");
       expect(init?.headers && new Headers(init.headers).get("authorization")).toBe(`Bearer ${SENTINEL}`);
@@ -58,6 +59,15 @@ describe("AI SDK writing adapters", () => {
     expect(exchange.content).toContain("ok");
     expect(exchange.usage).toEqual({ status: "present", inputTokens: 11, outputTokens: 22, totalTokens: 33 });
     expect(JSON.stringify(exchange)).not.toContain(SENTINEL);
+  });
+
+  it("refuses a subscription key before sending or exposing it", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const apiKey = "sk-sp-fictional-subscription";
+    const reply = await sendAiSdkWriting({ kind: "bailian", apiKey, request, fetchImpl });
+    expect(reply).toMatchObject({ outcome: "rejected", errorCode: "auth" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(JSON.stringify(reply)).not.toContain(apiKey);
   });
 
   it("posts DeepSeek to the official host with JSON Output and does not use the gateway", async () => {

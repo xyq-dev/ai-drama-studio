@@ -1,5 +1,5 @@
 import {
-  WRITING_MODEL_CHANNELS, writingModelOptions, adminVendorKeySchema, adminVendorSaveSchema,
+  WRITING_MODEL_CHANNELS, writingModelOptions, adminVendorKeySchema, adminVendorSaveSchema, isBailianWorkspaceId,
   type AdminVendorKey, type AdminVendorSave, type AdminVendorCheck, type AdminVendorCheckResult, type AdminVendorView,
   TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem,
   type AdminLimitsUpdate, type AdminModelsView, type AdminProviderUpdate, type AdminSettingsView, type TitleWritingProviderKey,
@@ -88,7 +88,10 @@ function validateKey(providerKey: AdminVendorKey, body: AdminProviderUpdate | Ad
   if (providerKey === "deepseek" && body.secretAction === "replace" && (body.apiKey === undefined || deepseekKeyProblem(body.apiKey) !== null)) {
     throw new AdminHttpError(400, "ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT");
   }
-  if (providerKey !== "anthropic" && body.workspaceAction && body.workspaceAction !== "keep") {
+  if (providerKey === "bailian" && body.workspaceAction === "replace" && !isBailianWorkspaceId(body.workspaceId ?? "")) {
+    throw new AdminHttpError(400, "ADMIN_CONFIG_BAILIAN_WORKSPACE_FORMAT");
+  }
+  if (providerKey !== "anthropic" && providerKey !== "bailian" && body.workspaceAction && body.workspaceAction !== "keep") {
     throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
   }
 }
@@ -131,7 +134,7 @@ export class AdminModelsService implements AdminModelsBackend {
       vendor, channel: record.channel, model: record.model, revision: record.revision,
       models: writingModelOptions(vendor, record.channel, allowlist),
       keyConfigured: record.apiKey !== null,
-      ...(vendor === "anthropic" ? { workspaceId: record.workspaceId ?? null } : {}),
+      ...(vendor === "anthropic" || vendor === "bailian" ? { workspaceId: record.workspaceId ?? null } : {}),
     };
   }
 

@@ -1,5 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  BAILIAN_PLAN_KEY_MESSAGE,
+  WRITING_MODEL_CHANNELS,
+  isBailianPlanKey,
   FEATURE_CAPABILITIES,
   FEATURE_KEYS,
   FEATURE_LABELS,
@@ -90,6 +93,7 @@ export interface LegacyFeatureSource {
 }
 
 export interface FeaturePolicy {
+  bailianWritingStorageReady?: () => Promise<boolean>;
   writingAllowlist?: (vendor: string) => Promise<readonly string[] | null>;
   writingCallsRemaining?: () => Promise<number | null>;
 }
@@ -121,6 +125,14 @@ function publicMessage(message: string | undefined, secret: string, ok: boolean)
   if (!message || message.includes(secret) || message.length > 200) return fallback;
   return message;
 }
+
+function assertWritingCredential(feature: FeatureKey, vendor: string, secret: string | null | undefined): void {
+  if (feature === "writing" && vendor === "bailian" && secret && isBailianPlanKey(secret)) {
+    throw new FeatureConfigError(400, "FEATURE_BAILIAN_PLAN_KEY", BAILIAN_PLAN_KEY_MESSAGE);
+  }
+}
+
+const WRITING_STORAGE_UNAVAILABLE = "编剧存储尚未就绪，请联系运维";
 
 function emptySlot(): FeatureSlotRecord {
   return {
@@ -193,9 +205,15 @@ export class FeatureConfigService {
     const retained = new Set((await this.usage.read()).locks.map((item) => item.credentialRef));
     const doc = await this.vault.update((current) => {
       const slot = this.slot(current, feature, body.vendor);
+      const secret = body.secretAction === "replace" ? body.apiKey : boundSecret;
+      if (body.secretAction === "keep" && slot.credentialRef) {
+        assertWritingCredential(feature, body.vendor, current.credentials[slot.credentialRef]);
+      } else {
+        assertWritingCredential(feature, body.vendor, secret);
+      }
       if (body.secretAction === "replace" || body.secretAction === "bind_vendor") {
         const ref = id("fc");
-        current.credentials[ref] = body.secretAction === "replace" ? body.apiKey! : boundSecret!;
+        current.credentials[ref] = secret!;
         slot.credentialRef = ref;
         this.pruneCredentials(current, retained);
       } else if (body.secretAction === "clear") {
@@ -241,6 +259,7 @@ export class FeatureConfigService {
       throw new FeatureConfigError(409, "FEATURE_TEST_STALE", "草稿在测试之后有变动，请重新测试。");
     }
     await this.assertChoice(feature, body.vendor, slot.model);
+    await this.assertCanActivate(feature, body.vendor, doc.credentials[slot.credentialRef]);
     const next = await this.vault.update((current) => {
       const fresh = current.features[feature].slots[body.vendor];
       if (!fresh?.model || !fresh.credentialRef || !fresh.testedFingerprint || fresh.testToken !== body.testToken || fresh.draftStatus !== "passed" || fresh.model !== slot.model || fresh.credentialRef !== slot.credentialRef) {
@@ -274,6 +293,15 @@ export class FeatureConfigService {
    * Usage locks are not rewritten.
    */
   async rollback(feature: FeatureKey, body: FeatureRollbackRequest): Promise<FeatureConfigView> {
+    if (feature === "writing") {
+      const before = await this.vault.read();
+      if (before.revision !== body.expectedRevision) throw new FeatureConfigError(409, "ADMIN_CONFIG_CONFLICT", "配置已更新，请重新读取。");
+      const previous = before.features.writing.previousLive;
+      if (previous?.vendor === "bailian") {
+        await this.assertChoice(feature, previous.vendor, previous.model);
+        await this.assertCanActivate(feature, previous.vendor, before.credentials[previous.credentialRef]);
+      }
+    }
     const next = await this.vault.update((current) => {
       const record = current.features[feature];
       if (!record.previousLive) throw new FeatureConfigError(409, "FEATURE_ROLLBACK_UNAVAILABLE", "没有可回退的上一配置版本。");
@@ -461,6 +489,8 @@ export class FeatureConfigService {
     await this.assertChoice(feature, body.vendor, slot.model);
     const secret = before.credentials[slot.credentialRef];
     if (!secret) throw new FeatureConfigError(409, "FEATURE_DRAFT_INCOMPLETE", "草稿密钥不可用，没有发起调用。");
+    assertWritingCredential(feature, body.vendor, secret);
+    if (slot.draftStatus === "testing") throw new FeatureConfigError(409, "FEATURE_TEST_STALE", "已发起检测，请核对原检测结果。");
     const marked = await this.vault.update((current) => {
       const fresh = this.slot(current, feature, body.vendor);
       fresh.draftStatus = "testing";
@@ -473,6 +503,26 @@ export class FeatureConfigService {
     }, secret);
     const message = publicMessage(result.message, secret, result.ok);
     const finger = fingerprint(feature, body.vendor, slot.model, slot.credentialRef);
+    // The provider has answered even if a later save makes its receipt stale.
+    await this.writeUsage({
+      kind: "admin_test",
+      workspaceId: "admin-test",
+      projectId: null,
+      projectLabel: "管理员测试",
+      episodeId: null,
+      episodeLabel: "不计入分集",
+      taskId: vendorRequestId,
+      actorId: "operator",
+      feature,
+      vendor: body.vendor,
+      model: slot.model,
+      configVersion: null,
+      credentialRef: slot.credentialRef,
+      result: result.ok ? "succeeded" : result.outcome ?? "failed",
+      usage: normalizeUsage(result.usage),
+      cost: normalizeCost(result.cost),
+      vendorRequestId,
+    }, [secret]);
     let view: FeatureConfigView;
     try {
       const finished = await this.vault.update((current) => {
@@ -497,25 +547,6 @@ export class FeatureConfigService {
       if (error instanceof FeatureConfigError && error.code === "FEATURE_TEST_STALE") throw error;
       throw new FeatureConfigError(409, "FEATURE_TEST_STALE", "草稿在测试期间有变动，这次结果不能启用。");
     }
-    await this.writeUsage({
-      kind: "admin_test",
-      workspaceId: "admin-test",
-      projectId: null,
-      projectLabel: "管理员测试",
-      episodeId: null,
-      episodeLabel: "不计入分集",
-      taskId: `admin-test:${feature}:${body.vendor}`,
-      actorId: "operator",
-      feature,
-      vendor: body.vendor,
-      model: slot.model,
-      configVersion: null,
-      credentialRef: slot.credentialRef,
-      result: result.ok ? "succeeded" : result.outcome ?? "failed",
-      usage: normalizeUsage(result.usage),
-      cost: normalizeCost(result.cost),
-      vendorRequestId,
-    }, [secret]);
     return { view, probe: { ok: result.ok, ...(result.outcome && { outcome: result.outcome }), message } };
   }
 
@@ -639,6 +670,7 @@ export class FeatureConfigService {
     const locked = await this.lockTask(input);
     const secret = await this.secretFor(locked);
     if (!secret) throw new FeatureConfigError(409, "FEATURE_NOT_CONFIGURED", "提交时锁定的配置已经不可用，没有改用其他服务商。");
+    assertWritingCredential(input.feature, locked.vendor, secret);
     let reserved = false;
     await this.usage.update((doc) => {
       const again = doc.records.find((item) => item.vendorRequestId === input.vendorRequestId);
@@ -721,6 +753,15 @@ export class FeatureConfigService {
     }
   }
 
+  private async assertCanActivate(feature: FeatureKey, vendor: string, secret: string | undefined): Promise<void> {
+    if (feature !== "writing" || vendor !== "bailian") return;
+    if (!secret) throw new FeatureConfigError(409, "FEATURE_DRAFT_INCOMPLETE", "草稿密钥不可用。");
+    assertWritingCredential(feature, vendor, secret);
+    if (!await this.policy.bailianWritingStorageReady?.()) {
+      throw new FeatureConfigError(503, "FEATURE_WRITING_STORAGE_UNAVAILABLE", WRITING_STORAGE_UNAVAILABLE);
+    }
+  }
+
   private async toView(doc: FeatureVaultDocument): Promise<FeatureConfigView> {
     const legacy = this.legacy ? await this.legacy.live() : { writing: null, storyboard: null, voice: null };
     const features = await Promise.all(FEATURE_KEYS.map((feature) => this.card(feature, doc, legacy[feature])));
@@ -733,7 +774,7 @@ export class FeatureConfigService {
       ? {
         source: "enabled" as const,
         vendor: record.live.vendor,
-        vendorLabel: FEATURE_VENDOR_LABELS[record.live.vendor] ?? record.live.vendor,
+        vendorLabel: feature === "writing" && record.live.vendor === "bailian" ? WRITING_MODEL_CHANNELS.bailian.label : FEATURE_VENDOR_LABELS[record.live.vendor],
         model: record.live.model,
         modelLabel: featureModelLabel(record.live.model),
         version: record.live.versionId,
@@ -745,7 +786,17 @@ export class FeatureConfigService {
         feature, vendor: capability.vendor, model, writingAllowlist,
       }).ok);
       const vendorKeyConfigured = Boolean(await this.vendorSecret(feature, capability.vendor));
-      return this.slotView(feature, { ...capability, models }, record.slots[capability.vendor] ?? emptySlot(), record.live ?? null, vendorKeyConfigured);
+      const slot = this.slotView(feature, { ...capability, models }, record.slots[capability.vendor] ?? emptySlot(), record.live ?? null, vendorKeyConfigured);
+      if (feature === "writing" && capability.vendor === "bailian" && slot.draftStatus === "passed" && !slot.isLive) {
+        const ref = record.slots.bailian?.credentialRef;
+        try {
+          await this.assertCanActivate(feature, "bailian", ref ? doc.credentials[ref] : undefined);
+        } catch (error) {
+          if (!(error instanceof FeatureConfigError)) throw error;
+          slot.enableBlockReason = error.message;
+        }
+      }
+      return slot;
     }));
     const drafted = Object.values(record.slots).some((slot) => slot && slot.draftStatus !== "blank");
     return {
@@ -763,7 +814,7 @@ export class FeatureConfigService {
   private slotView(feature: FeatureKey, capability: { vendor: FeatureVendor; connected: boolean; gap: string | null; models: readonly { id: string; label: string }[] }, slot: FeatureSlotRecord, live: { vendor: string; model: string; credentialRef: string } | null, vendorKeyConfigured: boolean): FeatureSlotView {
     return {
       vendor: capability.vendor,
-      label: feature === "writing" && capability.vendor === "bailian" ? "百炼千问" : FEATURE_VENDOR_LABELS[capability.vendor],
+      label: feature === "writing" && capability.vendor === "bailian" ? WRITING_MODEL_CHANNELS.bailian.label : FEATURE_VENDOR_LABELS[capability.vendor],
       connected: capability.connected,
       gap: capability.gap,
       models: capability.models.map((item) => ({ ...item })),

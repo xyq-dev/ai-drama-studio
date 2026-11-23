@@ -253,6 +253,7 @@ export class StudioRuntime implements OnModuleDestroy {
             },
           },
           policy: {
+            bailianWritingStorageReady: () => titleStore.bailianStorageReady(),
             writingAllowlist: async (vendor) => {
               const settings = adminModels?.runtimeSettings();
               return settings && vendor === "openai" ? settings.providers.openai.models : null;

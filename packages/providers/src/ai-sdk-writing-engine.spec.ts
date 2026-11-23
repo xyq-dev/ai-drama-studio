@@ -56,7 +56,8 @@ function chatFetch(options: { kind: "bailian" | "deepseek"; content?: (user: str
         init?.signal?.addEventListener("abort", fail, { once: true });
       });
     }
-    const body = JSON.parse(String(init?.body)) as { messages?: Array<{ role: string; content: unknown }> };
+    const body = JSON.parse(String(init?.body)) as { model: string; messages?: Array<{ role: string; content: unknown }> };
+    expect(body.model).toBe(options.kind === "bailian" ? QWEN_PLUS_MODEL : "deepseek-flash");
     const user = (body.messages ?? []).map((message) => messageText(message.content)).join("\n");
     const text = options.content ? options.content(user) : answerFor(user);
     return new Response(JSON.stringify({
@@ -130,6 +131,28 @@ describe("SDK writing engine", () => {
     expect((await store.latestRun(WS, PROJECT))?.run.state).toBe("completed");
     expect(urls.every((url) => url === "https://api.deepseek.com/chat/completions")).toBe(true);
     expect(urls.some((url) => url.includes("gateway"))).toBe(false);
+  });
+
+  it("stops an existing Bailian run with a subscription key before reserving a call", async () => {
+    const store = new InMemoryTitleWritingStore();
+    store.bailianReady = true;
+    store.addProject(WS, PROJECT);
+    const sdkFetch = vi.fn<typeof fetch>();
+    const engine = new TitleWritingEngine({
+      workspaceId: WS, store, providers: providers(), transport: refusingTransport(), sdkFetch, maxCallsPerDay: 30,
+      featureCredential: async () => ({ apiKey: "sk-sp-historical-test", url: BAILIAN_COMPATIBLE_BASE_URL, models: [QWEN_PLUS_MODEL] }),
+    });
+    const created = await store.createRun(newTitleRun({
+      workspaceId: WS, projectId: PROJECT, actorId: "owner", idempotencyKey: "previous-subscription", title: TITLE,
+      settings: { episodeCount: 3, episodeSeconds: TITLE_WRITING_DEFAULT_EPISODE_SECONDS, style: "" },
+      providerKey: "bailian", model: QWEN_PLUS_MODEL, providerAdapter: BAILIAN_AI_SDK_ADAPTER, now: new Date(),
+    }), { maxActiveRuns: 1 });
+    if (created.kind === "blocked") throw new Error("blocked");
+    await engine.drive(created.bundle.run.id);
+    const bundle = await store.getRunById(WS, created.bundle.run.id);
+    expect(bundle?.run.state).toBe("needs_attention");
+    expect(bundle?.calls).toHaveLength(0);
+    expect(sdkFetch).not.toHaveBeenCalled();
   });
 
   it("rejects a schema mismatch and does not save a story", async () => {

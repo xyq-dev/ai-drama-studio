@@ -305,6 +305,38 @@ describe("supplier model selections and catalog checks", () => {
     expect(network).not.toHaveBeenCalled();
   });
 
+  it("saves a Beijing workspace with its regular key, rejects replacements atomically and never changes the active provider", async () => {
+    const { env, bootstrap } = await fixture();
+    const network = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      success: true, output: { permissions: [{ model: "qwen-plus", permissions: { inference: true } }] },
+    }));
+    const open = () => AdminModelsService.open(env, bootstrap, async () => true, undefined, null, network);
+    const service = await open();
+    const active = service.runtimeSettings();
+    expect(await service.vendor("bailian")).toMatchObject({ model: null, workspaceId: null });
+    const selection = { channel: "bailian-cn", model: "qwen-plus" };
+    const update = { ...selection, expectedRevision: 0, secretAction: "replace" as const,
+      apiKey: "sk-synthetic-regular", workspaceAction: "replace" as const, workspaceId: "llm-fixture" };
+    await expect(service.saveVendor("bailian", { ...update, workspaceId: "other.example.com" }))
+      .rejects.toMatchObject({ status: 400, code: "ADMIN_CONFIG_BAILIAN_WORKSPACE_FORMAT" });
+    const saved = await service.saveVendor("bailian", update);
+    expect(saved).toMatchObject({ revision: 1, model: "qwen-plus", workspaceId: "llm-fixture" });
+    expect(JSON.stringify(saved)).not.toContain(update.apiKey);
+    await expect(service.saveVendor("bailian", { ...update, expectedRevision: 1, apiKey: "sk-sp-refused-while-rotating" }))
+      .rejects.toMatchObject({ status: 400, code: "ADMIN_CONFIG_BAILIAN_PLAN_KEY" });
+    const restarted = await open();
+    expect(await restarted.vendor("bailian")).toEqual(saved);
+    expect(restarted.runtimeSettings()).toEqual(active);
+    expect(await restarted.vendorSecret("bailian")).toBe(update.apiKey);
+    expect(network).not.toHaveBeenCalled();
+    expect(await restarted.checkVendor("bailian", { ...selection, expectedRevision: 1 })).toMatchObject({ status: "listed" });
+    expect(network).toHaveBeenCalledTimes(1);
+    expect(await restarted.saveVendor("bailian", { ...selection, expectedRevision: 1, secretAction: "replace", apiKey: "sk-new-synthetic-key" }))
+      .toMatchObject({ revision: 2, workspaceId: null });
+    expect(await restarted.checkVendor("bailian", { ...selection, expectedRevision: 2 })).toMatchObject({ status: "failed" });
+    expect(network).toHaveBeenCalledTimes(1);
+  });
+
   it("offers the runtime’s approved Claude default without choosing it for a new supplier", async () => {
     const { env, bootstrap } = await fixture({ TITLE_WRITING_OPENAI_MODELS: "" });
     const service = await AdminModelsService.open(env, bootstrap, async () => true, undefined, null, vi.fn());

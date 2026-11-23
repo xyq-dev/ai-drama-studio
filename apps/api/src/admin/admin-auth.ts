@@ -2,6 +2,8 @@
  * Error vocabulary and response headers of the model console. Authentication is the site login (src/auth): the
  * earlier token login (MODEL_ADMIN_TOKEN) and its /api/v1/admin-scoped cookie are gone, so a token cannot open it.
  */
+import { BAILIAN_PLAN_KEY_MESSAGE } from "@ai-drama/contracts";
+
 const ERROR_MESSAGES = {
   ADMIN_NOT_CONFIGURED: "管理员配置尚未就绪。",
   ADMIN_CONFIG_BUSY: "配置正在保存，请稍后重试。",
@@ -11,6 +13,8 @@ const ERROR_MESSAGES = {
   ADMIN_CONFIG_KEY_FORMAT: "Claude API Key 的格式不受支持。请粘贴在 Claude Console（platform.claude.com）的 API keys 页面创建的完整密钥。没有保存任何内容。",
   ADMIN_CONFIG_KEY_KIND: "这是一种不能用于调用 Claude API 的凭据（例如 Claude Code 或订阅账号的登录令牌、Admin Key、浏览器会话或 JWT）。请改用 Claude Console 创建的 API Key。没有保存任何内容。",
   ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT: "DeepSeek API Key 的格式不受支持：应为 DeepSeek 开放平台（platform.deepseek.com）API keys 页面创建的完整密钥，长度 16–256 个字符，不能包含空格、换行或其他特殊字符。没有保存任何内容。",
+  ADMIN_CONFIG_BAILIAN_PLAN_KEY: BAILIAN_PLAN_KEY_MESSAGE,
+  ADMIN_CONFIG_BAILIAN_WORKSPACE_FORMAT: "请从百炼北京控制台复制业务空间 ID。",
   ADMIN_CONFIG_WORKSPACE_FORMAT: "Workspace ID 格式不正确，应为 Claude Console 工作区页面 ID 列中的 wrkspc_… 值。没有保存任何内容。",
   ADMIN_INTERNAL_ERROR: "管理员请求暂时无法完成。",
 } as const;
@@ -42,6 +46,6 @@ export function safeAdminError(error: unknown): AdminHttpError {
   const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
   if (code === "ADMIN_CONFIG_CONFLICT" || code === "ADMIN_CONFIG_BUSY") return new AdminHttpError(409, code);
   if (code === "ADMIN_CONFIG_STORAGE_UNAVAILABLE") return new AdminHttpError(503, code);
-  if (code === "ADMIN_CONFIG_INVALID") return new AdminHttpError(400, code);
+  if (code === "ADMIN_CONFIG_INVALID" || code === "ADMIN_CONFIG_BAILIAN_PLAN_KEY") return new AdminHttpError(400, code);
   return new AdminHttpError(500, "ADMIN_INTERNAL_ERROR");
 }
