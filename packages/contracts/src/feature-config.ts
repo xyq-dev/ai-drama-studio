@@ -1,9 +1,8 @@
 import { z } from "zod";
+import { WRITING_MODEL_CHANNELS } from "./writing-model-catalog";
 import {
   BAILIAN_AI_SDK_ADAPTER,
   DEEPSEEK_AI_SDK_ADAPTER,
-  DEEPSEEK_WRITING_MODELS,
-  QWEN_PLUS_MODEL,
   type FeatureWritingSdkAdapter,
 } from "./title-writing";
 
@@ -51,25 +50,11 @@ export interface FeatureVendorCapability {
   models: readonly FeatureModelOption[];
 }
 
-const WRITING_OPENAI: readonly FeatureModelOption[] = [
-  { id: "gpt-6-astra", label: "GPT-6 Astra" },
-  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
-  { id: "gpt-6-luna", label: "GPT-6 Luna" },
-];
-
 export const FEATURE_CAPABILITIES: Record<FeatureKey, readonly FeatureVendorCapability[]> = {
   writing: [
-    {
-      vendor: "bailian",
-      connected: true,
-      gap: null,
-      models: [{ id: QWEN_PLUS_MODEL, label: "通义千问 Plus" }],
-    },
-    { vendor: "openai", connected: true, gap: null, models: WRITING_OPENAI },
-    { vendor: "deepseek", connected: true, gap: null, models: DEEPSEEK_WRITING_MODELS.map((id) => ({
-      id,
-      label: id === "deepseek-v4-pro" ? "DeepSeek V4 Pro" : "DeepSeek Flash",
-    })) },
+    { vendor: "bailian", connected: true, gap: null, models: WRITING_MODEL_CHANNELS.bailian.models },
+    { vendor: "openai", connected: true, gap: null, models: WRITING_MODEL_CHANNELS.openai.models },
+    { vendor: "deepseek", connected: true, gap: null, models: WRITING_MODEL_CHANNELS.deepseek.models },
   ],
   storyboard: [
     { vendor: "bailian", connected: true, gap: null, models: [{ id: "qwen-image-3.0", label: "Qwen Image" }] },
@@ -114,12 +99,11 @@ export function featureModelLabel(model: string): string {
       if (found) return found.label;
     }
   }
-  if (model === "claude-opus-5-5") return "Claude Opus 5.5";
-  return model;
+  return WRITING_MODEL_CHANNELS.anthropic.models.find(({ id }) => id === model)?.label ?? model;
 }
 
 export const FEATURE_PROBE_SCALE = "1 次最小请求";
-export const FEATURE_PROBE_COST_NOTE = "可能产生供应商费用。金额未回传前不会显示为 0。取消则不会发起调用。";
+export const FEATURE_PROBE_COST_NOTE = "本次检测可能产生供应商费用。";
 
 const revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const featureKeySchema = z.enum(FEATURE_KEYS);
@@ -157,7 +141,7 @@ export const featureRollbackRequestSchema = z.object({
 }).strict();
 export type FeatureRollbackRequest = z.infer<typeof featureRollbackRequestSchema>;
 
-export type FeatureDraftStatus = "blank" | "saved" | "testing" | "passed" | "failed";
+export type FeatureDraftStatus = "blank" | "saved" | "testing" | "passed" | "failed" | "unknown";
 
 export interface FeatureSlotView {
   vendor: FeatureVendor;
@@ -209,7 +193,7 @@ export interface FeatureConfigView {
 
 export interface FeatureMutationResult {
   view: FeatureConfigView;
-  probe?: { ok: boolean; message: string };
+  probe?: { ok: boolean; outcome?: "unknown"; message: string };
 }
 
 export type UsageStatus = "present" | "unknown" | "pending";

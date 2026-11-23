@@ -2,7 +2,8 @@ import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Put, Res
 import {
   adminLimitsUpdateSchema,
   adminProviderKeySchema,
-  adminProviderUpdateSchema,
+  adminProviderUpdateSchema, adminVendorKeySchema, adminVendorSaveSchema, adminVendorCheckSchema,
+  type AdminVendorKey, type AdminVendorSave, type AdminVendorCheck, type AdminVendorView, type AdminVendorCheckResult,
 } from "@ai-drama/contracts";
 import type { AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, ComfyUiAdminCheck, TitleWritingProviderKey } from "@ai-drama/contracts";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
@@ -12,6 +13,10 @@ export const ADMIN_MODELS_SERVICE = "ADMIN_MODELS_SERVICE";
 export const ADMIN_COMFYUI_CHECK = "ADMIN_COMFYUI_CHECK";
 
 export interface AdminModelsBackend {
+  vendors(): Promise<AdminVendorView[]>;
+  vendor(vendor: AdminVendorKey): Promise<AdminVendorView>;
+  saveVendor(vendor: AdminVendorKey, body: AdminVendorSave): Promise<AdminVendorView>;
+  checkVendor(vendor: AdminVendorKey, body: AdminVendorCheck): Promise<AdminVendorCheckResult>;
   view(): Promise<AdminModelsView>;
   updateProvider(providerKey: TitleWritingProviderKey, body: AdminProviderUpdate): Promise<AdminModelsView>;
   updateLimits(body: AdminLimitsUpdate): Promise<AdminModelsView>;
@@ -36,19 +41,13 @@ export class AdminModelsController {
 
   @Get("models")
   models(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
-    return this.send(response, () => {
-      const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
-      return backend.view();
-    });
+    return this.send(response, () => this.authorizedBackend(headers).view());
   }
 
   @Post("models/comfyui/check")
   comfyUiConnection(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const { auth } = this.configured();
-      this.requireOperator(headers, auth);
-      authorizeJsonWrite(auth, headers);
+      this.authorizedBackend(headers, true);
       if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length > 0) {
         throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       }
@@ -65,9 +64,7 @@ export class AdminModelsController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
-      const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
-      authorizeJsonWrite(auth, headers);
+      const backend = this.authorizedBackend(headers, true);
       const key = adminProviderKeySchema.safeParse(providerKey);
       const input = adminProviderUpdateSchema.safeParse(body);
       if (!key.success || !input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -82,24 +79,51 @@ export class AdminModelsController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
-      const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
-      authorizeJsonWrite(auth, headers);
+      const backend = this.authorizedBackend(headers, true);
       const input = adminLimitsUpdateSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       return backend.updateLimits(input.data);
     });
   }
 
-  private configured(): { auth: SiteAuth; backend: AdminModelsBackend } {
-    if (!this.backend || this.site?.kind !== "enabled") throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
-    return { auth: this.site.auth, backend: this.backend };
+  @Get("models/vendors")
+  vendors(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => this.authorizedBackend(headers).vendors());
   }
 
-  /** Model console stays operator-only; creator sessions get the same opaque refusal as an unauthenticated call. */
-  private requireOperator(headers: RequestHeaders, auth: SiteAuth): void {
-    const session = auth.session(headers);
-    if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+  @Get("models/vendors/:vendor")
+  vendor(@Param("vendor") id: string, @Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => this.authorizedBackend(headers).vendor(vendorKey(id)));
+  }
+
+  @Put("models/vendors/:vendor")
+  saveVendor(@Param("vendor") id: string, @Headers() headers: RequestHeaders, @Body() body: unknown,
+    @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => {
+      const backend = this.authorizedBackend(headers, true);
+      const input = adminVendorSaveSchema.safeParse(body);
+      if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      return backend.saveVendor(vendorKey(id), input.data);
+    });
+  }
+
+  @Post("models/vendors/:vendor/check")
+  checkVendor(@Param("vendor") id: string, @Headers() headers: RequestHeaders, @Body() body: unknown,
+    @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => {
+      const backend = this.authorizedBackend(headers, true);
+      const input = adminVendorCheckSchema.safeParse(body);
+      if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      return backend.checkVendor(vendorKey(id), input.data);
+    });
+  }
+
+  private authorizedBackend(headers: RequestHeaders, write = false): AdminModelsBackend {
+    if (!this.backend || this.site?.kind !== "enabled") throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
+    const auth = this.site.auth;
+    if (auth.session(headers).role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+    if (write) authorizeJsonWrite(auth, headers);
+    return this.backend;
   }
 
   private async send(response: AdminResponse, work: () => unknown | Promise<unknown>, status = 200): Promise<unknown> {
@@ -127,4 +151,10 @@ function authorizeJsonWrite(auth: SiteAuth, headers: RequestHeaders): void {
   if (typeof contentType !== "string" || contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
     throw new SiteAuthError(415, "AUTH_CONTENT_TYPE_REJECTED");
   }
+}
+
+function vendorKey(id: string): AdminVendorKey {
+  const key = adminVendorKeySchema.safeParse(id);
+  if (!key.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+  return key.data;
 }

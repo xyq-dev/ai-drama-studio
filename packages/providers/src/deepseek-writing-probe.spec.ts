@@ -72,7 +72,8 @@ describe("DeepSeek writing probe", () => {
       [401, "认证失败：请检查 API Key 是否正确。"],
       [402, "余额不足：请先为 DeepSeek 账号充值。"],
       [429, "请求被限流：请稍后再检测，不会自动重试。"],
-      [408, "请求超时：结果不明，不会自动重试。"],
+      [408, "请求超时，请先核对供应商的调用记录。"],
+      [504, "请求超时，请先核对供应商的调用记录。"],
     ];
     for (const [status, message] of cases) {
       let calls = 0;
@@ -83,6 +84,7 @@ describe("DeepSeek writing probe", () => {
       const result = await probeDeepseekWriting({ apiKey: SENTINEL, model: "deepseek-v4-pro", fetchImpl });
       expect(calls).toBe(1);
       expect(result).toMatchObject({ ok: false, message });
+      expect(result.outcome).toBe([408, 504].includes(status) ? "unknown" : undefined);
       expect(JSON.stringify(result)).not.toContain(SENTINEL);
     }
   });
@@ -93,7 +95,7 @@ describe("DeepSeek writing probe", () => {
       model: "deepseek-flash",
       fetchImpl: async () => jsonReply("   "),
     });
-    expect(blank).toMatchObject({ ok: false, message: "返回内容为空，即使结束原因为 stop 也不能视为有效编剧结果。未自动重试。" });
+    expect(blank).toMatchObject({ ok: false, message: "没有收到完整的检测回复。" });
     let calls = 0;
     const invalid = await probeDeepseekWriting({
       apiKey: SENTINEL,
@@ -108,6 +110,21 @@ describe("DeepSeek writing probe", () => {
     expect(invalid.message).toContain("不是合法 JSON");
   });
 
+  it.each(["[]", "{}", '{"ok":false}', '{"ok":"true"}'])("requires the requested acknowledgement (%s)", async (content) => {
+    const fetchImpl = vi.fn(async () => jsonReply(content));
+    expect(await probeDeepseekWriting({ apiKey: SENTINEL, model: "deepseek-flash", fetchImpl })).toMatchObject({ ok: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires a complete reply from the selected model", async () => {
+    const probe = (reply: Response) => probeDeepseekWriting({
+      apiKey: SENTINEL, model: "deepseek-v4-pro", fetchImpl: async () => reply,
+    });
+    expect((await probe(jsonReply('{"ok":true}', { model: "deepseek-flash" }))).ok).toBe(false);
+    expect((await probe(jsonReply('{"ok":true}', { model: "deepseek-v4-pro", finish: "" }))).ok).toBe(false);
+    expect((await probe(jsonReply('{"ok":true}', { model: "DeepSeek-V4-Pro-0813" }))).ok).toBe(true);
+  });
+
   it("records a timeout as unknown after one attempt", async () => {
     const fetchImpl: typeof fetch = (_input, init) => new Promise((_resolve, reject) => {
       const fail = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
@@ -115,6 +132,6 @@ describe("DeepSeek writing probe", () => {
       init?.signal?.addEventListener("abort", fail, { once: true });
     });
     const result = await probeDeepseekWriting({ apiKey: SENTINEL, model: "deepseek-flash", fetchImpl, timeoutMs: 30 });
-    expect(result).toMatchObject({ ok: false, message: "请求超时：结果不明，不会自动重试。" });
+    expect(result).toMatchObject({ ok: false, outcome: "unknown", message: "请求超时，请先核对供应商的调用记录。" });
   });
 });

@@ -3,11 +3,6 @@
   padding: 28px 32px 48px;
   color: var(--admin-ink, #101828);
 }
-.introHead {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
 .intro h1 {
   margin: 0;
   font-size: 28px;
@@ -60,8 +55,6 @@
 }
 .card,
 .cardOn,
-.vendor,
-.vendorOn,
 .tab,
 .tabOn,
 .primary,
@@ -133,7 +126,6 @@
 .editorHead,
 .recordHeadLine,
 .keyRow,
-.vendors,
 .actions,
 .dialogActions,
 .filters {
@@ -174,13 +166,6 @@
 .live strong {
   font-size: 16px;
 }
-.vendorLabel {
-  margin: 16px 0 8px;
-  color: var(--admin-muted, #53637b);
-  font-size: 13px;
-}
-.vendor,
-.vendorOn,
 .tab,
 .tabOn,
 .secondary,
@@ -191,7 +176,6 @@
   background: #fff;
   color: #101828;
 }
-.vendorOn,
 .tabOn {
   border-color: #465fff;
   background: #eef2ff;
@@ -565,6 +549,8 @@
 }
 .draftMeta {
   display: flex;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
   gap: 24px;
   color: #101828 !important;
   font-size: 16px !important;
@@ -634,8 +620,6 @@
     flex: 1 1 0;
     padding: 0 8px;
   }
-  /* Usage tables can share a row. The 修改配置 editor keeps one column so official
-     model names such as “DeepSeek Flash” stay fully visible at 390px. */
   .totals,
   .record {
     grid-template-columns: 1fr 1fr;

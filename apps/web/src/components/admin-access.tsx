@@ -43,14 +43,13 @@ export function AdminGateView({ gate, onRetry }: { gate: Exclude<AdminGate, "rea
     return (
       <section className={styles.state} data-state="loading">
         <h2>正在加载配置</h2>
-        <p>正在读取线上配置和草稿，请稍候。刷新后会恢复未保存的编辑状态。</p>
       </section>
     );
   }
   return (
     <section className={styles.state} data-state={gate === "unavailable" ? "unavailable" : "failed"}>
       <h2>{gate === "unavailable" ? "管理员后台尚未就绪" : "配置读取失败"}</h2>
-      <p>{gate === "unavailable" ? "请联系服务器管理员完成安全存储初始化。" : "没有读到配置。可以重试，这次没有改动线上配置。"}</p>
+      {gate === "unavailable" && <p>请联系服务器管理员完成安全存储初始化。</p>}
       {onRetry ? <button type="button" className={styles.secondary} onClick={onRetry}>重试</button> : null}
     </section>
   );

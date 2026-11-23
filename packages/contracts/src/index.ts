@@ -377,6 +377,7 @@ export * from "./vimax-platform-preview";
 export * from "./vimax-candidate";
 export * from "./vimax-planning";
 
+export * from "./writing-model-catalog";
 export * from "./speech";
 export * from "./speech-batch";
 export * from "./real-media";

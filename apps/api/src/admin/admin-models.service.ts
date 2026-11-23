@@ -1,4 +1,6 @@
 import {
+  WRITING_MODEL_CHANNELS, writingModelOptions, adminVendorKeySchema, adminVendorSaveSchema,
+  type AdminVendorKey, type AdminVendorSave, type AdminVendorCheck, type AdminVendorCheckResult, type AdminVendorView,
   TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem,
   type AdminLimitsUpdate, type AdminModelsView, type AdminProviderUpdate, type AdminSettingsView, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
@@ -9,7 +11,8 @@ import type { ApiEnv } from "../config/env";
 import type { AdminBootstrap } from "./admin-bootstrap";
 import type { AdminModelsBackend } from "./admin-models.controller";
 import { AdminHttpError } from "./admin-auth";
-import { ModelConfigVault, type ManagedModelSettings } from "./model-config-vault";
+import { checkVendorCatalog } from "./admin-vendor-probe";
+import { ModelConfigVault, vendorRecord, type VendorRecord, type ManagedModelSettings } from "./model-config-vault";
 
 const PROVIDERS = ["openai", "anthropic", "deepseek"] as const;
 const LABELS = { openai: "OpenAI", anthropic: "Claude", deepseek: "DeepSeek" };
@@ -72,12 +75,32 @@ function settingsView(settings: ManagedModelSettings): AdminSettingsView {
   };
 }
 
+function validateKey(providerKey: AdminVendorKey, body: AdminProviderUpdate | AdminVendorSave): void {
+  if (providerKey === "anthropic" && body.secretAction === "replace") {
+    const problem = body.apiKey === undefined ? "unsupported_format" : anthropicKeyProblem(body.apiKey);
+    if (problem === "not_api_credential") throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_KIND");
+    if (problem !== null) throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_FORMAT");
+  }
+  if (providerKey === "anthropic" && body.workspaceAction === "replace" && !anthropicWorkspaceIdValid(body.workspaceId ?? "")) {
+    throw new AdminHttpError(400, "ADMIN_CONFIG_WORKSPACE_FORMAT");
+  }
+  // DeepSeek documents no key format: only a plausible length and header-safe characters are required.
+  if (providerKey === "deepseek" && body.secretAction === "replace" && (body.apiKey === undefined || deepseekKeyProblem(body.apiKey) !== null)) {
+    throw new AdminHttpError(400, "ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT");
+  }
+  if (providerKey !== "anthropic" && body.workspaceAction && body.workspaceAction !== "keep") {
+    throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+  }
+}
+
 export class AdminModelsService implements AdminModelsBackend {
+  private readonly catalogChecks = new Map<string, Promise<AdminVendorCheckResult>>();
   private constructor(
     private readonly vault: ModelConfigVault,
     private readonly effective: ManagedModelSettings,
     private readonly deferred: boolean,
     private readonly state: AdminModelsView["titleWriting"],
+    private readonly fetchImpl: typeof fetch,
     private readonly storage: (() => Promise<NonNullable<AdminModelsView["storage"]>>) | null = null,
   ) {}
 
@@ -87,7 +110,8 @@ export class AdminModelsService implements AdminModelsBackend {
       productionBlocked: env.NODE_ENV === "production",
     },
     /** Reads whether the database can store title runs, Claude runs and online candidates. Never writes. */
-    storage: (() => Promise<NonNullable<AdminModelsView["storage"]>>) | null = null): Promise<AdminModelsService> {
+    storage: (() => Promise<NonNullable<AdminModelsView["storage"]>>) | null = null,
+    fetchImpl: typeof fetch = globalThis.fetch): Promise<AdminModelsService> {
     const vault = await ModelConfigVault.open({ path: bootstrap.path, masterKey: bootstrap.masterKey, initial: initialModelSettings(env) });
     // This runs before the API accepts requests or starts recovery. No live hot swap.
     const result = await vault.activateIfIdle(isIdle);
@@ -95,19 +119,66 @@ export class AdminModelsService implements AdminModelsBackend {
       // The runtime passes the same computed authorization used by the service and recovery engine.
       ...titleWritingState,
       operatorConfigured: Boolean(env.TITLE_WRITING_OPERATOR_TOKEN),
-    }, storage);
+    }, fetchImpl, storage);
   }
 
   /** Server-only startup copy; never returned by the controller. */
   runtimeSettings(): ManagedModelSettings { return structuredClone(this.effective); }
 
-  /**
-   * Saved vault settings, including a key that still waits for process restart.
-   * Feature-config bind_vendor reads this so a just-saved AI 大模型 key can be bound without a restart.
-   * Server-only; never returned by the controller.
-   */
-  async savedSettings(): Promise<ManagedModelSettings> {
-    return structuredClone((await this.vault.read()).saved);
+  private vendorView(vendor: AdminVendorKey, record: VendorRecord): AdminVendorView {
+    const allowlist = vendor === "openai" || vendor === "anthropic" ? managedProviderConfigs(this.effective)[vendor].models : null;
+    return {
+      vendor, channel: record.channel, model: record.model, revision: record.revision,
+      models: writingModelOptions(vendor, record.channel, allowlist),
+      keyConfigured: record.apiKey !== null,
+      ...(vendor === "anthropic" ? { workspaceId: record.workspaceId ?? null } : {}),
+    };
+  }
+
+  async vendors(): Promise<AdminVendorView[]> {
+    const doc = await this.vault.read();
+    return adminVendorKeySchema.options.map((vendor) => this.vendorView(vendor, vendorRecord(doc, vendor)));
+  }
+
+  async vendor(vendor: AdminVendorKey): Promise<AdminVendorView> {
+    return this.vendorView(vendor, vendorRecord(await this.vault.read(), vendor));
+  }
+
+  /** Only used for explicit binding of a new feature draft. Running jobs read their own locked credential. */
+  async vendorSecret(vendor: AdminVendorKey): Promise<string | null> {
+    return vendorRecord(await this.vault.read(), vendor).apiKey;
+  }
+
+  async saveVendor(vendor: AdminVendorKey, input: AdminVendorSave): Promise<AdminVendorView> {
+    if (!adminVendorSaveSchema.safeParse(input).success || input.channel !== WRITING_MODEL_CHANNELS[vendor].id) {
+      throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+    }
+    validateKey(vendor, input);
+    const current = await this.vendor(vendor);
+    if (input.model !== null && !current.models.some(({ id }) => id === input.model) && input.model !== current.model) {
+      throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+    }
+    return this.vendorView(vendor, await this.vault.saveVendor(vendor, input));
+  }
+
+  async checkVendor(vendor: AdminVendorKey, input: AdminVendorCheck): Promise<AdminVendorCheckResult> {
+    const record = vendorRecord(await this.vault.read(), vendor);
+    if (record.revision !== input.expectedRevision || record.model !== input.model || record.channel !== input.channel) {
+      throw new AdminHttpError(409, "ADMIN_CONFIG_CONFLICT");
+    }
+    if (!record.apiKey || !this.vendorView(vendor, record).models.some(({ id }) => id === input.model)) {
+      throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+    }
+    const flight = `${vendor}:${record.revision}`;
+    const existing = this.catalogChecks.get(flight);
+    if (existing) return existing;
+    const check = checkVendorCatalog(vendor, input.model, record.apiKey, record.workspaceId, this.fetchImpl)
+      .then(async (evidence) => {
+        if ((await this.vendor(vendor)).revision !== record.revision) throw new AdminHttpError(409, "ADMIN_CONFIG_CONFLICT");
+        return { ...evidence, vendor, channel: record.channel, model: input.model, revision: record.revision };
+      }).finally(() => this.catalogChecks.delete(flight));
+    this.catalogChecks.set(flight, check);
+    return check;
   }
 
   /** Whether saved settings wait for the restart. Reads only the revision numbers; never a secret. */
@@ -146,18 +217,7 @@ export class AdminModelsService implements AdminModelsBackend {
    * Neither check says the key works: only the provider can answer that.
    */
   async updateProvider(providerKey: TitleWritingProviderKey, body: AdminProviderUpdate): Promise<AdminModelsView> {
-    if (providerKey === "anthropic" && body.secretAction === "replace") {
-      const problem = body.apiKey === undefined ? "unsupported_format" : anthropicKeyProblem(body.apiKey);
-      if (problem === "not_api_credential") throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_KIND");
-      if (problem !== null) throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_FORMAT");
-    }
-    if (providerKey === "anthropic" && body.workspaceAction === "replace" && !anthropicWorkspaceIdValid(body.workspaceId ?? "")) {
-      throw new AdminHttpError(400, "ADMIN_CONFIG_WORKSPACE_FORMAT");
-    }
-    // DeepSeek documents no key format: only a plausible length and header-safe characters are required.
-    if (providerKey === "deepseek" && body.secretAction === "replace" && (body.apiKey === undefined || deepseekKeyProblem(body.apiKey) !== null)) {
-      throw new AdminHttpError(400, "ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT");
-    }
+    validateKey(providerKey, body);
     const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
     // Only when a key is entered: saving an empty list with the key kept is how the list is emptied (not ready).
     const update = body.secretAction === "replace" && body.models.length === 0 && defaults.length > 0

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FEATURE_KEYS,
   FEATURE_VENDOR_KEYS,
-  featureCapability,
   type FeatureCardView,
   type FeatureConfigView,
   type FeatureKey,
@@ -13,7 +12,13 @@ import {
 } from "@ai-drama/contracts";
 import { AdminFrame, AdminGateView, useOperatorGate } from "./admin-access";
 import { SAVED_SECRET_MASK } from "../lib/ai-model-vendors";
-import { createFeatureConfigClient, featureErrorCopy } from "../lib/feature-config-client";
+import { ModelSelect } from "./model-select";
+import { useModalKeyboard } from "../lib/modal-keyboard";
+import {
+  FeatureApiError,
+  createFeatureConfigClient,
+  featureErrorCopy,
+} from "../lib/feature-config-client";
 import styles from "./feature-config.module.css";
 
 const PAGE_LABEL: Record<FeatureKey, string> = {
@@ -27,10 +32,7 @@ type PageTab = FeatureKey | "video";
 function ConfigIntro() {
   return (
     <header className={styles.intro}>
-      <div className={styles.introHead}>
-        <h1>模型与密钥</h1>
-      </div>
-      <p>按功能管理模型与凭证。</p>
+      <h1>模型与密钥</h1>
     </header>
   );
 }
@@ -75,20 +77,19 @@ function pendingDraft(card: FeatureCardView): FeatureSlotView | null {
       (item) =>
         item.draftStatus === "saved" ||
         item.draftStatus === "failed" ||
+        item.draftStatus === "unknown" ||
         item.draftStatus === "testing" ||
         (item.draftStatus === "passed" && !liveMatches(card, item)),
     ) ?? null
   );
 }
 
-type ChangeKind = "empty" | "saved" | "failed" | "passed" | "enabled";
+type ChangeKind = "empty" | "saved" | "testing" | "failed" | "unknown" | "passed" | "enabled";
 
 function changeKind(card: FeatureCardView, slot: FeatureSlotView | null): ChangeKind {
   if (!slot || slot.draftStatus === "blank") return "empty";
-  if (slot.draftStatus === "failed") return "failed";
-  if (slot.draftStatus === "saved" || slot.draftStatus === "testing") return "saved";
   if (slot.draftStatus === "passed") return liveMatches(card, slot) ? "enabled" : "passed";
-  return "empty";
+  return slot.draftStatus;
 }
 
 export function FeatureConfig() {
@@ -102,13 +103,27 @@ export function FeatureConfig() {
   const [failed, setFailed] = useState(false);
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [replacing, setReplacing] = useState<Record<string, boolean>>({});
-  const [models, setModels] = useState<Record<string, string>>({});
+  const [editedModel, setEditedModel] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [dialog, setDialog] = useState<"test" | "enable" | "failed" | null>(null);
-  const [failureCopy, setFailureCopy] = useState("");
+  const [dialog, setDialog] = useState<"test" | "enable" | null>(null);
+  const selectionVersion = useRef(0);
+  const priorVendor = useRef<FeatureVendor | null>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalKeyboard(editing, drawerRef, cancelEdit);
+  useModalKeyboard(Boolean(dialog), dialogRef, () => setDialog(null));
   const busyRef = useRef(false);
+
+  useEffect(() => {
+    const modal = editing ? drawerRef.current : dialog ? dialogRef.current : null;
+    if (!modal) return;
+    const previous = document.activeElement;
+    modal.querySelector<HTMLElement>("button, select")?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, [editing, dialog]);
 
   useEffect(() => {
     if (gate !== "ready") return;
@@ -145,58 +160,69 @@ export function FeatureConfig() {
   const fieldKey = selectedVendor ? `${feature}:${selectedVendor}` : "";
   const draftKey = fieldKey ? (keys[fieldKey] ?? "") : "";
   const replacingKey = fieldKey ? replacing[fieldKey] === true : false;
-  const model = fieldKey ? (models[fieldKey] ?? slot?.model ?? slot?.models[0]?.id ?? "") : "";
-  const canBindVendor = Boolean(slot?.connected && !slot.keyConfigured && slot.vendorKeyConfigured && !replacingKey);
-  const enteringKey = Boolean(slot && (replacingKey || (!slot.keyConfigured && !slot.vendorKeyConfigured)));
-  const dirtyModel = Boolean(slot && model && model !== (slot.model ?? slot.models[0]?.id ?? ""));
-  const dirtyKey = enteringKey && draftKey.length > 0;
+  const savedModel =
+    slot?.model ?? (card?.live?.vendor === selectedVendor ? card?.live?.model : "") ?? "";
+  const model = editing ? (editedModel ?? savedModel) : savedModel;
+  const available = Boolean(slot?.models.some((entry) => entry.id === model));
+  const canBindVendor = Boolean(
+    slot?.connected && !slot.keyConfigured && slot.vendorKeyConfigured && !replacingKey,
+  );
+  const enteringKey = Boolean(
+    slot && (replacingKey || (!slot.keyConfigured && !slot.vendorKeyConfigured)),
+  );
   const needsKey = Boolean(slot?.connected && enteringKey && draftKey.trim().length < 8);
-  const canSave = Boolean(slot?.connected && !busy && !needsKey);
+  const canSave = Boolean(slot?.connected && available && !busy && !needsKey);
   const canTest = Boolean(
     slot?.connected &&
+    available &&
     slot.keyConfigured &&
-    (slot.draftStatus === "saved" || slot.draftStatus === "failed") &&
-    !dirtyKey &&
-    !dirtyModel &&
-    !busy,
+    !editing &&
+    !busy &&
+    (slot.draftStatus === "saved" ||
+      slot.draftStatus === "failed" ||
+      slot.draftStatus === "unknown"),
   );
   const canEnable = Boolean(
     slot?.connected &&
+    available &&
     slot.draftStatus === "passed" &&
     slot.testToken &&
-    !dirtyKey &&
-    !dirtyModel &&
+    !editing &&
     !busy &&
     card &&
     !liveMatches(card, slot),
   );
   const kind = card && slot ? changeKind(card, slot) : "empty";
-  const extra = vendor ? featureCapability(feature, vendor) : null;
-  const showingUnconnected = editing && extra !== null && !extra.connected;
-  const connected = showingUnconnected ? card?.slots.find((item) => item.connected) : null;
+
+  // A newer server revision may be adopted after navigation; its receipt must not close a new editor.
+  function acceptView(next: FeatureConfigView) {
+    setView((previous) => (previous && previous.revision > next.revision ? previous : next));
+  }
 
   function selectFeature(next: PageTab) {
+    selectionVersion.current++;
+    setEditedModel(null);
+    setKeys({});
+    setReplacing({});
     setChosen(next);
     setVendor(null);
     setEditing(false);
     setDialog(null);
     setError("");
-    setNotice("");
     if (next !== "video") replaceSelection(next, null);
   }
 
   async function rollback() {
     if (!view || chosen === "video" || busyRef.current) return;
+    const version = selectionVersion.current;
     busyRef.current = true;
     setBusy("rollback");
     setError("");
-    setNotice("");
     try {
       const next = await client.rollback(feature, { expectedRevision: view.revision });
-      setView(next);
-      setNotice("已回退到上一配置版本。进行中的任务保持提交时锁定的版本。");
+      acceptView(next);
     } catch (caught) {
-      setError(featureErrorCopy(caught));
+      if (selectionVersion.current === version) setError(featureErrorCopy(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -204,6 +230,8 @@ export function FeatureConfig() {
   }
 
   function selectVendor(next: FeatureVendor) {
+    selectionVersion.current++;
+    setEditedModel("");
     setChosen(feature);
     setVendor(next);
     setEditing(true);
@@ -214,38 +242,35 @@ export function FeatureConfig() {
 
   /** 取消 discards unsaved model, key and 更换 choices for this feature so 检测连接 / 确认启用 use the saved draft again. */
   function cancelEdit() {
-    const prefix = `${feature}:`;
-    const keep = <T,>(current: Record<string, T>) =>
-      Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix)));
-    setModels(keep);
-    setKeys(keep);
-    setReplacing(keep);
-    setVendor(null);
+    selectionVersion.current++;
+    setEditedModel(null);
+    setKeys({});
+    setReplacing({});
+    setVendor(priorVendor.current);
     setEditing(false);
     setError("");
-    replaceSelection(feature, null);
+    replaceSelection(feature, priorVendor.current);
   }
 
   function beginConfigure() {
-    // Open on the draft or live vendor shown in 配置变更, not always the first vendor.
-    const preferred =
-      (slot?.connected ? slot.vendor : null) ??
-      card?.slots.find((item) => item.connected)?.vendor ??
-      "bailian";
-    selectVendor(preferred);
+    if (!slot) return;
+    priorVendor.current = vendor;
+    selectVendor(slot.vendor);
+    setEditedModel(null);
   }
 
   async function save() {
     if (!card || !slot || !view || !canSave || busyRef.current) return;
+    const version = selectionVersion.current;
     busyRef.current = true;
     setBusy("save");
     setError("");
-    setNotice("");
-    const secretAction = enteringKey && draftKey
-      ? ("replace" as const)
-      : canBindVendor
-        ? ("bind_vendor" as const)
-        : ("keep" as const);
+    const secretAction =
+      enteringKey && draftKey
+        ? ("replace" as const)
+        : canBindVendor
+          ? ("bind_vendor" as const)
+          : ("keep" as const);
     try {
       const next = await client.saveDraft(feature, {
         expectedRevision: view.revision,
@@ -254,13 +279,14 @@ export function FeatureConfig() {
         secretAction,
         ...(secretAction === "replace" ? { apiKey: draftKey } : {}),
       });
-      setView(next);
-      setKeys((current) => ({ ...current, [fieldKey]: "" }));
-      setReplacing((current) => ({ ...current, [fieldKey]: false }));
+      acceptView(next);
+      if (selectionVersion.current !== version) return;
+      setEditedModel(null);
+      setKeys({});
+      setReplacing({});
       setEditing(false);
-      setNotice("草稿已保存。线上任务仍使用当前生效配置。");
     } catch (caught) {
-      setError(featureErrorCopy(caught));
+      if (selectionVersion.current === version) setError(featureErrorCopy(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -268,7 +294,8 @@ export function FeatureConfig() {
   }
 
   async function confirmTest() {
-    if (!card || !slot || !view || busyRef.current) return;
+    if (!card || !slot || !view || !canTest || busyRef.current) return;
+    const version = selectionVersion.current;
     busyRef.current = true;
     setBusy("test");
     setDialog(null);
@@ -279,20 +306,14 @@ export function FeatureConfig() {
         vendor: slot.vendor,
         confirmCost: true,
       });
-      setView(result.view);
-      if (!result.probe?.ok) {
-        const message = result.probe?.message ?? "";
-        setFailureCopy(
-          message && !(draftKey && message.includes(draftKey)) ? message : "测试没有通过，草稿已保留，可以重试。",
-        );
-        setDialog("failed");
-      } else {
-        const message = result.probe?.message?.trim() ?? "";
-        const safe = message && !(draftKey && message.includes(draftKey)) ? message : "测试已通过。";
-        setNotice(`${safe} 线上任务仍使用当前生效配置，启用后只影响新任务。`);
-      }
+      acceptView(result.view);
     } catch (caught) {
-      setError(featureErrorCopy(caught));
+      if (version === selectionVersion.current) {
+        const unknown =
+          caught instanceof FeatureApiError &&
+          (caught.status === 0 || caught.status === 408 || caught.status === 504);
+        setError(unknown ? "结果未知，请刷新配置并核对供应商调用记录。" : featureErrorCopy(caught));
+      }
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -300,7 +321,8 @@ export function FeatureConfig() {
   }
 
   async function confirmEnable() {
-    if (!card || !slot?.testToken || !view || busyRef.current) return;
+    if (!card || !slot?.testToken || !view || !canEnable || busyRef.current) return;
+    const version = selectionVersion.current;
     busyRef.current = true;
     setBusy("enable");
     setDialog(null);
@@ -311,10 +333,9 @@ export function FeatureConfig() {
         vendor: slot.vendor,
         testToken: slot.testToken,
       });
-      setView(next);
-      setNotice("已启用。新任务将使用这一版配置。进行中的任务保持提交时锁定的版本。");
+      acceptView(next);
     } catch (caught) {
-      setError(featureErrorCopy(caught));
+      if (selectionVersion.current === version) setError(featureErrorCopy(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -391,7 +412,13 @@ export function FeatureConfig() {
         <section className={styles.state} data-state="video-empty">
           <img src="/design/tailadmin-v2/icon-list-video.svg" width={28} height={28} alt="" />
           <h2>视频尚未接入</h2>
-          <p>视频尚未接入功能配置。现有视频任务链路保持不变，这里不能保存、检测或启用。</p>
+        </section>
+      ) : vendor && !card.slots.some((item) => item.vendor === vendor) ? (
+        <section className={styles.state}>
+          <h2>该服务商尚未接入</h2>
+          <button type="button" className={styles.secondary} onClick={() => selectFeature(feature)}>
+            返回已接入服务商
+          </button>
         </section>
       ) : (
         <>
@@ -403,8 +430,7 @@ export function FeatureConfig() {
             busy={busy}
             canTest={canTest}
             canEnable={canEnable}
-            error={error}
-            notice={notice}
+            error={editing ? "" : error}
             onTest={() => {
               if (canTest) setDialog("test");
             }}
@@ -412,51 +438,54 @@ export function FeatureConfig() {
               if (canEnable) setDialog("enable");
             }}
             onRollback={() => void rollback()}
-            rollingBack={busy === "rollback"}
           />
         </>
       )}
       {editing && card && slot ? (
         <div className={styles.modal}>
-          <div className={styles.drawer} role="dialog" aria-modal="true" aria-label="修改配置">
-            {showingUnconnected && extra ? (
-              <section className={styles.state} data-state="unconnected">
-                <h2>该服务商尚未接入</h2>
-                <p>{extra.gap ?? "该服务商尚未接入。"}</p>
-                <button
-                  type="button"
-                  className={styles.primary}
-                  onClick={() => (connected ? selectVendor(connected.vendor) : setEditing(false))}
-                >
-                  返回已接入服务商
-                </button>
-              </section>
-            ) : (
-              <Editor
-                card={card}
-                slot={slot}
-                model={model}
-                draftKey={draftKey}
-                replacing={replacingKey}
-                bindingVendorKey={canBindVendor}
-                busy={busy}
-                canSave={canSave}
-                needsKey={needsKey}
-                error={error}
-                onVendor={selectVendor}
-                onModel={(value) => setModels((current) => ({ ...current, [fieldKey]: value }))}
-                onKey={(value) => setKeys((current) => ({ ...current, [fieldKey]: value }))}
-                onReplace={() => setReplacing((current) => ({ ...current, [fieldKey]: true }))}
-                onSave={() => void save()}
-                onClose={cancelEdit}
-              />
-            )}
+          <div
+            ref={drawerRef}
+            className={styles.drawer}
+            role="dialog"
+            aria-modal="true"
+            aria-label="修改配置"
+          >
+            <Editor
+              card={card}
+              slot={slot}
+              model={model}
+              draftKey={draftKey}
+              replacing={replacingKey}
+              bindingVendorKey={canBindVendor}
+              busy={busy}
+              canSave={canSave}
+              needsKey={needsKey}
+              error={error}
+              onVendor={selectVendor}
+              onModel={(value) => {
+                setEditedModel(value);
+                setError("");
+              }}
+              onKey={(value) => {
+                setKeys((current) => ({ ...current, [fieldKey]: value }));
+                setError("");
+              }}
+              onReplace={() => setReplacing((current) => ({ ...current, [fieldKey]: true }))}
+              onSave={() => void save()}
+              onClose={cancelEdit}
+            />
           </div>
         </div>
       ) : null}
       {dialog === "test" && slot ? (
         <div className={styles.modal}>
-          <div className={styles.dialog} role="dialog" aria-modal="true" aria-label="确认测试费用">
+          <div
+            ref={dialogRef}
+            className={styles.dialog}
+            role="dialog"
+            aria-modal="true"
+            aria-label="确认测试费用"
+          >
             <h2>确认测试</h2>
             <p>
               {slot.label} · {slot.models.find((item) => item.id === model)?.label ?? model}
@@ -474,27 +503,20 @@ export function FeatureConfig() {
           </div>
         </div>
       ) : null}
-      {dialog === "failed" ? (
-        <div className={styles.modal}>
-          <div className={styles.dialog} role="dialog" aria-modal="true" aria-label="测试没有通过">
-            <h2>测试没有通过</h2>
-            <p>{failureCopy}</p>
-            <div className={styles.dialogActions}>
-              <button type="button" className={styles.primary} onClick={() => setDialog(null)}>
-                知道了
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
       {dialog === "enable" && slot ? (
         <div className={styles.modal}>
-          <div className={styles.dialog} role="dialog" aria-modal="true" aria-label="确认启用">
+          <div
+            ref={dialogRef}
+            className={styles.dialog}
+            role="dialog"
+            aria-modal="true"
+            aria-label="确认启用"
+          >
             <h2>确认启用</h2>
             <p>
               启用后，新的{PAGE_LABEL[card.feature]}任务使用 {slot.label} ·{" "}
               {slot.models.find((item) => item.id === model)?.label ?? model}
-              。已经提交的任务保持锁定的版本，不会悄悄切换。
+              。已提交的任务继续使用原配置。
             </p>
             <div className={styles.dialogActions}>
               <button type="button" className={styles.secondary} onClick={() => setDialog(null)}>
@@ -551,11 +573,9 @@ function ChangePanel({
   canTest,
   canEnable,
   error,
-  notice,
   onTest,
   onEnable,
   onRollback,
-  rollingBack,
 }: {
   card: FeatureCardView;
   slot: FeatureSlotView | null;
@@ -564,28 +584,18 @@ function ChangePanel({
   canTest: boolean;
   canEnable: boolean;
   error: string;
-  notice: string;
   onTest: () => void;
   onEnable: () => void;
   onRollback: () => void;
-  rollingBack: boolean;
 }) {
-  const step = kind === "empty" ? 1 : kind === "saved" || kind === "failed" ? 2 : 3;
+  const step = kind === "empty" ? 1 : kind === "passed" || kind === "enabled" ? 3 : 2;
   const done2 = kind === "passed" || kind === "enabled";
   const done3 = kind === "enabled";
   return (
     <section className={styles.change} aria-label="配置变更">
       <h2>配置变更</h2>
       <ol className={styles.steps}>
-        <li
-          className={
-            step > 1 || kind === "enabled"
-              ? styles.stepDone
-              : step === 1
-                ? styles.stepOn
-                : styles.step
-          }
-        >
+        <li className={step === 1 ? styles.stepOn : styles.stepDone}>
           <span>1</span> 保存草稿
         </li>
         <li className={done2 ? styles.stepDone : step === 2 ? styles.stepOn : styles.step}>
@@ -601,14 +611,13 @@ function ChangePanel({
             <span className={styles.dotMuted} />
             暂无草稿
           </p>
-          <p>修改配置后，可在这里检测并启用新版本。</p>
         </div>
       ) : slot ? (
         <div className={styles.changeBody}>
-          {kind === "saved" ? (
+          {kind === "saved" || kind === "testing" || kind === "unknown" ? (
             <p className={styles.mutedLine}>
               <span className={styles.dotWarn} />
-              草稿未启用
+              {kind === "testing" ? "正在检测…" : kind === "unknown" ? "结果未知" : "草稿未启用"}
             </p>
           ) : null}
           {kind === "failed" ? (
@@ -633,21 +642,18 @@ function ChangePanel({
             <strong>{slot.label}</strong>
             <span>{slot.models.find((item) => item.id === slot.model)?.label ?? slot.model}</span>
           </p>
-          <p>
-            {kind === "saved" ? "当前生效配置仍用于新任务。" : null}
-            {kind === "failed"
-              ? `${slot.failureMessage ? `原因：${slot.failureMessage} ` : ""}草稿已保留，不能启用。当前生效配置未切换。`
-              : null}
-            {kind === "passed" ? "连接检测已通过，等待确认启用。" : null}
-            {kind === "enabled" ? "本次变更仅对本功能的新任务生效。" : null}
-            {notice && kind !== "failed" ? ` ${notice}` : null}
-          </p>
+          {(kind === "failed" || kind === "unknown") && slot.failureMessage ? (
+            <p role="status">{slot.failureMessage}</p>
+          ) : null}
+          {slot.model && !slot.models.some((item) => item.id === slot.model) ? (
+            <p>当前列表不可用，请修改配置。</p>
+          ) : null}
           {error ? (
             <p className={styles.fail} role="alert">
               {error}
             </p>
           ) : null}
-          {kind === "saved" || kind === "failed" ? (
+          {kind === "saved" || kind === "failed" || kind === "unknown" ? (
             <button type="button" className={styles.primary} disabled={!canTest} onClick={onTest}>
               {busy === "test" ? "正在检测…" : "检测连接"}
             </button>
@@ -666,10 +672,10 @@ function ChangePanel({
             <button
               type="button"
               className={styles.secondary}
-              disabled={busy !== "" || rollingBack}
+              disabled={busy !== ""}
               onClick={onRollback}
             >
-              {rollingBack ? "正在回退…" : "回退到上一配置版本"}
+              {busy === "rollback" ? "正在回退…" : "回退到上一配置版本"}
             </button>
           ) : null}
         </div>
@@ -727,69 +733,60 @@ function Editor({
           {card.live ? `${card.live.vendorLabel} / ${card.live.modelLabel}` : "尚未配置"}
         </strong>
       </p>
-      <p className={styles.vendorLabel}>供应商</p>
-      <div className={styles.vendors} role="group" aria-label="供应商">
-        {card.slots.map((item) => (
-          <button
-            key={item.vendor}
-            type="button"
-            className={item.vendor === slot.vendor ? styles.vendorOn : styles.vendor}
-            aria-pressed={item.vendor === slot.vendor}
-            onClick={() => onVendor(item.vendor)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
       <div className={styles.fields}>
         <label className={styles.field}>
-          <span>模型</span>
+          <span>供应商</span>
           <select
-            aria-label="模型"
-            value={model}
-            disabled={!slot.connected || busy !== ""}
-            onChange={(event) => onModel(event.target.value)}
+            value={slot.vendor}
+            onChange={(event) => onVendor(event.target.value as FeatureVendor)}
+            disabled={busy === "save"}
           >
-            {slot.models.map((item) => (
-              <option key={item.id} value={item.id}>
+            {card.slots.map((item) => (
+              <option key={item.vendor} value={item.vendor}>
                 {item.label}
               </option>
             ))}
           </select>
         </label>
-        <div className={styles.field}>
-          <span>凭证 · {slot.label}</span>
-          {(slot.keyConfigured || bindingVendorKey) && !replacing ? (
-            <div className={styles.keyRow}>
-              <span aria-label="已保存密钥">{SAVED_SECRET_MASK}</span>
-              <button type="button" onClick={onReplace}>
-                更换
-              </button>
-            </div>
-          ) : (
-            <input
-              aria-label="API Key"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={draftKey}
-              disabled={busy !== ""}
-              onChange={(event) => onKey(event.target.value)}
-            />
-          )}
-        </div>
+        <ModelSelect
+          key={slot.vendor}
+          label="模型"
+          value={model}
+          options={slot.models}
+          onChange={onModel}
+          disabled={!slot.connected || busy === "save"}
+        />
+        {!slot.connected ? (
+          <small className={styles.hint}>该供应商尚未接入，请选择其他供应商。</small>
+        ) : null}
+        {slot.connected ? (
+          <div className={styles.field}>
+            <span>凭证 · {slot.label}</span>
+            {(slot.keyConfigured || bindingVendorKey) && !replacing ? (
+              <div className={styles.keyRow}>
+                <span aria-label="已保存密钥">{SAVED_SECRET_MASK}</span>
+                <button type="button" onClick={onReplace}>
+                  更换
+                </button>
+              </div>
+            ) : (
+              <input
+                aria-label="API Key"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={draftKey}
+                disabled={busy !== ""}
+                onChange={(event) => onKey(event.target.value)}
+              />
+            )}
+            {bindingVendorKey && !replacing ? (
+              <small className={styles.hint}>使用「AI 大模型」已保存的密钥。</small>
+            ) : null}
+            {needsKey ? <small className={styles.hint}>请输入至少 8 位的 API Key。</small> : null}
+          </div>
+        ) : null}
       </div>
-      {bindingVendorKey && !replacing ? (
-        <small className={styles.hint}>
-          将使用已在「AI 大模型」保存的凭证。保存草稿不会把完整密钥再显示在页面上。
-        </small>
-      ) : null}
-      {needsKey ? (
-        <small className={styles.hint}>
-          请填写这一家服务商的 API Key。密钥只在这次保存时发送，页面不会记住它。
-        </small>
-      ) : null}
-      <p className={styles.hint}>保存草稿或检测连接都不会切换当前生效配置。</p>
       {error ? (
         <p className={styles.fail} role="alert">
           {error}

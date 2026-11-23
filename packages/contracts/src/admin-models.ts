@@ -4,10 +4,7 @@ import { TITLE_WRITING_PROVIDER_KEYS, type TitleWritingProviderKey, type TitleWr
 /** Only the active providers can be edited or made the default. Retired providers have no console entry. */
 export const adminProviderKeySchema = z.enum(TITLE_WRITING_PROVIDER_KEYS);
 const revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-export const adminProviderUpdateSchema = z.object({
-  expectedRevision: revision,
-  models: z.array(z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/)).max(10),
-  baseUrl: z.string().max(512).optional(),
+const credentialFields = z.object({
   secretAction: z.enum(["keep", "replace", "clear"]),
   apiKey: z.string().min(8).max(256).regex(/^\S+$/u).optional(),
   /**
@@ -17,7 +14,9 @@ export const adminProviderUpdateSchema = z.object({
    */
   workspaceAction: z.enum(["keep", "replace", "clear"]).optional(),
   workspaceId: z.string().min(1).max(128).optional(),
-}).strict().superRefine((value, ctx) => {
+});
+type CredentialUpdate = z.infer<typeof credentialFields>;
+function validateCredential(value: CredentialUpdate, ctx: z.RefinementCtx) {
   if ((value.secretAction === "replace") !== (value.apiKey !== undefined)) {
     ctx.addIssue({ code: "custom", path: ["apiKey"], message: "Secret action and value do not match" });
   }
@@ -27,10 +26,45 @@ export const adminProviderUpdateSchema = z.object({
   if (value.secretAction !== "keep" && value.workspaceAction === "keep") {
     ctx.addIssue({ code: "custom", path: ["workspaceAction"], message: "A new key does not keep the previous workspace" });
   }
-});
+}
+const modelId = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
+export const adminProviderUpdateSchema = credentialFields.extend({
+  expectedRevision: revision,
+  models: z.array(modelId).max(10),
+  baseUrl: z.string().max(512).optional(),
+}).strict().superRefine(validateCredential);
+
+export const adminVendorKeySchema = z.enum(["deepseek", "openai", "bailian", "anthropic"]);
+export type AdminVendorKey = z.infer<typeof adminVendorKeySchema>;
+const channelId = z.string().min(1).max(64);
+export const adminVendorSaveSchema = credentialFields.extend({
+  expectedRevision: revision, channel: channelId, model: modelId.nullable(),
+}).strict().superRefine(validateCredential);
+export const adminVendorCheckSchema = z.object({
+  expectedRevision: revision, channel: channelId, model: modelId,
+}).strict();
+export type AdminVendorSave = z.infer<typeof adminVendorSaveSchema>;
+export type AdminVendorCheck = z.infer<typeof adminVendorCheckSchema>;
+export interface AdminVendorView {
+  vendor: AdminVendorKey;
+  channel: string;
+  model: string | null;
+  models: readonly { id: string; label: string }[];
+  revision: number;
+  keyConfigured: boolean;
+  workspaceId?: string | null;
+}
+export interface AdminVendorCheckResult {
+  vendor: AdminVendorKey;
+  revision: number;
+  channel: string;
+  model: string;
+  status: "listed" | "unavailable" | "failed" | "unknown";
+  message: string;
+}
 
 /** What a provider update does to the saved workspace id: "keep" leaves it, null clears it, a string replaces it. */
-export function workspaceUpdateOf(body: AdminProviderUpdate): "keep" | null | string {
+export function workspaceUpdateOf(body: CredentialUpdate): "keep" | null | string {
   if (body.workspaceAction === "replace") return body.workspaceId!;
   if (body.workspaceAction === "clear") return null;
   if (body.workspaceAction === "keep") return "keep";

@@ -8,10 +8,6 @@ export interface AiModelVendorDef {
   shortLabel: string;
   mark: string;
   href: string;
-  /** npm package shown on the settings page when this repo already depends on that adapter family. */
-  sdk: string | null;
-  /** Honest capability line under the vendor name. Never claims a send path this repo does not have. */
-  capability: string;
 }
 
 export const AI_MODEL_VENDORS: readonly AiModelVendorDef[] = [
@@ -21,8 +17,6 @@ export const AI_MODEL_VENDORS: readonly AiModelVendorDef[] = [
     shortLabel: "DeepSeek",
     mark: "D",
     href: "/admin/ai-models/deepseek",
-    sdk: "@ai-sdk/deepseek",
-    capability: "2 个候选模型 · 编剧已接入",
   },
   {
     id: "openai",
@@ -30,8 +24,6 @@ export const AI_MODEL_VENDORS: readonly AiModelVendorDef[] = [
     shortLabel: "OpenAI",
     mark: "O",
     href: "/admin/ai-models/openai",
-    sdk: "@ai-sdk/openai",
-    capability: "3 个候选模型 · 编剧与生图已接入",
   },
   {
     id: "bailian",
@@ -39,8 +31,6 @@ export const AI_MODEL_VENDORS: readonly AiModelVendorDef[] = [
     shortLabel: "阿里云百炼",
     mark: "千",
     href: "/admin/ai-models/bailian",
-    sdk: null,
-    capability: "写作已接入 qwen-plus · 凭证按功能绑定",
   },
   {
     id: "anthropic",
@@ -48,8 +38,6 @@ export const AI_MODEL_VENDORS: readonly AiModelVendorDef[] = [
     shortLabel: "Anthropic",
     mark: "A",
     href: "/admin/ai-models/anthropic",
-    sdk: "@ai-sdk/anthropic",
-    capability: "可保存供应商凭证 · 功能配置编剧暂未开放",
   },
 ];
 

@@ -69,34 +69,24 @@ async function shot(page, name, { scroll = false } = {}) {
   shots.push(file);
 }
 
+async function chooseModel(page, label) {
+  await page.getByRole("combobox", { name: "模型", exact: true }).click();
+  await page.getByRole("option", { name: new RegExp(label, "i") }).click();
+}
+
 async function assertModelLabelFullyVisible(page, expected) {
-  const select = page.getByLabel("模型");
-  await select.waitFor();
-  const info = await select.evaluate((element) => {
-    if (!(element instanceof HTMLSelectElement)) return { selected: "", textWidth: 0, inner: 0, width: 0 };
-    const selected = element.options[element.selectedIndex]?.text ?? "";
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return { selected, textWidth: 0, inner: 0, width: rect.width };
-    ctx.font = style.font;
-    const textWidth = ctx.measureText(selected).width;
-    const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
-    const paddingRight = Number.parseFloat(style.paddingRight) || 0;
-    const arrow = 28;
-    return {
-      selected,
-      textWidth,
-      inner: rect.width - paddingLeft - paddingRight - arrow,
-      width: rect.width,
-    };
+  const trigger = page.getByRole("combobox", { name: "模型", exact: true });
+  const label = trigger.getByText(expected, { exact: true });
+  const info = await label.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const box = element.closest("button").getBoundingClientRect();
+    return { full: [...range.getClientRects()].every((line) =>
+      line.left >= box.left && line.right <= box.right && line.top >= box.top && line.bottom <= box.bottom),
+      width: box.width };
   });
-  assert.equal(info.selected, expected, `selected model should be ${expected}`);
-  assert.ok(
-    info.textWidth <= info.inner + 0.5,
-    `model label is clipped in the select: ${JSON.stringify(info)}`,
-  );
+  assert.ok(info.full, `Clipped model name: ${expected}`);
+  checks.push({ label: expected, ...info });
 }
 
 async function signIn(page) {
@@ -131,20 +121,20 @@ try {
   await signIn(page);
 
   await gotoReady(page, "/admin/ai-models", "模型供应商");
-  await page.getByText("2 个候选模型 · 编剧已接入").waitFor();
+  await page.getByText("2 个可选模型", { exact: true }).first().waitFor();
   await shot(page, "desktop-vendor-catalog-empty");
 
   await page.getByRole("link", { name: "进入设置" }).first().click();
   await page.getByRole("heading", { name: "DeepSeek", exact: true }).waitFor();
-  await page.getByText("DeepSeek Flash").first().waitFor();
-  await page.getByText("DeepSeek V4 Pro").first().waitFor();
+  await page.getByRole("button", { name: "编辑设置" }).waitFor();
   await shot(page, "desktop-deepseek-settings-empty");
 
   await page.getByRole("button", { name: "编辑设置" }).click();
   await page.getByRole("dialog", { name: "编辑设置" }).waitFor();
   await shot(page, "desktop-deepseek-edit-drawer");
+  await chooseModel(page, "DeepSeek-V4.1-Flash-1017");
   await page.getByLabel("API Key").fill(KEY);
-  await page.getByRole("button", { name: "保存凭证", exact: true }).click();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await page.getByText("密钥已保存 · 连接待测试").first().waitFor();
   await shot(page, "desktop-deepseek-saved");
 
@@ -168,25 +158,25 @@ try {
   await earlyPage.getByText("暂无草稿").waitFor();
   await earlyPage.getByRole("button", { name: "修改配置" }).click();
   await earlyPage.getByRole("dialog", { name: "修改配置" }).waitFor();
-  await earlyPage.getByRole("button", { name: "DeepSeek", exact: true }).click();
-  await earlyPage.getByText("将使用已在「AI 大模型」保存的凭证。保存草稿不会把完整密钥再显示在页面上。").waitFor();
+  await earlyPage.getByRole("combobox", { name: "供应商" }).selectOption("deepseek");
+  await earlyPage.getByText("使用「AI 大模型」已保存的密钥。").waitFor();
   await earlyPage.getByLabel("已保存密钥").waitFor();
-  await assertModelLabelFullyVisible(earlyPage, "DeepSeek Flash");
+  await chooseModel(earlyPage, "DeepSeek-V4.1-Flash-1017");
+  await assertModelLabelFullyVisible(earlyPage, "DeepSeek-V4.1-Flash-1017");
   await shot(earlyPage, "mobile-writing-bind-vendor-drawer");
   await earlyMobile.close();
 
   await page.getByRole("button", { name: "修改配置" }).click();
   await page.getByRole("dialog", { name: "修改配置" }).waitFor();
-  await page.getByRole("button", { name: "DeepSeek", exact: true }).click();
-  await page.getByText("将使用已在「AI 大模型」保存的凭证。保存草稿不会把完整密钥再显示在页面上。").waitFor();
+  await page.getByRole("combobox", { name: "供应商" }).selectOption("deepseek");
+  await page.getByText("使用「AI 大模型」已保存的密钥。").waitFor();
   await page.getByLabel("已保存密钥").waitFor();
-  const modelSelect = page.getByLabel("模型");
-  await modelSelect.selectOption("deepseek-v4-pro");
-  await assertModelLabelFullyVisible(page, "DeepSeek V4 Pro");
+  await chooseModel(page, "DeepSeek-V4-Pro-0813");
+  await assertModelLabelFullyVisible(page, "DeepSeek-V4-Pro-0813");
   await shot(page, "desktop-writing-bind-vendor-drawer");
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
   await page.getByText("草稿未启用").waitFor();
-  await page.getByText("DeepSeek V4 Pro").first().waitFor();
+  await page.getByText("DeepSeek-V4-Pro-0813").first().waitFor();
   await shot(page, "desktop-writing-draft-unenabled");
 
   await page.getByRole("button", { name: "检测连接", exact: true }).click();
@@ -194,7 +184,6 @@ try {
   await shot(page, "desktop-writing-test-confirm");
   await page.getByRole("button", { name: "确认测试", exact: true }).click();
   await page.getByText("检测通过").waitFor({ timeout: 20_000 });
-  await page.getByText("已用所选模型完成一次最小 JSON 编剧探测，可以启用这一份草稿。").waitFor();
   await page.getByText("未设置").first().waitFor();
   await shot(page, "desktop-writing-test-passed");
 
@@ -206,7 +195,7 @@ try {
     .getByRole("button", { name: "确认启用", exact: true })
     .click();
   await page.getByLabel("配置变更").getByText("已生效", { exact: true }).waitFor();
-  await page.getByText("DeepSeek V4 Pro").first().waitFor();
+  await page.getByText("DeepSeek-V4-Pro-0813").first().waitFor();
   await shot(page, "desktop-writing-enabled");
 
   await desktop.close();
@@ -220,7 +209,7 @@ try {
   await signIn(mobilePage);
 
   await gotoReady(mobilePage, "/admin/ai-models", "模型供应商");
-  await mobilePage.getByText("2 个候选模型 · 编剧已接入").waitFor();
+  await mobilePage.getByText("2 个可选模型", { exact: true }).first().waitFor();
   await shot(mobilePage, "mobile-vendor-catalog");
 
   await mobilePage.getByRole("link", { name: "进入设置" }).first().click();
@@ -238,7 +227,7 @@ try {
 
   await mobilePage.getByRole("button", { name: "修改配置" }).click();
   await mobilePage.getByRole("dialog", { name: "修改配置" }).waitFor();
-  await mobilePage.getByRole("button", { name: "DeepSeek", exact: true }).click();
+  await mobilePage.getByRole("combobox", { name: "供应商" }).selectOption("deepseek");
   await mobilePage.getByLabel("已保存密钥").waitFor();
   await mobilePage.getByRole("button", { name: "更换" }).waitFor();
   await shot(mobilePage, "mobile-writing-edit-drawer");

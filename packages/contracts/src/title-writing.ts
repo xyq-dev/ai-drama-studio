@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { WRITING_MODEL_CHANNELS } from "./writing-model-catalog";
 import { EPISODE_DRAFT_SCHEMA, episodeDraftCandidateSchema, type EpisodeDraftCandidate } from "./writing-assistant";
 
 /**
@@ -83,9 +84,9 @@ export const DEEPSEEK_PROVIDER_ADAPTER = "deepseek.chat-completions.v1" as const
 export const BAILIAN_WRITING_PROVIDER_KEY = "bailian" as const;
 export const BAILIAN_AI_SDK_ADAPTER = "bailian.ai-sdk.v1" as const;
 export const DEEPSEEK_AI_SDK_ADAPTER = "deepseek.ai-sdk.v1" as const;
-export const QWEN_PLUS_MODEL = "qwen-plus" as const;
+export const QWEN_PLUS_MODEL = WRITING_MODEL_CHANNELS.bailian.models[0].id;
 /** China-site OpenAI-compatible endpoint. The SDK default is the international site and is not used. */
-export const BAILIAN_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1" as const;
+export const BAILIAN_COMPATIBLE_BASE_URL = WRITING_MODEL_CHANNELS.bailian.endpoint;
 /** Official DeepSeek host. The SDK is not pointed at Vercel AI Gateway. */
 export const DEEPSEEK_AI_SDK_BASE_URL = "https://api.deepseek.com" as const;
 
@@ -124,20 +125,7 @@ export function isActiveTitleWritingProvider(key: string): key is TitleWritingPr
   return (TITLE_WRITING_PROVIDER_KEYS as readonly string[]).includes(key);
 }
 
-/**
- * The model list a provider gets when a key is configured and no model list is (the administrator only fills in the key).
- * Claude: the Claude API ID claude-opus-5-5, checked 2026-10-16 at
- * https://platform.claude.com/docs/en/about-claude/models/overview and listed as supporting structured outputs, effort
- * and adaptive thinking — every capability the Claude request uses. A pinned API ID, never a CLI alias. OpenAI keeps
- * needing its own explicit list, as before.
- */
-/**
- * Official DeepSeek chat models, re-checked 2026-11-23 at https://api-docs.deepseek.com/zh-cn/ and
- * https://api-docs.deepseek.com/quick_start/pricing/ : `deepseek-flash` (DeepSeek-V4.1-Flash-1017; default
- * candidate) and `deepseek-v4-pro`. The retired deepseek-chat / deepseek-reasoner list is not restored.
- * Legacy names deepseek-v4-flash / deepseek-v4-flash-vision-exp are not offered in the admin catalog.
- */
-export const DEEPSEEK_WRITING_MODELS = ["deepseek-flash", "deepseek-v4-pro"] as const;
+export const DEEPSEEK_WRITING_MODELS = WRITING_MODEL_CHANNELS.deepseek.models.map(({ id }) => id);
 export type DeepseekWritingModel = (typeof DEEPSEEK_WRITING_MODELS)[number];
 
 export function isDeepseekWritingModel(value: string): value is DeepseekWritingModel {

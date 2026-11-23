@@ -66,6 +66,7 @@ export interface FeatureProbeInput {
 
 export interface FeatureProbeResult {
   ok: boolean;
+  outcome?: "unknown";
   message?: string;
   usage?: UsageAmount;
   cost?: UsageCost;
@@ -84,10 +85,12 @@ export interface LegacyFeatureSource {
   live(): Promise<Record<FeatureKey, LegacyFeatureHint | null>>;
   /** Must answer only for this feature's own historical slot. A media key is not a writing key. */
   secret(feature: FeatureKey, vendor: string): Promise<string | null>;
+  /** Saved supplier settings available for an explicit draft binding. */
+  vendorSecret?(feature: FeatureKey, vendor: string): Promise<string | null>;
 }
 
 export interface FeaturePolicy {
-  writingAllowlist?: () => Promise<readonly string[] | null>;
+  writingAllowlist?: (vendor: string) => Promise<readonly string[] | null>;
   writingCallsRemaining?: () => Promise<number | null>;
 }
 
@@ -179,7 +182,7 @@ export class FeatureConfigService {
     await this.assertChoice(feature, body.vendor, body.model);
     let boundSecret: string | null = null;
     if (body.secretAction === "bind_vendor") {
-      boundSecret = this.legacy ? await this.legacy.secret(feature, body.vendor) : null;
+      boundSecret = await this.vendorSecret(feature, body.vendor);
       if (!boundSecret) {
         throw new FeatureConfigError(400, "FEATURE_VENDOR_KEY_MISSING", "请先在「AI 大模型」保存这一家的 API Key，或在此填写新密钥。");
       }
@@ -200,16 +203,12 @@ export class FeatureConfigService {
       }
       const changed = slot.model !== body.model || body.secretAction !== "keep";
       slot.model = body.model;
-      if (!slot.credentialRef) {
-        slot.draftStatus = "blank";
+      if (!slot.credentialRef || changed || slot.draftStatus === "blank" || slot.draftStatus === "testing") {
+        slot.draftStatus = slot.credentialRef ? "saved" : "blank";
         slot.testToken = null;
         slot.testedFingerprint = null;
-      } else if (changed || slot.draftStatus === "blank" || slot.draftStatus === "testing") {
-        slot.draftStatus = "saved";
-        slot.testToken = null;
-        slot.testedFingerprint = null;
+        slot.failureMessage = null;
       }
-      slot.failureMessage = null;
       slot.updatedAt = this.now().toISOString();
     }, body.expectedRevision);
     return this.toView(doc);
@@ -488,7 +487,7 @@ export class FeatureConfigService {
           fresh.testToken = id("tt");
           fresh.failureMessage = null;
         } else {
-          fresh.draftStatus = "failed";
+          fresh.draftStatus = result.outcome ?? "failed";
           fresh.testToken = null;
           fresh.failureMessage = message;
         }
@@ -512,12 +511,12 @@ export class FeatureConfigService {
       model: slot.model,
       configVersion: null,
       credentialRef: slot.credentialRef,
-      result: result.ok ? "succeeded" : "failed",
+      result: result.ok ? "succeeded" : result.outcome ?? "failed",
       usage: normalizeUsage(result.usage),
       cost: normalizeCost(result.cost),
       vendorRequestId,
     }, [secret]);
-    return { view, probe: { ok: result.ok, message } };
+    return { view, probe: { ok: result.ok, ...(result.outcome && { outcome: result.outcome }), message } };
   }
 
   private async callProbe(input: FeatureProbeInput, secret: string): Promise<FeatureProbeResult> {
@@ -585,12 +584,17 @@ export class FeatureConfigService {
     }, secrets);
   }
 
+  private async vendorSecret(feature: FeatureKey, vendor: string): Promise<string | null> {
+    if (!this.legacy) return null;
+    return this.legacy.vendorSecret ? this.legacy.vendorSecret(feature, vendor) : this.legacy.secret(feature, vendor);
+  }
+
   private async assertChoice(feature: FeatureKey, vendor: string, model: string): Promise<void> {
     const block = featureChoiceBlock({
       feature,
       vendor,
       model,
-      writingAllowlist: feature === "writing" && this.policy.writingAllowlist ? await this.policy.writingAllowlist() : null,
+      writingAllowlist: feature === "writing" && this.policy.writingAllowlist ? await this.policy.writingAllowlist(vendor) : null,
       writingCallsRemaining: feature === "writing" && this.policy.writingCallsRemaining ? await this.policy.writingCallsRemaining() : null,
     });
     if (!block.ok) throw new FeatureConfigError(400, block.code, block.message);
@@ -719,25 +723,11 @@ export class FeatureConfigService {
 
   private async toView(doc: FeatureVaultDocument): Promise<FeatureConfigView> {
     const legacy = this.legacy ? await this.legacy.live() : { writing: null, storyboard: null, voice: null };
-    const vendorKeys: Record<FeatureKey, ReadonlySet<string>> = { writing: new Set(), storyboard: new Set(), voice: new Set() };
-    if (this.legacy) {
-      for (const feature of FEATURE_KEYS) {
-        const found = new Set<string>();
-        for (const capability of FEATURE_CAPABILITIES[feature]) {
-          const secret = await this.legacy.secret(feature, capability.vendor);
-          if (secret) found.add(capability.vendor);
-        }
-        vendorKeys[feature] = found;
-      }
-    }
-    return {
-      revision: doc.revision,
-      validation: "local_only",
-      features: FEATURE_KEYS.map((feature) => this.card(feature, doc, legacy[feature], vendorKeys[feature])),
-    };
+    const features = await Promise.all(FEATURE_KEYS.map((feature) => this.card(feature, doc, legacy[feature])));
+    return { revision: doc.revision, validation: "local_only", features };
   }
 
-  private card(feature: FeatureKey, doc: FeatureVaultDocument, legacy: LegacyFeatureHint | null, vendorKeys: ReadonlySet<string>): FeatureCardView {
+  private async card(feature: FeatureKey, doc: FeatureVaultDocument, legacy: LegacyFeatureHint | null): Promise<FeatureCardView> {
     const record = doc.features[feature];
     const live = record.live
       ? {
@@ -749,7 +739,14 @@ export class FeatureConfigService {
         version: record.live.versionId,
       }
       : legacyView(legacy);
-    const slots = FEATURE_CAPABILITIES[feature].map((capability) => this.slotView(feature, capability, record.slots[capability.vendor] ?? emptySlot(), record.live ?? null, vendorKeys.has(capability.vendor)));
+    const slots = await Promise.all(FEATURE_CAPABILITIES[feature].map(async (capability) => {
+      const writingAllowlist = feature === "writing" ? await this.policy.writingAllowlist?.(capability.vendor) : null;
+      const models = capability.models.filter(({ id: model }) => featureChoiceBlock({
+        feature, vendor: capability.vendor, model, writingAllowlist,
+      }).ok);
+      const vendorKeyConfigured = Boolean(await this.vendorSecret(feature, capability.vendor));
+      return this.slotView(feature, { ...capability, models }, record.slots[capability.vendor] ?? emptySlot(), record.live ?? null, vendorKeyConfigured);
+    }));
     const drafted = Object.values(record.slots).some((slot) => slot && slot.draftStatus !== "blank");
     return {
       feature,

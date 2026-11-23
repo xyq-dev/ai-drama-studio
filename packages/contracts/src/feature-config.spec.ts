@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { WRITING_MODEL_CHANNELS, writingModelOptions } from "./writing-model-catalog";
 import {
   FEATURE_CAPABILITIES,
   featureChoiceBlock,
@@ -17,7 +18,7 @@ describe("feature config catalog", () => {
   it("offers only connected, project-approved models and keeps official voice on MiniMax unless explicitly enabled", () => {
     expect(FEATURE_CAPABILITIES.writing.find((item) => item.vendor === "bailian")).toMatchObject({
       connected: true,
-      models: [{ id: "qwen-plus", label: "通义千问 Plus" }],
+      models: [{ id: "qwen-plus", label: "通义千问-Plus" }],
     });
     expect(FEATURE_CAPABILITIES.storyboard.map((item) => item.vendor)).toEqual(["bailian", "openai", "google"]);
     expect(FEATURE_CAPABILITIES.storyboard.find((item) => item.vendor === "openai")?.models.map((item) => item.id)).toEqual(["gpt-image-2.5-sunburst"]);
@@ -32,6 +33,21 @@ describe("feature config catalog", () => {
     expect(featureChoiceBlock({
       feature: "writing", vendor: "bailian", model: "qwen-plus", writingAllowlist: ["deepseek-flash"],
     }).ok).toBe(true);
+  });
+
+  it("uses the same channel catalog for writing choices, and never imports IDs from another route", () => {
+    const direct = WRITING_MODEL_CHANNELS.openai;
+    expect(FEATURE_CAPABILITIES.writing.find((slot) => slot.vendor === "openai")?.models).toBe(direct.models);
+    expect(writingModelOptions("openai", direct.id, ["deepseek-flash", "gpt-6.1-sol"])).toEqual([
+      { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+    ]);
+    expect(writingModelOptions("openai", direct.id, [])).toEqual([]);
+    expect(writingModelOptions("deepseek", "bailian-cn")).toEqual([]);
+    expect(writingModelOptions("openai", "unknown-relay")).toEqual([]);
+    expect(writingModelOptions("unknown", direct.id)).toEqual([]);
+    expect(writingModelOptions("deepseek", "deepseek-direct")[0]).toEqual({
+      id: "deepseek-flash", label: "DeepSeek-V4.1-Flash-1017",
+    });
   });
 
   it("blocks an unapproved model, an unconnected vendor, and an exhausted writing budget", () => {

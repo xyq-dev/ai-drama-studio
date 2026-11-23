@@ -35,6 +35,10 @@ const LIMITS = { expectedRevision: 0, defaultProvider: "anthropic", maxCallsPerD
 
 function backend() {
   return {
+    vendors: vi.fn(async () => []),
+    vendor: vi.fn(),
+    saveVendor: vi.fn(),
+    checkVendor: vi.fn(),
     view: vi.fn(async () => VIEW),
     updateProvider: vi.fn(async () => VIEW),
     updateLimits: vi.fn(async () => VIEW),
@@ -105,6 +109,10 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     await start();
     for (const [path, init] of [
       ["/admin/models", undefined],
+      ["/admin/models/vendors", undefined],
+      ["/admin/models/vendors/openai", undefined],
+      ["/admin/models/vendors/openai", { method: "PUT", headers: { origin: ORIGIN, "content-type": "application/json" }, body: "{}" }],
+      ["/admin/models/vendors/openai/check", { method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" }, body: "{}" }],
       ["/admin/models/providers/qwen", { method: "PUT", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify(UPDATE) }],
       ["/admin/models/limits", { method: "PUT", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify(LIMITS) }],
     ] as const) {
@@ -114,6 +122,24 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     }
     expect(store.view).not.toHaveBeenCalled();
     expect(store.updateProvider).not.toHaveBeenCalled();
+  });
+
+  it("checks only a saved supplier selection with operator session, JSON and CSRF", async () => {
+    await start();
+    const route = "/admin/models/vendors/openai/check";
+    const { headers } = await signedIn();
+    const body = { expectedRevision: 2, channel: "openai-direct", model: "gpt-6-astra" };
+    const send = (h: Record<string, string>, payload: unknown) => request(route, { method: "POST", headers: h, body: JSON.stringify(payload) });
+    expect((await send({ ...headers, "x-csrf-token": "" }, body)).status).toBe(403);
+    for (const extra of [{ apiKey: SECRET }, { baseUrl: "https://elsewhere.invalid" }, { confirmCost: true }]) {
+      expect((await send(headers, { ...body, ...extra })).status).toBe(400);
+    }
+    expect(store.checkVendor).not.toHaveBeenCalled();
+    store.checkVendor.mockResolvedValueOnce({ status: "listed" });
+    const response = await send(headers, body);
+    expect(response.status).toBe(200);
+    privateHeaders(response);
+    expect(store.checkVendor).toHaveBeenCalledWith("openai", body);
   });
 
   it("checks the configured ComfyUI instance only on an authenticated same-origin request with no overrides", async () => {
