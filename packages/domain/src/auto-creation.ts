@@ -1,11 +1,13 @@
 import {
   AUTO_CREATION_BIBLE_SCHEMA,
   AUTO_CREATION_CHECKS_VERSION,
+  AUTO_CREATION_CHECKS_V17,
   AUTO_CREATION_DIRECTIONS_SCHEMA,
   AUTO_CREATION_EPISODE_SCHEMA,
   AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_OUTLINE_SCHEMA,
   AUTO_CREATION_PROMPT_VERSION,
+  AUTO_CREATION_PROMPT_V16,
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_REVIEW_SCHEMA,
@@ -37,7 +39,7 @@ import {
   autoOutlineSchema,
   autoResearchCatalogAnswerSchema,
   autoResearchHasServerRecord,
-  autoResearchLimitedCatalogAnswerSchema,
+  autoLimitedResearchSchemaFor,
   autoResearchMarketEvidence,
   autoReviewSchema,
   autoRevisionSchema,
@@ -344,7 +346,13 @@ function ideaLine(input: AutoCreationFrozenInput): string {
 }
 
 function executedPromptVersion(input: AutoCreationFrozenInput): AutoCreationFrozenInput["promptVersion"] {
-  return autoCreationWritesStoryProse(input.promptVersion) ? AUTO_CREATION_PROMPT_VERSION : AUTO_CREATION_LEGACY_PROMPT_VERSION;
+  if (input.promptVersion === AUTO_CREATION_PROMPT_VERSION) return input.promptVersion;
+  return autoCreationWritesStoryProse(input.promptVersion) ? AUTO_CREATION_PROMPT_V16 : AUTO_CREATION_LEGACY_PROMPT_VERSION;
+}
+
+function executedChecksVersion(input: AutoCreationFrozenInput): AutoCreationFrozenInput["checksVersion"] {
+  return input.promptVersion === AUTO_CREATION_PROMPT_VERSION && input.checksVersion === AUTO_CREATION_CHECKS_VERSION
+    ? AUTO_CREATION_CHECKS_VERSION : AUTO_CREATION_CHECKS_V17;
 }
 
 function sourcesBlock(sources: AutoSourcesOutput): string {
@@ -504,13 +512,15 @@ function numberRulesCreative(input: AutoCreationFrozenInput): string[] {
  * key whole, so the prompt names the three it accepts and shows one object. The example carries no number and no
  * finding; it only shows the shape.
  */
-const HYPOTHESIS_FIELD_LINES = [
-  "hypotheses 是数组，1 到 8 条；每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填：id 是 H1、H2 这样的编号；"
-    + "statement 是一句待验证的创作假设，不超过 200 字；howToVerify 是将来的验证计划，不超过 150 字。"
-    + "不要给假设添加任何其他字段（包括空值、空数组、备注或理由等解释性字段），多出一个字段也会整份拒收。",
-  `假设对象示例（只示意格式，内容按本次创作写）：${JSON.stringify({ id: "H1", statement: "待验证：开场就让主角做出冒险选择，可能更容易让观众代入。",
-    howToVerify: "计划请试看者复述主角的选择和动机，再比较不同开场的反馈。" })}`,
-];
+function hypothesisFieldLines(optional = false): string[] {
+  return [
+    `hypotheses 是数组，${optional ? "没有可验证的创作假设就写 []，最多 8 条" : "1 到 8 条"}；每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填：id 是 H1、H2 这样的编号；`
+      + "statement 是一句待验证的创作假设，不超过 200 字；howToVerify 是将来的验证计划，不超过 150 字。"
+      + "不要给假设添加任何其他字段（包括空值、空数组、备注或理由等解释性字段），多出一个字段也会整份拒收。",
+    `假设对象示例（只示意格式，内容按本次创作写）：${JSON.stringify({ id: "H1", statement: "待验证：开场就让主角做出冒险选择，可能更容易让观众代入。",
+      howToVerify: "计划请试看者复述主角的选择和动机，再比较不同开场的反馈。" })}`,
+  ];
+}
 
 /**
  * The research contract with recent market material (sourced): cited facts and observations, an audience that may be
@@ -522,7 +532,7 @@ function sourcedResearchLines(input: AutoCreationFrozenInput, catalog: AutoRefer
     "facts：只写资料区里能逐字找到依据的事实，evidence 逐字摘录 sourceIds 所指资料的原文；资料不足时 facts 为空数组。",
     "observations：基于参考资料样本的观察，必须写 sourceIds。",
     "hypotheses：你的判断和推测，写明如何验证（howToVerify 是将来的验证计划，不是已经做过的调查）；没有来源的受众判断都放在这里。",
-    ...HYPOTHESIS_FIELD_LINES,
+    ...hypothesisFieldLines(),
     "audience：主要目标观众、观看需求、情绪诉求；只有每一项都有资料支持时 basis 才能是 sourced，否则是 hypothesis。",
     ...structureLines(catalog),
     "市场事实只写进 facts 和 observations。",
@@ -546,7 +556,7 @@ function limitedResearchLines(input: AutoCreationFrozenInput, catalog: AutoRefer
     "本次资料快照没有符合条件的近期市场资料，市场证据不可用，由服务端记录；你不需要也不能给出市场结论，只完成创作策划。方法资料和用户资料的片段仍可在 contentStructure 里按编号选作方法引用。",
     "回答只包含 schema、hypotheses、audience、contentStructure、opportunities 五个字段；audience 只包含 primary、viewingNeeds、emotionalAppeals 三项。多出任何字段都会整份拒收，即使是空数组或默认值也一样。",
     "hypotheses：创作假设（受众偏好、题材方向、创作建议都写成待验证的假设），每条写明验证计划（howToVerify 是将来的验证计划，不是已经做过的调查）；编号用 H1、H2 这样的格式。",
-    ...HYPOTHESIS_FIELD_LINES,
+    ...hypothesisFieldLines(input.promptVersion === AUTO_CREATION_PROMPT_VERSION),
     "audience：拟定的目标观众（primary）、观看需求（viewingNeeds）、情绪诉求（emotionalAppeals），用文字写成待验证的创作目标，不是平台用户画像或市场结论。",
     ...structureLines(catalog),
     "opportunities：适合本次创作的机会（AI 创作判断）。",
@@ -582,7 +592,10 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "每个方向写一句话故事、主角、目标、阻碍、失败代价、核心情绪、差异点、拍摄或生成难度及说明、与目标观众和资料的关系。",
       `evidenceIds 只能引用研究里实际存在的编号：${ids.length > 0 ? ids.join("、") : "无"}；不要写其他编号。`,
       "数字规则与研究阶段相同：differentiation、difficultyNote 可以写本作品的创作数量（“两次反转”“两处室内场景”“三个人物”，人物和地点不超过用户上限），不写任何市场或受众统计；"
-        + "audienceFit（与目标观众和资料的关系）写成待验证的判断并引用研究编号（如“可能契合想看小人物扳回一局的观众，待验证 H1”），不写年龄、占比、人数；一句话故事等故事内容里的数字不受此限。",
+        + (input.promptVersion === AUTO_CREATION_PROMPT_VERSION && ids.length === 0
+          ? "audienceFit（与目标观众和资料的关系）写成待验证的判断。没有研究编号时 evidenceIds 写 []。"
+          : "audienceFit（与目标观众和资料的关系）写成待验证的判断并引用研究编号（如“可能契合想看小人物扳回一局的观众，待验证 H1”），")
+        + "不写年龄、占比、人数；一句话故事等故事内容里的数字不受此限。",
       "ratings 是你对每个方向的 1–5 分内部自评（受众契合、冲突强度、原创性、可执行性、约束契合），只用于内部比较。",
       "任何方向都不能包含用户禁止的题材或元素。",
       `schema 固定为 "${AUTO_CREATION_DIRECTIONS_SCHEMA}"；编号 D1、D2、D3。`,
@@ -707,7 +720,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
     const round = autoStageRound(stageKey)!;
     const findings = deterministicFindings(input, context);
     lines = [
-      `审阅轮次：第 ${String(round)} 轮（${AUTO_CREATION_CHECKS_VERSION}）`,
+      `审阅轮次：第 ${String(round)} 轮（${executedChecksVersion(input)}）`,
       `提示版本：${executedPromptVersion(input)}`,
       ...constraintLines(input),
       ...genreRule,
@@ -939,7 +952,7 @@ export function autoResearchServerRecord(input: AutoCreationFrozenInput, sources
   const available = sources.researchMode === "sourced";
   return {
     origin: "server_record",
-    executedWith: { promptVersion: executedPromptVersion(input), checksVersion: AUTO_CREATION_CHECKS_VERSION, researchSchema: AUTO_CREATION_RESEARCH_SCHEMA,
+    executedWith: { promptVersion: executedPromptVersion(input), checksVersion: executedChecksVersion(input), researchSchema: AUTO_CREATION_RESEARCH_SCHEMA,
       answerContract: sources.researchMode,
       ...(catalog ? { answerSchema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, referenceCatalogVersion: catalog.version, referenceCatalogHash: catalog.hash } : {}) },
     marketEvidence: { origin: "source_snapshot", status: available ? "available" : "unavailable",
@@ -957,7 +970,7 @@ export function autoResearchServerRecord(input: AutoCreationFrozenInput, sources
 }
 
 function checkResearch(input: AutoCreationFrozenInput, output: AutoResearchAnswer, context: AutoCreationContext): AutoValidation {
-  const frame = numberFrame(input);
+  const frame = { ...numberFrame(input), singleEpisodeResearch: input.episodeCount === 1 && executedChecksVersion(input) === AUTO_CREATION_CHECKS_VERSION };
   const notices: AutoUnverifiedNotice[] = [];
   const readable = new Map(readableSources(context.sources!).map((source) => [source.sourceId, source] as const));
   const known = new Set(context.sources!.sources.map((source) => source.sourceId));
@@ -1336,7 +1349,7 @@ function checkReview(input: AutoCreationFrozenInput, review: ReturnType<typeof a
   for (const [episodeNo, value] of context.episodes) reviewed[`episode:${String(episodeNo)}`] = canonicalInputHash(value.episode);
   const output: AutoReviewOutput = {
     schema: AUTO_CREATION_REVIEW_SCHEMA,
-    checksVersion: AUTO_CREATION_CHECKS_VERSION,
+    checksVersion: executedChecksVersion(input),
     verdict: review.verdict,
     dimensions: review.dimensions,
     issues,
@@ -1388,7 +1401,7 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
     // Accepted whole first, then every catalog id mapped (an id the catalog lacks refuses the answer), and only then
     // does the server write what a limited research has none of. The research checks follow, quote checks included.
     if (mode === "limited") {
-      const parsed = autoResearchLimitedCatalogAnswerSchema.safeParse(value);
+      const parsed = autoLimitedResearchSchemaFor(input.promptVersion).safeParse(value);
       if (!parsed.success) return zodFailure(parsed.error, mode);
       const mapped = autoMapLimitedResearchAnswer(parsed.data, catalog);
       return mapped.ok ? checkResearch(input, autoAssembleLimitedResearch(mapped.research), context) : mapped;

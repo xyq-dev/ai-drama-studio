@@ -69,11 +69,11 @@ let keys = 0;
 function input(mode: "story" | "episode", patch: Partial<WritingCandidateFrozenInput> = {}): WritingCandidateFrozenInput {
   return {
     schema: "ads.writing-candidate.input.v1", promptVersion: "ads.writing.prompt.v1", projectId, mode,
-    episodeId: mode === "episode" ? episodeId : null, episodeNo: mode === "episode" ? 2 : null, providerKey: "anthropic", model: "claude-opus-5-5",
+    episodeId: mode === "episode" ? episodeId : null, episodeNo: mode === "episode" ? patch.episodeNo ?? 2 : null, providerKey: "anthropic", model: "claude-opus-5-5",
     base: { sourceRevisionId: mode === "story" ? storyRevisionId : null, ifMatch: 1 },
     request: mode === "story"
       ? { premise: "夜班", genre: "", audience: "", characters: "", mustKeep: "", mustNotChange: "", currentText: "故事" }
-      : { episodeNo: 2, premise: "夜班", genre: "", audience: "", characters: "", confirmedStory: "故事", currentText: "", revisionRequest: "",
+      : { episodeNo: patch.episodeNo ?? 2, premise: "夜班", genre: "", audience: "", characters: "", confirmedStory: "故事", currentText: "", revisionRequest: "",
         mustKeep: "", mustKeepDialogue: "", mustKeepEnding: "" },
     ...patch,
   };
@@ -200,6 +200,26 @@ describe(`online candidate migration and store on the ${scenario} schema`, () =>
       .toEqual({ kind: "target_invalid", reason: "base_revision" });
     expect(await store.create(record(input("story", { projectId: sixEpisodeProject, base: { sourceRevisionId: null, ifMatch: 1 } })), LIMITS))
       .toEqual({ kind: "target_invalid", reason: "episode_plan" });
+  });
+
+  it("reserves the story and first script for a single episode and rejects a stale frozen count before either reservation", async () => {
+    const single = await one("INSERT INTO project (workspace_id, title, episode_count, target_episode_seconds) VALUES ($1, $2, 1, 60) RETURNING id",
+      [workspaceId, "最后一班车"]);
+    const first = await one("INSERT INTO episode (workspace_id, project_id, episode_no, title) VALUES ($1, $2, 1, $3) RETURNING id",
+      [workspaceId, single, "归还全家福"]);
+    const scope = { projectId: single, episodeCount: 1, base: { sourceRevisionId: null, ifMatch: 1 } };
+    const targets = [input("story", scope), input("episode", { ...scope, episodeId: first, episodeNo: 1 })];
+    for (const frozen of targets) {
+      const req = record(frozen);
+      expect(await store.create(req, LIMITS)).toMatchObject({ kind: "created", record: { input: { episodeCount: 1 } } });
+      expect(await store.closeUnsent(workspaceId, req.id, "exec-a", "test_complete", new Date().toISOString())).toBe(true);
+    }
+    await pool.query("UPDATE project SET episode_count = 2 WHERE workspace_id = $1 AND id = $2", [workspaceId, single]);
+    for (const frozen of targets) {
+      const req = record(frozen);
+      expect(await store.create(req, LIMITS)).toEqual({ kind: "target_invalid", reason: "episode_plan" });
+      expect(await store.getById(workspaceId, req.id)).toBeNull();
+    }
   });
 
   it("an unknown result must be confirmed, recovery never resends, and the daily cap is shared with title writing calls", async () => {

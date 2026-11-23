@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_PROMPT_VERSION,
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_VIEWING_DURATION_REASONS,
   autoCreationHardCap,
   autoCreationNormalCalls,
@@ -295,6 +296,36 @@ describe("automatic creation engine", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it.each([
+    { name: "no market hypothesis", hypotheses: [] },
+    { name: "the project's creative parameters", hypotheses: [{
+      id: "H1", statement: "待验证：1 集、约 1 分钟的故事是否能让观众理解司机的选择？",
+      howToVerify: "请试看者复述司机收到照片后的反应。",
+    }] },
+  ])("finishes one episode without market sources or a second research call: $name", async ({ hypotheses }) => {
+    const answer = {
+      schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, hypotheses,
+      audience: { primary: "喜欢温情故事的观众", viewingNeeds: ["看到人物作出选择"], emotionalAppeals: ["物归原主"] },
+      contentStructure: [{ referenceId: null, application: { pattern: "先让司机误会少年", why: "归还照片时揭开误会。" } }],
+      opportunities: ["用归还全家福的动作收束故事"],
+    };
+    const { run, engine, seen, view } = await setup({
+      idea: "雨夜，少年追上末班车，把司机遗失的全家福还给他", revisionRounds: 0, callBudget: 6,
+      override: (stage) => stage === "research" ? { status: 200, body: messagesAnswer(answer) } : undefined,
+    });
+    await engine.drive(run.id);
+    await engine.maintain();
+    const result = await view();
+    expect(result.stages.find(({ stageKey }) => stageKey === "research")?.errorCode).toBeNull();
+    expect(result).toMatchObject({ state: "completed", researchMode: "limited", callsUsed: 6, storySave: "saved" });
+    expect(seen.map(({ stage }) => stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    expect(autoFixtureBlock(seen[1]!.user, "研究结论")).toMatchObject({ hypotheses });
+    const directions = result.stages.find(({ stageKey }) => stageKey === "directions")!.output as AutoDirections;
+    for (const { evidenceIds } of directions.candidates) {
+      expect(evidenceIds.every((id) => hypotheses.some((hypothesis) => hypothesis.id === id))).toBe(true);
+    }
+  });
+
   it("DeepSeek, one sixty-second episode, no revision rounds and a budget of six: every stage, a DRAFT, the package", async () => {
     const deepseek = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
     const { store, run, engine, seen, view } = await setup({ providers: deepseek, providerKey: "deepseek", revisionRounds: 0, callBudget: 6 });
@@ -355,7 +386,7 @@ describe("automatic creation engine", () => {
     expect(seen[0]!.stage).toBe("research");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v17" });
+    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v18" });
   });
 
   it.each([
@@ -422,7 +453,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application).toEqual({ pattern: "模型替身样例：用前两集建立主角与对手的冲突。", why: "模型替身样例：每两集推进一个阶段目标。" });
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v17" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v18" });
     const directions = result.stages.find((stage) => stage.stageKey === "directions")!.output as AutoDirections;
     expect(directions.candidates[0]!.difficultyNote).toBe("模型替身样例：本剧每两集设置一个小高潮。");
     expect(directions.unverified).toEqual([]);
@@ -478,11 +509,11 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划在第一轮试读后比较角色人气。");
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v17" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v18" });
     expect(seen[1]!.stage).toBe("directions");
   });
 
-  it("checks v13: a run frozen at checks v12 keeps its frozen input; the research it sends now records v13", async () => {
+  it("a run frozen at checks v12 retains its input and records the legacy research checks it executed", async () => {
     const { store, run, engine, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { verificationSample: "step" } });
     const stored = store.runs.find((item) => item.id === run.id)!;
     Object.assign(stored.input, { checksVersion: "ads.auto-creation.checks.v12" });
@@ -542,7 +573,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application.why).toBe("模型替身样例：前3秒让主角陷入危机，待验证观众是否因此想继续看。");
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v17" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v18" });
   });
 
   it.each([
@@ -662,7 +693,7 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v17", researchSchema: "ads.auto-creation.research.v4",
+      executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v18", researchSchema: "ads.auto-creation.research.v4",
         answerContract: "limited" },
       marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },

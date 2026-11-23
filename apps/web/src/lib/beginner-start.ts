@@ -1,3 +1,5 @@
+import { TITLE_WRITING_DEFAULT_EPISODE_COUNT, TITLE_WRITING_MAX_EPISODES } from "@ai-drama/contracts";
+
 /** Pure helpers for the beginner start page. Nothing here calls a model or the server. */
 
 /**
@@ -17,4 +19,13 @@ export const IDEA_TEMPLATES: ReadonlyArray<{ id: string; label: string; idea: st
   { id: "rival-chef", label: "职场逆袭", idea: "被赶出后厨的年轻厨师，在对面开了一家只卖一道菜的小店。" },
 ];
 
-export const START_SCOPE_NOTE = "当前是试制范围：手动创建的作品固定三集，AI 一键创作可选 1–6 集，竖屏 9:16。素材是演示素材，不是真实 AI 拍摄。";
+export const START_SCOPE_NOTE = "短篇作品可选 1–6 集，竖屏 9:16。素材是演示素材，不是真实 AI 拍摄。";
+
+export const SHORT_EPISODE_COUNTS = Array.from({ length: TITLE_WRITING_MAX_EPISODES }, (_, index) => index + 1);
+
+/** Keep the legacy three-episode request shape so an unfinished create can replay its original key. */
+export function manualProjectInput(title: string, premise: string, episodeCount: number) {
+  return episodeCount === TITLE_WRITING_DEFAULT_EPISODE_COUNT
+    ? { title, premise }
+    : { title, premise, episodeCount, targetEpisodeSeconds: 60 };
+}

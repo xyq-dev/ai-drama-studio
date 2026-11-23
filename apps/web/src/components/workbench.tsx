@@ -1,6 +1,7 @@
 "use client";
 
 import { CreatorShell } from "./creator-shell";
+import { TITLE_WRITING_MAX_EPISODES } from "@ai-drama/contracts";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { canAdopt, type FrozenWritingContext, type WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
@@ -399,6 +400,7 @@ export function Workbench({ projectId }: { projectId: string }) {
             <ScriptPane
               projectId={projectId}
               projectVersion={project.version}
+              episodeCount={projectEpisodeNumbers(project).length}
               episode={episodes.find((item) => item.episodeNo === focus.episodeNo) ?? null}
               storyCurrent={storyCurrent}
               premise={project.premise}
@@ -464,6 +466,7 @@ export function StoryPane(props: {
   onStatus: (value: string) => void;
 }) {
   const current = currentStoryRevision(props.stories?.items ?? []);
+  const episodeCount = projectEpisodeNumbers(props.project).length;
   return (
     <EditorGrid>
         <ContentEditor
@@ -491,11 +494,12 @@ export function StoryPane(props: {
           });
         }}
         onSaved={props.onSaved}
-        assistantUnavailableReason={projectEpisodeNumbers(props.project).length !== 3
-          ? "故事编剧助手目前仅支持三集作品。当前作品的故事可以在下方直接修改并保存新版本。"
+        assistantUnavailableReason={episodeCount > TITLE_WRITING_MAX_EPISODES
+          ? "请在系列编剧页生成故事，或在下方编辑并保存。"
           : undefined}
         assistant={{
           mode: "story",
+          episodeCount,
           episodeNo: null,
           premise: props.project.premise,
           confirmedMaterials: "",
@@ -530,6 +534,7 @@ export function StoryPane(props: {
 export function ScriptPane(props: {
   projectId: string;
   projectVersion: number;
+  episodeCount: number;
   episode: EpisodeRecord | null;
   storyCurrent: StoryRevision | null;
   refreshEpoch: number;
@@ -629,11 +634,12 @@ export function ScriptPane(props: {
               ifMatch: draft.ifMatch ?? undefined,
             });
           }}
-          assistantUnavailableReason={episode.episodeNo > 3
-            ? "分集编剧助手目前仅支持第 1–3 集。这一集的剧本可以在下方直接修改并保存新版本。"
+          assistantUnavailableReason={props.episodeCount > TITLE_WRITING_MAX_EPISODES && episode.episodeNo > 3
+            ? "请在系列编剧页生成本集剧本，或在下方编辑并保存。"
             : undefined}
           assistant={{
             mode: "episode",
+            episodeCount: props.episodeCount <= TITLE_WRITING_MAX_EPISODES ? props.episodeCount : 3,
             episodeNo: episode.episodeNo,
             episodeId: episode.id,
             premise: props.premise,
@@ -966,6 +972,7 @@ function ContentEditor(props: {
   assistantUnavailableReason?: string;
   assistant?: {
     mode: "story" | "episode";
+    episodeCount: number;
     episodeNo: number | null;
     episodeId?: string | null;
     premise: string;
@@ -1150,6 +1157,7 @@ function ContentEditor(props: {
       {props.assistantUnavailableReason ? <p className="mt-2 text-sm" role="status">{props.assistantUnavailableReason}</p> : props.assistant ? (
         <WritingAssistant
           mode={props.assistant.mode}
+          episodeCount={props.assistant.episodeCount}
           projectId={props.projectId}
           entityKey={props.entityKey}
           episodeNo={props.assistant.episodeNo}

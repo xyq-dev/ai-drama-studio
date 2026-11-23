@@ -9,7 +9,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function fixture(episodeCount: number, episodeNo?: number) {
+function fixture(episodeCount: number, episodeNo?: number, writingMode: "short" | "series" = "short") {
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
     const path = String(input).split("?")[0] ?? String(input);
@@ -17,7 +17,7 @@ function fixture(episodeCount: number, episodeNo?: number) {
     requests.push({ path, method, body: init?.body ? JSON.parse(String(init.body)) : null });
     let body: unknown = { items: [], nextCursor: null };
     if (path.endsWith("/projects/project-1")) {
-      body = { id: "project-1", title: "分集作品", premise: "测试故事", version: 1, status: "ACTIVE", episodeCount, targetEpisodeSeconds: 60 };
+      body = { id: "project-1", title: "分集作品", premise: "测试故事", version: 1, status: "ACTIVE", episodeCount, writingMode, targetEpisodeSeconds: 60 };
     } else if (path.endsWith("/episodes")) {
       body = { items: Array.from({ length: episodeCount }, (_, index) => ({
         id: `episode-${index + 1}`, episodeNo: index + 1, title: `第${index + 1}集`, rowVersion: 1,
@@ -37,12 +37,11 @@ function fixture(episodeCount: number, episodeNo?: number) {
   return requests;
 }
 
-describe("legacy writing assistant with variable episode projects", () => {
-  it.each([1, 2, 4, 5, 6])("does not offer a three-episode story assistant for a %i-episode project", async (episodeCount) => {
+describe("writing assistant with variable episode projects", () => {
+  it.each([1, 2, 3, 4, 5, 6])("offers the story assistant and manual saves for a %i-episode project", async (episodeCount) => {
     const requests = fixture(episodeCount);
     await screen.findByDisplayValue("已批准的故事");
-    expect(screen.getByText(/故事编剧助手目前仅支持三集作品/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "编剧助手" })).toBeNull();
+    expect(screen.getByRole("button", { name: "编剧助手" })).toBeTruthy();
     expect(requests.some((request) => request.path.includes("qwen"))).toBe(false);
     fireEvent.change(screen.getByLabelText("正文"), { target: { value: "手动修改故事" } });
     fireEvent.click(within(screen.getByLabelText("正文").closest("form")!).getByRole("button", { name: "保存新版本" }));
@@ -52,11 +51,10 @@ describe("legacy writing assistant with variable episode projects", () => {
     await screen.findByText("已保存");
   });
 
-  it.each([4, 5, 6])("keeps episode %i manually editable without an unsupported assistant", async (episodeNo) => {
+  it.each([1, 2, 3, 4, 5, 6])("offers the episode assistant and preserves saves for episode %i", async (episodeNo) => {
     const requests = fixture(6, episodeNo);
     await screen.findByDisplayValue("原剧本");
-    expect(screen.getByText(/分集编剧助手目前仅支持第 1–3 集/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "编剧助手" })).toBeNull();
+    expect(screen.getByRole("button", { name: "编剧助手" })).toBeTruthy();
     expect(requests.some((request) => request.path.includes("qwen"))).toBe(false);
     fireEvent.change(screen.getByLabelText("正文"), { target: { value: "手动修改这一集" } });
     fireEvent.click(within(screen.getByLabelText("正文").closest("form")!).getByRole("button", { name: "保存新版本" }));
@@ -68,14 +66,39 @@ describe("legacy writing assistant with variable episode projects", () => {
     await screen.findByText("已保存");
   });
 
-  it("retains the three-episode story assistant", async () => {
-    fixture(3);
-    expect(await screen.findByRole("button", { name: "编剧助手" })).toBeTruthy();
+  it("previews one episode of a single-episode story and saves the adopted candidate", async () => {
+    const requests = fixture(1);
+    await screen.findByDisplayValue("已批准的故事");
+    fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    const plan = {
+      schema: "ads.writing.story-plan.v1", logline: "一个少年追车还照片", protagonistGoal: "找回失主", opposition: "末班车即将离站",
+      coreConflict: "赶在发车前还照片", relationships: [{ name: "司机", pressure: "快发车了" }],
+      episodes: [{ episodeNo: 1, entryState: "车已启动", goal: "还照片", action: "少年追车", turn: "司机看见少年",
+        result: "全家福交还给司机", handoff: "车缓缓驶离" }],
+    };
+    fireEvent.change(screen.getByLabelText("粘贴 JSON 候选"), { target: { value: JSON.stringify(plan) } });
+    fireEvent.click(screen.getByRole("button", { name: "校验并预览" }));
+    const preview = (await screen.findByLabelText("候选正文") as HTMLTextAreaElement).value;
+    expect(preview).toContain("全家福交还给司机");
+    expect(preview).not.toMatch(/第 [23] 集/u);
+    fireEvent.click(screen.getByRole("button", { name: "采纳到草稿" }));
+    fireEvent.click(within(screen.getByLabelText("正文").closest("form")!).getByRole("button", { name: "保存新版本" }));
+    await waitFor(() => expect(requests.filter(({ method }) => method === "POST")).toEqual([
+      { path: "/api/v1/projects/project-1/stories", method: "POST", body: { content: { text: preview } } },
+    ]));
   });
 
-  it.each([1, 2, 3])("retains the assistant for episode %i of a six-episode project", async (episodeNo) => {
-    fixture(6, episodeNo);
+  it("keeps the separate story entry for a long series", async () => {
+    fixture(8, undefined, "series");
+    await screen.findByDisplayValue("已批准的故事");
+    expect(screen.getByText(/请在系列编剧页生成故事/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "编剧助手" })).toBeNull();
+  });
+
+  it.each([3, 4])("retains the legacy episode boundaries for episode %i of a long series", async (episodeNo) => {
+    fixture(8, episodeNo, "series");
     await screen.findByDisplayValue("原剧本");
-    expect(screen.getByRole("button", { name: "编剧助手" })).toBeTruthy();
+    expect(Boolean(screen.queryByRole("button", { name: "编剧助手" }))).toBe(episodeNo <= 3);
   });
 });

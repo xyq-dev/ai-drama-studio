@@ -88,8 +88,8 @@ export function candidateImport(view: WritingCandidateView): WritingImport | nul
   if (!view.candidate) return null;
   try {
     const value = view.candidate.mode === "story" ? view.candidate.plan : view.candidate.draft;
-    const imported = parseWritingImport(new TextEncoder().encode(JSON.stringify(value)), { mode: view.mode, episodeNo: view.episodeNo });
-    formatWritingImport(imported);
+    const imported = parseWritingImport(new TextEncoder().encode(JSON.stringify(value)), { mode: view.mode, episodeNo: view.episodeNo, episodeCount: view.episodeCount ?? 3 });
+    formatWritingImport(imported, view.episodeCount);
     return imported;
   } catch {
     return null;
@@ -369,7 +369,7 @@ export function OnlineCandidatePanel(props: {
   let viewedText = "";
   if (viewedImport) {
     try {
-      viewedText = formatWritingImport(viewedImport);
+      viewedText = formatWritingImport(viewedImport, viewed?.episodeCount);
     } catch (caught) {
       viewedText = caught instanceof DomainError ? caught.message : "";
     }

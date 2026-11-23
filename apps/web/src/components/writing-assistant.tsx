@@ -117,6 +117,7 @@ function readAssistant(projectId: string, entityKey: string): AssistantDraft {
 }
 
 export function WritingAssistant(props: {
+  episodeCount?: number;
   mode: "story" | "episode";
   projectId: string;
   entityKey: string;
@@ -131,6 +132,7 @@ export function WritingAssistant(props: {
   onAdopt: (text: string, frozen: FrozenWritingContext) => boolean;
   readFile?: (file: File) => Promise<ArrayBuffer>;
 }) {
+  const episodeCount = props.episodeCount ?? 3;
   const key = storageKey(props.projectId, props.entityKey);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<AssistantDraft>(() => readAssistant(props.projectId, props.entityKey));
@@ -226,8 +228,8 @@ export function WritingAssistant(props: {
     const live = props.capture();
     try {
       const instruction = props.mode === "story"
-        ? buildStoryPlanInstruction(storyRequest(props, draft))
-        : buildEpisodeDraftInstruction(episodeRequest(props, draft));
+        ? buildStoryPlanInstruction(storyRequest(props, draft), "external", episodeCount)
+        : buildEpisodeDraftInstruction(episodeRequest(props, draft), "external", episodeCount);
       const fingerprint = inputFingerprint(props, draft);
       const frozen = freezeWritingContext({ ...live, loaded: true }, fingerprint);
       prepareGeneration.current += 1;
@@ -245,8 +247,8 @@ export function WritingAssistant(props: {
     try {
       const request = props.mode === "story" ? storyRequest(props, current) : episodeRequest(props, current);
       // The same builder as the manual instruction validates every field before anything is sent.
-      if (props.mode === "story") buildStoryPlanInstruction(request as ReturnType<typeof storyRequest>);
-      else buildEpisodeDraftInstruction(request as ReturnType<typeof episodeRequest>);
+      if (props.mode === "story") buildStoryPlanInstruction(request as ReturnType<typeof storyRequest>, "online", episodeCount);
+      else buildEpisodeDraftInstruction(request as ReturnType<typeof episodeRequest>, "online", episodeCount);
       const frozen = freezeWritingContext({ ...props.capture(), loaded: true }, inputFingerprint(props, current));
       return { request, frozen };
     } catch (caught) {
@@ -276,9 +278,9 @@ export function WritingAssistant(props: {
 
   function acceptImport(bytes: Uint8Array, permit: ReadPermit) {
     try {
-      const imported = parseWritingImport(bytes, { mode: props.mode, episodeNo: props.episodeNo });
+      const imported = parseWritingImport(bytes, { mode: props.mode, episodeNo: props.episodeNo, episodeCount });
       if (!permitCurrent(permit)) return;
-      formatWritingImport(imported);
+      formatWritingImport(imported, episodeCount);
       if (!permitCurrent(permit)) return;
       persist({ ...draftRef.current, imported });
       if (!permitCurrent(permit)) return;
@@ -329,7 +331,7 @@ export function WritingAssistant(props: {
     if (!draft.frozen || !draft.imported) return;
     let formatted: string;
     try {
-      formatted = formatWritingImport(draft.imported);
+      formatted = formatWritingImport(draft.imported, episodeCount);
     } catch (caught) {
       setError(caught instanceof DomainError ? caught.message : "候选不能整理成正文");
       return;
@@ -348,7 +350,7 @@ export function WritingAssistant(props: {
     setAdoptNote("已放入编辑草稿。还没有保存，请使用原来的保存新版本。");
   }
 
-  const formatted = draft.imported ? safeFormat(draft.imported) : "";
+  const formatted = draft.imported ? safeFormat(draft.imported, episodeCount) : "";
   const current = props.capture().loaded || props.loaded ? readCurrent(props) : "";
   const diff = formatted ? lineDiff(current, formatted).filter((line) => line.kind !== "same") : [];
 
@@ -519,6 +521,7 @@ function episodeRequest(
 
 function inputFingerprint(
   props: {
+    episodeCount?: number;
     mode: "story" | "episode";
     episodeNo: number | null;
     premise: string;
@@ -527,12 +530,13 @@ function inputFingerprint(
   },
   draft: AssistantDraft,
 ): string {
-  return writingInputFingerprint(props.mode === "story" ? storyRequest(props, draft) : episodeRequest(props, draft));
+  const request = props.mode === "story" ? storyRequest(props, draft) : episodeRequest(props, draft);
+  return writingInputFingerprint(props.episodeCount === undefined || props.episodeCount === 3 ? request : { ...request, episodeCount: props.episodeCount });
 }
 
-function safeFormat(imported: WritingImport): string {
+function safeFormat(imported: WritingImport, episodeCount: number): string {
   try {
-    return formatWritingImport(imported);
+    return formatWritingImport(imported, episodeCount);
   } catch {
     return "";
   }

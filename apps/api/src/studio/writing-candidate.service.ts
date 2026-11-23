@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  TITLE_WRITING_MAX_EPISODES,
   TITLE_WRITING_PROVIDER_KEYS,
   TITLE_WRITING_PROVIDER_PREFERENCE,
   writingCandidateStartSchema,
@@ -31,7 +32,7 @@ export interface WritingCandidateDependencies {
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: WritingCandidateStore;
   executor: Pick<WritingCandidateExecutor, "workspaceId" | "executorId" | "execute" | "maintain">;
-  projects: Pick<RuntimeStore, "getProject">;
+  projects: Pick<RuntimeStore, "getProject" | "getProjectEpisodePlan">;
   /** The shared rolling 24 h cap of every paid text call of the workspace. */
   maxCallsPerDay: number;
   /** Whether the model console holds saved settings waiting for the API restart (options only; never gates a send). */
@@ -186,13 +187,13 @@ export class WritingCandidateService {
     // recoverable and must never create or send a second request. Same key with another input is refused.
     const previous = await this.deps.store.findByKey(this.deps.workspaceId, context.actorId, key);
     const now = this.now();
-    const build = (providerKey: TitleWritingProviderKey, model: string) => newWritingCandidate({
-      workspaceId: this.deps.workspaceId, projectId, actorId: context.actorId, idempotencyKey: key, mode: start.mode, episodeId,
+    const build = (providerKey: TitleWritingProviderKey, model: string, episodeCount: number | undefined) => newWritingCandidate({
+      workspaceId: this.deps.workspaceId, projectId, actorId: context.actorId, idempotencyKey: key, mode: start.mode, episodeId, episodeCount,
       providerKey, model, base: start.base, request: start.request, confirmedRequestId: start.confirmUncertainRequestId ?? null,
       executorId: this.deps.executor.executorId, now,
     });
     if (previous) {
-      const replay = build(start.providerKey ?? previous.input.providerKey, start.model ?? previous.input.model);
+      const replay = build(start.providerKey ?? previous.input.providerKey, start.model ?? previous.input.model, previous.input.episodeCount);
       return previous.projectId === projectId && replay.requestHash === previous.requestHash
         ? this.found(previous, projectId) : failure(409, "IDEMPOTENCY_KEY_REUSED");
     }
@@ -205,7 +206,12 @@ export class WritingCandidateService {
     if (!await this.deps.store.providerStorageReady(providerKey)) {
       return failure(503, "WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [CANDIDATE_PROVIDER_MIGRATION_GAP] });
     }
-    const created = await this.deps.store.create(build(providerKey, model), {
+    const { episodeCount } = await this.deps.projects.getProjectEpisodePlan(this.deps.workspaceId, projectId);
+    const longProject = episodeCount > TITLE_WRITING_MAX_EPISODES;
+    if (start.mode === "story" ? longProject : start.request.episodeNo > (longProject ? 3 : episodeCount)) {
+      return failure(409, "WRITING_CANDIDATE_TARGET_INVALID", { reason: "episode_plan" });
+    }
+    const created = await this.deps.store.create(build(providerKey, model, episodeCount), {
       sinceIso: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
       maxCallsPerDay: this.deps.maxCallsPerDay,
     });

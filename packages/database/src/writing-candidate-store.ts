@@ -279,7 +279,7 @@ export class PostgresWritingCandidateStore implements WritingCandidateStore {
     });
   }
 
-  /** The story of a three-episode work, or one episode of this work with its own number; the base revision is the target's. */
+  /** The project plan and episode number must still match the frozen target; the base revision is the target's. */
   private async targetProblem(client: PoolClient, workspaceId: string, input: WritingCandidateFrozenInput):
     Promise<"episode" | "base_revision" | "episode_plan" | null> {
     const source = input.base.sourceRevisionId;
@@ -287,15 +287,17 @@ export class PostgresWritingCandidateStore implements WritingCandidateStore {
       const project = await client.query<Row>(
         "SELECT COALESCE((to_jsonb(project) ->> 'episode_count')::int, 3) AS episodes FROM project WHERE id = $1 AND workspace_id = $2",
         [input.projectId, workspaceId]);
-      if (Number(project.rows[0]?.episodes) !== 3) return "episode_plan";
+      if (Number(project.rows[0]?.episodes) !== (input.episodeCount ?? 3)) return "episode_plan";
       if (source === null) return null;
       const revision = await client.query("SELECT 1 FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3",
         [source, input.projectId, workspaceId]);
       return revision.rows[0] ? null : "base_revision";
     }
-    const episode = await client.query<Row>("SELECT episode_no FROM episode WHERE id = $1 AND project_id = $2 AND workspace_id = $3",
-      [input.episodeId, input.projectId, workspaceId]);
+    const episode = await client.query<Row>(`SELECT e.episode_no, COALESCE((to_jsonb(p) ->> 'episode_count')::int, 3) AS episodes
+      FROM episode e JOIN project p ON p.id = e.project_id AND p.workspace_id = e.workspace_id
+      WHERE e.id = $1 AND e.project_id = $2 AND e.workspace_id = $3`, [input.episodeId, input.projectId, workspaceId]);
     if (!episode.rows[0] || Number(episode.rows[0].episode_no) !== input.episodeNo) return "episode";
+    if (input.episodeCount !== undefined && Number(episode.rows[0].episodes) !== input.episodeCount) return "episode_plan";
     if (source === null) return null;
     const revision = await client.query("SELECT 1 FROM script_revision WHERE id = $1 AND episode_id = $2 AND workspace_id = $3",
       [source, input.episodeId, workspaceId]);
