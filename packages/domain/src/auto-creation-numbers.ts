@@ -49,6 +49,8 @@ export interface AutoNumberFrame {
   frozenAudience: string;
   episodeCount: number;
   episodeSeconds: number;
+  /** Current research can restate the frozen single-episode format in a question about its story. */
+  singleEpisodeResearch?: boolean;
   maxCharacters: number | null;
   maxLocations: number | null;
 }
@@ -940,6 +942,25 @@ function withoutViewerChoice(clause: string): string {
   });
 }
 
+// The pair describes the work in “1 集、约 1 分钟的故事”. Read its two numbers separately
+// so a later audience figure still needs evidence, even when it happens to have the same value.
+const FORMAT_NUMBER = `([0-9０-９]+(?:\\.[0-9]+)?|[${CN_DIGITS}]+)`;
+const STORY_FORMAT = new RegExp(`${FORMAT_NUMBER}集(?:、|和|且|[/／])(?:时长|片长)?(?:约|大约|大概)?`
+  + `${FORMAT_NUMBER}(秒钟?|分钟)(?:的)?(?:故事|剧本|短剧|作品|版本)`, "du");
+
+function singleEpisodeFormatRole(hit: NumberHit, clause: string, frame: AutoNumberFrame): Role | null {
+  const format = STORY_FORMAT.exec(clause);
+  if (!format || VIEWING_HABIT.test(clause) || SAMPLE_DONE.test(clause)
+    || DESIGN_TAKEN.test(clause.slice(0, format.index)) || VIEWING_AFTER.test(clause.slice(format.index + format[0].length))) return null;
+  if (hit.start === format.indices?.[1]?.[0]) {
+    return hit.value === frame.episodeCount ? { allowed: true, rule: "work_total" } : refuse("frozen_conflict", "episode_count");
+  }
+  if (hit.start !== format.indices?.[2]?.[0]) return null;
+  const seconds = (hit.value ?? Infinity) * (format[3] === "分钟" ? 60 : 1);
+  if (seconds === frame.episodeSeconds) return { allowed: true, rule: "work_length" };
+  return refuse("frozen_conflict", seconds > frame.episodeSeconds ? "over_length" : "length_changed");
+}
+
 /** The role of one number in an uncited clause, read with the other clauses of its sentence. */
 /** Whether a clause has a verdict its people give, not only one that befalls them in the story (三名学生因一条差评…). */
 function givenVerdict(clause: string): boolean {
@@ -967,6 +988,10 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
   if (market && RATE.test(rateText(clause, before, tail))) return refuse("market_statistic", "rate_or_average");
   if (/^(?:比|[:：])/u.test(tail)) return refuse("market_statistic", "proportion");
   const value = hit.value;
+  if (structureDesign && frame.singleEpisodeResearch) {
+    const format = singleEpisodeFormatRole(hit, clause, frame);
+    if (format) return format;
+  }
   // Dates and ranges: 2026-10-18, 10 月, 25-35 岁. A range of ages is an age distribution.
   if (/^[-–~]|^(?:年\d|月|日|号)/u.test(tail) || (/年/u.test(tail.slice(0, 1)) && (value ?? 0) >= 1000)) {
     return /[-–~]\d+(?:周)?岁/u.test(tail) || /岁/u.test(tail.slice(0, 6)) ? refuse("market_statistic", "audience_age") : refuse("unclassified", "date_or_range");

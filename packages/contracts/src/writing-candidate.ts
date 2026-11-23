@@ -8,6 +8,7 @@ import {
   type StoryPlanCandidate,
 } from "./writing-assistant";
 import {
+  TITLE_WRITING_MAX_EPISODES,
   TITLE_WRITING_PROVIDER_KEYS,
   type TitleWritingProviderKey,
   type TitleWritingProviderOption,
@@ -16,7 +17,7 @@ import {
 
 /**
  * Online candidates of the workbench writing assistant (docs/OPENAI_CLAUDE_WRITING.md, "工作台在线候选"). One request is
- * one provider call for one target: the story of a three-episode work, or the script of one of its episodes 1–3. The
+ * one provider call for one target: the story of a short work, or the script of one selected episode. The
  * answer is only a candidate: it is shown, compared and adopted into the editor draft by the person, and saved only by
  * the editor's own "保存新版本". Nothing here writes a story or script revision.
  */
@@ -43,7 +44,7 @@ export const writingCandidateStoryRequestSchema = z.object({
 
 /** The episode request of the assistant (domain EpisodeDraftRequest). */
 export const writingCandidateEpisodeRequestSchema = z.object({
-  episodeNo: z.number().int().min(1).max(3),
+  episodeNo: z.number().int().min(1).max(TITLE_WRITING_MAX_EPISODES),
   premise: note(),
   genre: note(),
   audience: note(),
@@ -86,6 +87,8 @@ export type WritingCandidateMode = "story" | "episode";
 export interface WritingCandidateFrozenInput {
   schema: typeof WRITING_CANDIDATE_INPUT_SCHEMA;
   promptVersion: string;
+  /** Absent from historical requests, which used three episodes. */
+  episodeCount?: number;
   projectId: string;
   mode: WritingCandidateMode;
   episodeId: string | null;
@@ -182,6 +185,7 @@ export interface WritingCandidateStore {
 }
 
 export interface WritingCandidateView {
+  episodeCount?: number;
   requestId: string;
   projectId: string;
   mode: WritingCandidateMode;
@@ -230,11 +234,11 @@ function objectOf(properties: Record<string, unknown>) {
 }
 
 /**
- * The provider JSON Schema of a candidate: the story plan (ads.writing.story-plan.v1, exactly three episodes) or the
+ * The provider JSON Schema of a candidate: the story plan (ads.writing.story-plan.v1, exactly the requested episodes) or the
  * draft of exactly this episode (ads.writing.episode-draft.v1). The zod schemas and the domain import checks stay the
  * authority on every answer; this only shapes what the provider returns.
  */
-export function writingCandidateJsonSchema(mode: WritingCandidateMode, episodeNo: number | null): { name: string; schema: Record<string, unknown> } {
+export function writingCandidateJsonSchema(mode: WritingCandidateMode, episodeNo: number | null, episodeCount = 3): { name: string; schema: Record<string, unknown> } {
   if (mode === "story") {
     return {
       name: "story_plan",
@@ -245,8 +249,8 @@ export function writingCandidateJsonSchema(mode: WritingCandidateMode, episodeNo
         opposition: text(300),
         coreConflict: text(400),
         relationships: { type: "array", minItems: 1, maxItems: 6, items: objectOf({ name: text(40), pressure: text(200) }) },
-        episodes: { type: "array", minItems: 3, maxItems: 3, items: objectOf({
-          episodeNo: { type: "integer", enum: [1, 2, 3] }, entryState: text(400), goal: text(400), action: text(400),
+        episodes: { type: "array", minItems: episodeCount, maxItems: episodeCount, items: objectOf({
+          episodeNo: { type: "integer", enum: Array.from({ length: episodeCount }, (_, i) => i + 1) }, entryState: text(400), goal: text(400), action: text(400),
           turn: text(400), result: text(400), handoff: text(400),
         }) },
       }),

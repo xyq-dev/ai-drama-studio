@@ -62,7 +62,7 @@ describe("the requests the real adapters build for a series", () => {
       }
       const expected = research
         ? autoCreationJsonSchema(exchange.stage as "research" | "directions", 7, exchange.stage === "research" ? "limited" : null,
-          exchange.stage === "research" ? saved : null).schema
+          exchange.stage === "research" ? saved : null, undefined, false, false, AUTO_CREATION_LEGACY_PROMPT_VERSION).schema
         : seriesJsonSchema(exchange.stage, 7).schema;
       expect(sentSchema(exchange)).toEqual(providerKey === "anthropic" ? claudeJsonSchema(expected) : expected);
       const body = exchange.body as Record<string, unknown>;
@@ -117,7 +117,7 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
     const schema = sentSchema(research);
     const plan = (await snapshot()).jobs.find((job) => job.run.kind === "plan")!;
     const saved = autoReferenceCatalogOf(plan.stages.find((stage) => stage.stageKey === "sources")!.output as unknown as AutoSourcesOutput)!;
-    expect(schema).toEqual(autoCreationJsonSchema("research", 60, "limited", saved).schema);
+    expect(schema).toEqual(autoCreationJsonSchema("research", 60, "limited", saved, undefined, false, false, AUTO_CREATION_LEGACY_PROMPT_VERSION).schema);
     expect((schema as { properties: { hypotheses: { items: Record<string, unknown> } } }).properties.hypotheses.items)
       .toMatchObject({ additionalProperties: false, required: ["id", "statement", "howToVerify"] });
     expect(research.user).toContain("提示版本：ads.auto-creation.prompt.v14");

@@ -191,7 +191,7 @@ describe("B. the whole research stage (validateAutoStageOutput, and the series' 
       expect(output.hypotheses[0]!.howToVerify).toBe(howToVerify);
       expect(output.unverified).toEqual([]);
       expect(output.serverRecord.settings.items.find((item) => item.key === "episodes")?.value).toBe(`共 ${String(EPISODES)} 集`);
-      expect(output.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v17", promptVersion });
+      expect(output.serverRecord.executedWith).toMatchObject({ checksVersion: promptVersion === AUTO_CREATION_PROMPT_VERSION ? AUTO_CREATION_CHECKS_VERSION : SERIES_RESEARCH_CONTRACT.checksVersion, promptVersion });
     });
 
     it.each(UNCONFIRMED)("%s passes with an episode-scope notice on that field, kept as written: %s", (_label, howToVerify) => {

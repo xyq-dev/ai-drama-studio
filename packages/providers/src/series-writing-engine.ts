@@ -239,7 +239,8 @@ export class SeriesWritingEngine {
     const prompt = buildSeriesPrompt(next.stageKey, series.input, context, autoInput, run.input.promptVersion);
     if (prompt.system.length + prompt.user.length > SERIES_PROMPT_MAX_CHARS) return this.stop(jobId, "needs_attention", "prompt_too_large");
     const schema = kind === "research" || kind === "directions"
-      ? autoCreationJsonSchema(kind, series.input.episodeCount, kind === "research" ? researchMode : null, kind === "research" ? context.auto.referenceCatalog ?? null : null)
+      ? autoCreationJsonSchema(kind, series.input.episodeCount, researchMode, context.auto.referenceCatalog,
+        undefined, false, false, autoInput.promptVersion)
       : seriesJsonSchema(next.stageKey, series.input.episodeCount);
     const request = { model: run.input.model, system: prompt.system, user: prompt.user, schemaName: schema.name, jsonSchema: schema.schema,
       maxOutputTokens: run.input.maxOutputTokens };

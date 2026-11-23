@@ -57,7 +57,7 @@ describe("beginner start page", () => {
     expect(screen.getByRole("heading", { name: "你的故事，从这里开始" })).toBeTruthy();
     expect(screen.getByText("有想法直接写，没想法也可以先选一个方向。")).toBeTruthy();
     expect(screen.getByRole("link", { name: "还没想法？选一个故事方向" }).getAttribute("href")).toBe("#inspiration");
-    expect(screen.getByText(/AI 一键创作可选 1–6 集，竖屏 9:16/)).toBeTruthy();
+    expect(screen.getByText(/短篇作品可选 1–6 集，竖屏 9:16/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("你想拍一个什么样的故事？"), { target: { value: "一个外卖员的故事" } });
     fireEvent.click(screen.getByRole("button", { name: "示例 · 家庭情感" }));
     expect((screen.getByLabelText("你想拍一个什么样的故事？") as HTMLTextAreaElement).value).toContain("回到老家");
@@ -102,6 +102,30 @@ describe("beginner start page", () => {
     expect(posts[0]?.body).toEqual({ title: "夜班", premise: "夜班，店员发现记录被改。" });
     expect(posts[1]?.key).toBe(posts[0]?.key);
     expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("restores a one-episode idea and creates exactly the selected project plan", async () => {
+    const posts: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(JSON.parse(String(init.body)));
+        return Promise.resolve(json({ id: "bus" }, 201));
+      }
+      return Promise.resolve(json({ items: [], nextCursor: null }));
+    }));
+    const first = render(<BeginnerStart active="/create" />);
+    const premise = "雨夜，少年追上末班车，把司机遗失的全家福还给他";
+    fireEvent.change(screen.getByLabelText("你想拍一个什么样的故事？"), { target: { value: premise } });
+    fireEvent.click(screen.getByRole("button", { name: "开始构思" }));
+    fireEvent.change(screen.getByLabelText("作品名称"), { target: { value: "最后一班车" } });
+    fireEvent.change(screen.getByLabelText("集数", { selector: "#work-episode-count" }), { target: { value: "1" } });
+    first.unmount();
+    render(<BeginnerStart active="/create" />);
+    expect((await screen.findByLabelText("集数", { selector: "#work-episode-count" }) as HTMLSelectElement).value).toBe("1");
+    expect(posts).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "确认创建作品" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/projects/bus/create"));
+    expect(posts).toEqual([{ title: "最后一班车", premise, episodeCount: 1, targetEpisodeSeconds: 60 }]);
   });
 
   it("does not lose input written while a slow create is pending (review P1)", async () => {
@@ -200,7 +224,7 @@ describe("my works", () => {
     stubProject("fresh");
     const view = render(<MyWorks />);
     expect(await screen.findByText(/第 1 步 定故事/)).toBeTruthy();
-    expect(screen.getByText("○ 未开始")).toBeTruthy();
+    expect(screen.getByText("＋ 待补充")).toBeTruthy();
     view.unmount();
     stubProject("failed");
     render(<MyWorks />);

@@ -85,6 +85,20 @@ describe("writing instructions", () => {
     expect(first).not.toContain("局部修改保留没有点名的段落");
   });
 
+  it("plans only the project's episodes and writes the only episode through its ending", () => {
+    const instruction = buildStoryPlanInstruction(storyRequest, "online", 1);
+    expect(instruction).toContain("episodes 共 1 项");
+    expect(instruction).toContain("本作只有一集");
+    const draft = episodeDraft(1);
+    expect(buildEpisodeDraftInstruction({
+      ...storyRequest, episodeNo: 1, confirmedStory: "店员拿到记录", revisionRequest: "", mustKeepDialogue: "", mustKeepEnding: "",
+    }, "online", 1)).toContain("在场景中演出结局");
+    const parse = (value: unknown) => parseWritingImport(new TextEncoder().encode(JSON.stringify(value)), { mode: "episode", episodeNo: 1, episodeCount: 1 });
+    expect(parse(draft)).toMatchObject({ mode: "episode", draft });
+    expect(() => parse({ ...draft, scenes: [{ ...draft.scenes[0]!, dialogue: "" }] })).toThrow("人物对白");
+    expect(formatStoryPlan({ ...storyPlan, episodes: [episode(1)] })).toContain("结局事实");
+  });
+
   it("uses episode rules for the selected episode", () => {
     const instruction = buildEpisodeDraftInstruction({
       episodeNo: 2,

@@ -461,7 +461,7 @@ export class AutoCreationEngine {
     // Research uses the saved catalog. Outline and revisions follow their frozen run's contracts.
     const schema = autoCreationJsonSchema(prompt.kind, run.input.episodeCount, prompt.kind === "research" ? researchMode : null,
       prompt.kind === "research" ? context.referenceCatalog ?? null : null, prompt.revisionReferences,
-      autoCreationWritesStoryProse(run.input.promptVersion), Boolean(userBrief));
+      autoCreationWritesStoryProse(run.input.promptVersion), Boolean(userBrief), run.input.promptVersion);
     const request = {
       model: run.input.model,
       system: prompt.system,

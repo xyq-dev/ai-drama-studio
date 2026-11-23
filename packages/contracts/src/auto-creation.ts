@@ -46,7 +46,8 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v14: require one nonempty JSON string for each bible location's production notes. Validation is unchanged.
  * v15: the outline call also writes complete story prose; episode, revision and review prompts use that prose as the
  * frozen source for the adaptation. A specified genre guides the creative choices throughout.
- * v16: user-initiated multi-artifact revise from the result page (see AUTO_CREATION_PROMPT_VERSION).
+ * v16: user-initiated multi-artifact revise from the result page.
+ * v17: research without market sources may omit all hypotheses; directions can proceed without research IDs.
  */
 export const AUTO_CREATION_LEGACY_PROMPT_VERSION = "ads.auto-creation.prompt.v14" as const;
 export const AUTO_CREATION_PROMPT_V15 = "ads.auto-creation.prompt.v15" as const;
@@ -55,16 +56,17 @@ export const AUTO_CREATION_PROMPT_V15 = "ads.auto-creation.prompt.v15" as const;
  * fail-then-revise (single-episode, story-frozen) keeps prior semantics; only stages carrying a user-revise brief
  * use the unfrozen consistency prompt. Story prose remains required as in v15.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v16" as const;
+export const AUTO_CREATION_PROMPT_V16 = "ads.auto-creation.prompt.v16" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v17" as const;
 /** Every prompt version a stored run may carry. Pre-v15 runs retain the v14 output contract when resumed. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
   | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | "ads.auto-creation.prompt.v10" | "ads.auto-creation.prompt.v11"
   | "ads.auto-creation.prompt.v12" | "ads.auto-creation.prompt.v13"
-  | typeof AUTO_CREATION_LEGACY_PROMPT_VERSION | typeof AUTO_CREATION_PROMPT_V15 | typeof AUTO_CREATION_PROMPT_VERSION;
+  | typeof AUTO_CREATION_LEGACY_PROMPT_VERSION | typeof AUTO_CREATION_PROMPT_V15 | typeof AUTO_CREATION_PROMPT_V16 | typeof AUTO_CREATION_PROMPT_VERSION;
 
 export function autoCreationWritesStoryProse(promptVersion: AutoCreationPromptVersion): boolean {
-  return promptVersion === AUTO_CREATION_PROMPT_V15 || promptVersion === AUTO_CREATION_PROMPT_VERSION;
+  return promptVersion === AUTO_CREATION_PROMPT_V15 || promptVersion === AUTO_CREATION_PROMPT_V16 || promptVersion === AUTO_CREATION_PROMPT_VERSION;
 }
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
@@ -123,14 +125,17 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * re-checked with the strict bible schema and checkBible. If that passes, the normalized bible is saved. Missing
  * fields, type errors, checkBible failures, research extra-key refusal, and unknown-fee non-retry are unchanged.
  * Prompt and research schemas are unchanged.
+ * v18: in single-episode research a paired episode count and running time can modify a story. Each value is
+ * checked against the frozen work and each other number is still checked for evidence.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v17" as const;
+export const AUTO_CREATION_CHECKS_V17 = "ads.auto-creation.checks.v17" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v18" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
   | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | "ads.auto-creation.checks.v11"
   | "ads.auto-creation.checks.v12" | "ads.auto-creation.checks.v13" | "ads.auto-creation.checks.v14" | "ads.auto-creation.checks.v15"
-  | "ads.auto-creation.checks.v16" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v16" | typeof AUTO_CREATION_CHECKS_V17 | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the
@@ -487,7 +492,7 @@ export type AutoResearchCatalogAnswer = z.infer<typeof autoResearchCatalogAnswer
 /** The limited answer of prompt v9: research v4's limited fields, content structures as catalog choices. */
 export const autoResearchLimitedCatalogAnswerSchema = z.object({
   schema: z.literal(AUTO_CREATION_RESEARCH_ANSWER_SCHEMA),
-  hypotheses: researchFields.hypotheses,
+  hypotheses: z.array(hypothesisSchema).max(8),
   audience: z.object({
     primary: text(1, 120),
     viewingNeeds: shortList(5, 60).min(1),
@@ -498,9 +503,15 @@ export const autoResearchLimitedCatalogAnswerSchema = z.object({
 }).strict();
 export type AutoResearchLimitedCatalogAnswer = z.infer<typeof autoResearchLimitedCatalogAnswerSchema>;
 
-/** The model answer schema of a research mode (prompt v9 on): the one the prompt asks for and the JSON Schema enforces. */
-export function autoResearchCatalogAnswerSchemaFor(mode: AutoResearchMode) {
-  return mode === "limited" ? autoResearchLimitedCatalogAnswerSchema : autoResearchCatalogAnswerSchema;
+const legacyLimitedCatalogAnswerSchema = autoResearchLimitedCatalogAnswerSchema.extend({ hypotheses: researchFields.hypotheses });
+
+export function autoLimitedResearchSchemaFor(version: AutoCreationPromptVersion) {
+  return version === AUTO_CREATION_PROMPT_VERSION ? autoResearchLimitedCatalogAnswerSchema : legacyLimitedCatalogAnswerSchema;
+}
+
+/** The model answers with the mode and version its run was frozen on. */
+export function autoResearchCatalogAnswerSchemaFor(mode: AutoResearchMode, version: AutoCreationPromptVersion = AUTO_CREATION_PROMPT_VERSION) {
+  return mode === "limited" ? autoLimitedResearchSchemaFor(version) : autoResearchCatalogAnswerSchema;
 }
 
 /**
@@ -1027,7 +1038,7 @@ export interface AutoRevisionReferences {
  */
 export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount: number, researchMode: AutoResearchMode | null = null,
   catalog: AutoReferenceCatalog | null = null, revisionReferences?: AutoRevisionReferences,
-  includeStoryProse = false, userRevise = false): { name: string; schema: Record<string, unknown> } {
+  includeStoryProse = false, userRevise = false, researchVersion: AutoCreationPromptVersion = AUTO_CREATION_PROMPT_VERSION): { name: string; schema: Record<string, unknown> } {
   const numbers = Array.from({ length: episodeCount }, (_, index) => index + 1);
   const references = kind === "revise" ? revisionReferences : undefined;
   const characterId = references?.characterIds.length ? enumOf(references.characterIds) : str(2);
@@ -1050,7 +1061,8 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
       if (researchMode !== "limited" && researchMode !== "sourced") throw new Error("a research schema needs the run's saved research mode");
       if (!catalog) throw new Error("a research schema needs the run's reference catalog");
       const ids = catalog.entries.map((entry) => entry.referenceId);
-      const hypotheses = arr(obj({ id: str(2), statement: str(200), howToVerify: str(150) }), 1, 8);
+      const minHypotheses = researchMode === "limited" && researchVersion === AUTO_CREATION_PROMPT_VERSION ? 0 : 1;
+      const hypotheses = arr(obj({ id: str(2), statement: str(200), howToVerify: str(150) }), minHypotheses, 8);
       const contentStructure = arr(obj({
         referenceId: ids.length > 0 ? { anyOf: [enumOf(ids), { type: "null" }] } : { type: "null" },
         application: obj({ pattern: str(120), why: str(200) }),
