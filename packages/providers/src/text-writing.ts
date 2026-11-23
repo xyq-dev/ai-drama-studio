@@ -1,5 +1,5 @@
 import {
-  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem, type TitleWritingProviderKey,
+  TITLE_WRITING_DEFAULT_MODELS, WRITING_MODEL_CHANNELS, anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import {
   ResponseBodyError,
@@ -51,8 +51,8 @@ export const TEXT_WRITING_MAX_OUTPUT_TOKENS = 4_096;
 export const TEXT_WRITING_TIMEOUT_MS = 120_000;
 export const TEXT_WRITING_MAX_RESPONSE_BYTES = 1_048_576;
 
-export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-export const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+export const OPENAI_RESPONSES_URL = WRITING_MODEL_CHANNELS.openai.endpoint;
+export const ANTHROPIC_MESSAGES_URL = WRITING_MODEL_CHANNELS.anthropic.endpoint;
 export const ANTHROPIC_VERSION = "2023-06-01";
 /**
  * Thinking counts toward Claude's max_tokens, so a Claude call gets the shared visible-output budget plus this much
@@ -60,7 +60,7 @@ export const ANTHROPIC_VERSION = "2023-06-01";
  */
 export const ANTHROPIC_THINKING_HEADROOM_TOKENS = 4_096;
 export const ANTHROPIC_EFFORT = "low";
-export const DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions";
+export const DEEPSEEK_CHAT_COMPLETIONS_URL = WRITING_MODEL_CHANNELS.deepseek.endpoint;
 
 export type WritingErrorCode =
   | "auth"

@@ -9,7 +9,7 @@ afterEach(() => { document.cookie = "ads_csrf=; Max-Age=0; Path=/"; vi.restoreAl
 describe("administrator browser transport (site login)", () => {
   it("has no token login and exposes the configuration and connection actions", () => {
     const client = createAdminModelsClient(vi.fn()) as Record<string, unknown>;
-    expect(Object.keys(client).sort()).toEqual(["checkComfyUi", "limits", "models", "provider"]);
+    expect(Object.keys(client).sort()).toEqual(["checkComfyUi", "checkVendor", "limits", "models", "provider", "saveVendor", "vendor", "vendors"]);
   });
   it("sends the ComfyUI connection check only to the administrator API with an empty JSON body", async () => {
     document.cookie = `ads_csrf=${CSRF}; Path=/`;

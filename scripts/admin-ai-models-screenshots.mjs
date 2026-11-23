@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 
 const root = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const require = createRequire(import.meta.url);
+const { WRITING_MODEL_CHANNELS } = createRequire(resolve(root, "apps/web/package.json"))("@ai-drama/contracts");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const reviewDir =
   process.env.ADMIN_AI_MODELS_REVIEW_DIR ||
@@ -45,23 +46,17 @@ async function assertClean(page, name) {
   assert.equal(leaked(html), false, `Secret appeared in DOM for ${name}`);
 }
 
-async function waitTestOutcome(page) {
-  const passed = page.getByText("检测通过");
-  const failed = page.getByRole("dialog", { name: "测试没有通过" });
-  try {
-    await Promise.race([
-      passed.waitFor({ state: "visible", timeout: 20_000 }),
-      failed.waitFor({ state: "visible", timeout: 20_000 }),
-    ]);
-  } catch (error) {
-    if (process.env.ADMIN_AI_MODELS_DEBUG_SHOT)
-      await page.screenshot({ path: process.env.ADMIN_AI_MODELS_DEBUG_SHOT, fullPage: true });
-    throw error;
-  }
-  if (await failed.isVisible().catch(() => false)) {
-    const title = await failed.locator("h2").innerText();
-    throw new Error(`Expected 检测通过, got dialog: ${title}`);
-  }
+async function chooseWritingModel(page, vendor, modelId) {
+  const drawer = page.getByRole("dialog", { name: "修改配置" });
+  await drawer.getByRole("combobox", { name: "供应商", exact: true }).selectOption(vendor);
+  await chooseModel(drawer, vendor, modelId);
+}
+
+async function chooseModel(drawer, vendor, modelId) {
+  const model = WRITING_MODEL_CHANNELS[vendor].models.find(({ id }) => id === modelId);
+  assert.ok(model, `Missing fixture model: ${vendor}/${modelId}`);
+  await drawer.getByRole("combobox", { name: "模型", exact: true }).click();
+  await drawer.getByRole("option").filter({ hasText: model.label }).click();
 }
 
 async function revealPrimary(page, locator, label) {
@@ -175,8 +170,9 @@ async function walkDesktop(page) {
   await page.getByRole("button", { name: "编辑设置" }).click();
   await page.getByRole("dialog", { name: "编辑设置" }).waitFor();
   await shot(page, "desktop-openai-edit-drawer");
+  await chooseModel(page.getByRole("dialog", { name: "编辑设置" }), "openai", "gpt-6-astra");
   await page.getByLabel("API Key").fill(KEYS.openai);
-  await page.getByRole("button", { name: "保存凭证", exact: true }).click();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await page.getByText("密钥已保存 · 连接待测试").first().waitFor();
   await shot(page, "desktop-openai-saved");
 
@@ -184,6 +180,10 @@ async function walkDesktop(page) {
   await page.getByRole("heading", { name: "OpenAI", exact: true }).waitFor();
   await page.getByText("密钥已保存 · 连接待测试").first().waitFor();
   await shot(page, "desktop-openai-after-refresh");
+  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByText("已读取模型列表", { exact: true }).waitFor();
+  assert.equal(await page.getByText("检测通过", { exact: true }).count(), 0);
+  await shot(page, "desktop-openai-model-list-read");
 
   await gotoReady(page, "/admin/ai-models", "模型供应商");
   await page
@@ -198,12 +198,12 @@ async function walkDesktop(page) {
 
   await page.getByRole("button", { name: "修改配置" }).click();
   await page.getByRole("dialog", { name: "修改配置" }).waitFor();
-  await page.getByRole("button", { name: "DeepSeek", exact: true }).click();
+  await chooseWritingModel(page, "deepseek", "deepseek-flash");
   await shot(page, "desktop-writing-edit-drawer");
   await page.getByLabel("API Key").fill(KEYS.deepseek);
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
   await page.getByText("草稿未启用").waitFor();
-  await page.getByText("DeepSeek Flash").first().waitFor();
+  await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor();
   await shot(page, "desktop-writing-draft-unenabled-first");
 
   await page.getByRole("button", { name: "检测连接", exact: true }).click();
@@ -221,28 +221,25 @@ async function walkDesktop(page) {
     .getByRole("dialog", { name: "确认启用" })
     .getByRole("button", { name: "确认启用", exact: true })
     .click();
-  await page.getByText("本次变更仅对本功能的新任务生效。").waitFor();
-  await page.getByText("DeepSeek Flash").first().waitFor();
+  await page.getByRole("region", { name: "配置变更" }).getByText("已生效", { exact: true }).waitFor();
+  await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor();
   await shot(page, "desktop-writing-enabled-deepseek");
 
   // Draft a Bailian change; keep DeepSeek as the live config. Fail, then pass, then enable.
   await page.getByRole("button", { name: "修改配置" }).click();
   await page.getByRole("dialog", { name: "修改配置" }).waitFor();
-  await page.getByRole("button", { name: "百炼千问", exact: true }).click();
+  await chooseWritingModel(page, "bailian", "qwen-plus");
   await page.getByLabel("API Key").fill(KEYS.bailianFail);
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
   await page.getByText("草稿未启用").waitFor();
-  await page.getByText("DeepSeek Flash").first().waitFor(); // live still DeepSeek
+  await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor(); // live still DeepSeek
   await shot(page, "desktop-writing-draft-unenabled");
 
   await page.getByRole("button", { name: "检测连接", exact: true }).click();
   await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await page.getByRole("button", { name: "确认测试", exact: true }).click();
-  await page.getByRole("dialog", { name: "测试没有通过" }).waitFor();
-  await shot(page, "desktop-writing-test-failed-dialog");
-  await page.getByRole("button", { name: "知道了", exact: true }).click();
   await page.getByText("检测未通过").waitFor();
-  await page.getByText("DeepSeek Flash").first().waitFor();
+  await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor();
   await shot(page, "desktop-writing-test-failed");
 
   await page.getByRole("button", { name: "修改配置" }).click();
@@ -256,7 +253,7 @@ async function walkDesktop(page) {
   await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await page.getByRole("button", { name: "确认测试", exact: true }).click();
   await page.getByText("检测通过").waitFor();
-  await page.getByText("DeepSeek Flash").first().waitFor(); // live still DeepSeek
+  await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor(); // live still DeepSeek
   await shot(page, "desktop-writing-test-passed");
   assert.equal(
     await page.getByText("演示", { exact: true }).count(),
@@ -272,7 +269,7 @@ async function walkDesktop(page) {
     .getByRole("dialog", { name: "确认启用" })
     .getByRole("button", { name: "确认启用", exact: true })
     .click();
-  await page.getByText("本次变更仅对本功能的新任务生效。").waitFor();
+  await page.getByRole("region", { name: "配置变更" }).getByText("已生效", { exact: true }).waitFor();
   await shot(page, "desktop-writing-enabled");
 }
 
@@ -333,7 +330,7 @@ try {
   await gotoReady(mobilePage, "/admin/features?feature=writing", "模型与密钥");
   await mobilePage.getByRole("button", { name: "修改配置" }).click();
   await mobilePage.getByRole("dialog", { name: "修改配置" }).waitFor();
-  await mobilePage.getByRole("button", { name: "DeepSeek", exact: true }).click();
+  await chooseWritingModel(mobilePage, "deepseek", "deepseek-flash");
   const replace = mobilePage.getByRole("button", { name: "更换" });
   if (await replace.count()) await replace.click();
   await mobilePage.getByLabel("API Key").fill(KEYS.deepseekFail);
@@ -345,8 +342,6 @@ try {
   await change.getByRole("button", { name: "检测连接", exact: true }).click();
   await mobilePage.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await mobilePage.getByRole("button", { name: "确认测试", exact: true }).click();
-  await mobilePage.getByRole("dialog", { name: "测试没有通过" }).waitFor();
-  await mobilePage.getByRole("button", { name: "知道了", exact: true }).click();
   await change.getByText("检测未通过").waitFor();
   const retest = change.getByRole("button", { name: "检测连接", exact: true });
   await revealPrimary(mobilePage, retest, "mobile failed 检测连接");
@@ -364,7 +359,7 @@ try {
   await change.getByRole("button", { name: "检测连接", exact: true }).click();
   await mobilePage.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await mobilePage.getByRole("button", { name: "确认测试", exact: true }).click();
-  await waitTestOutcome(mobilePage);
+  await change.getByText("检测通过", { exact: true }).waitFor();
   const enableButton = change.getByRole("button", { name: "确认启用", exact: true });
   await revealPrimary(mobilePage, enableButton, "mobile passed 确认启用");
   await shotScrolled(mobilePage, "mobile-writing-test-passed-fixed");

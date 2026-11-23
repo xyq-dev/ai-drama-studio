@@ -462,7 +462,8 @@ describe("feature configuration", () => {
     const liveBefore = { vendor: "openai", model: "gpt-6-astra", vendorLabel: "OpenAI", modelLabel: "GPT-6 Astra" };
     const legacy: LegacyFeatureSource = {
       live: async () => ({ writing: liveBefore, storyboard: null, voice: null }),
-      secret: async (feature, vendor) => feature === "writing" && vendor === "deepseek" ? KEYS.legacyWriting : null,
+      secret: async (feature, vendor) => feature === "writing" && vendor === "openai" ? KEYS.writing : null,
+      vendorSecret: async (feature, vendor) => feature === "writing" && vendor === "deepseek" ? KEYS.legacyWriting : null,
     };
     const { service } = await open({ legacy });
     let view = await service.view();
@@ -476,6 +477,7 @@ describe("feature configuration", () => {
       keyConfigured: true, model: "deepseek-v4-pro", draftStatus: "saved", vendorKeyConfigured: true,
     });
     expect(card(view, "writing").live).toMatchObject(liveBefore);
+    expect(await service.readBinding("writing")).toMatchObject({ vendor: "openai", secret: KEYS.writing });
     const tested = await service.testDraft("writing", { expectedRevision: view.revision, vendor: "deepseek", confirmCost: true });
     expect(tested.probe?.ok).toBe(true);
     expect(card(tested.view, "writing").live).toMatchObject(liveBefore);
@@ -489,4 +491,44 @@ describe("feature configuration", () => {
       expectedRevision: enabled.revision, vendor: "openai", model: "gpt-6-astra", secretAction: "bind_vendor",
     })).rejects.toMatchObject({ code: "FEATURE_VENDOR_KEY_MISSING" });
   });
+
+  it("filters choices by the same per-vendor allowlist used for probes while preserving a retired draft", async () => {
+    let openai = ["gpt-6-astra"];
+    const { service, seen } = await open({ policy: {
+      writingAllowlist: async (vendor) => vendor === "openai" ? openai : [],
+    } });
+    const initial = await service.view();
+    expect(slot(initial, "writing", "openai").models.map(({ id }) => id)).toEqual(openai);
+    await service.saveDraft("writing", {
+      expectedRevision: initial.revision, vendor: "openai", model: "gpt-6-astra", secretAction: "replace", apiKey: KEYS.writing,
+    });
+    openai = ["gpt-6-luna"];
+    const fresh = await service.view();
+    expect(slot(fresh, "writing", "openai").model).toBe("gpt-6-astra");
+    expect(slot(fresh, "writing", "openai").models.map(({ id }) => id)).toEqual(openai);
+    await expect(service.testDraft("writing", {
+      expectedRevision: fresh.revision, vendor: "openai", confirmCost: true,
+    })).rejects.toMatchObject({ code: "FEATURE_MODEL_NOT_APPROVED" });
+    expect(seen).toHaveLength(0);
+  });
+
+  it("persists an unknown receipt after a single probe and issues no enable token", async () => {
+    const probe = vi.fn(async () => ({ ok: false, outcome: "unknown" as const, message: "请求超时，请核对供应商调用记录。" }));
+    const { service } = await open({ probe });
+    const saved = await service.saveDraft("writing", {
+      expectedRevision: 0, vendor: "deepseek", model: "deepseek-v4-pro", secretAction: "replace", apiKey: KEYS.writingDeepseek,
+    });
+    const tested = await service.testDraft("writing", { expectedRevision: saved.revision, vendor: "deepseek", confirmCost: true });
+    expect(tested.probe).toMatchObject({ ok: false, outcome: "unknown" });
+    expect(slot(await service.view(), "writing", "deepseek")).toMatchObject({ draftStatus: "unknown", testToken: null });
+    expect(card(tested.view, "writing").live).toBeNull();
+    const unchanged = await service.saveDraft("writing", {
+      expectedRevision: tested.view.revision, vendor: "deepseek", model: "deepseek-v4-pro", secretAction: "keep",
+    });
+    expect(slot(unchanged, "writing", "deepseek")).toMatchObject({
+      draftStatus: "unknown", failureMessage: "请求超时，请核对供应商调用记录。", testToken: null,
+    });
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
 });

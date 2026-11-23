@@ -1,5 +1,6 @@
 import type {
-  AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, ComfyUiAdminCheck, TitleWritingProviderKey,
+  AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, AdminVendorCheck, AdminVendorCheckResult,
+  AdminVendorKey, AdminVendorSave, AdminVendorView, ComfyUiAdminCheck, TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { withSession } from "./site-session";
 
@@ -40,6 +41,12 @@ export function createAdminModelsClient(fetchImpl?: FetchLike) {
     return payload as T;
   }
   return {
+    vendors: () => request<AdminVendorView[]>("/models/vendors", "GET"),
+    vendor: (key: AdminVendorKey) => request<AdminVendorView>(`/models/vendors/${key}`, "GET"),
+    saveVendor: (key: AdminVendorKey, update: AdminVendorSave) =>
+      request<AdminVendorView>(`/models/vendors/${key}`, "PUT", update),
+    checkVendor: (key: AdminVendorKey, snapshot: AdminVendorCheck) =>
+      request<AdminVendorCheckResult>(`/models/vendors/${key}/check`, "POST", snapshot),
     models: () => request<AdminModelsView>("/models", "GET"),
     checkComfyUi: () => request<ComfyUiAdminCheck>("/models/comfyui/check", "POST", {}),
     provider: (key: TitleWritingProviderKey, update: AdminProviderUpdate) =>

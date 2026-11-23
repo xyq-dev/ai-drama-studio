@@ -24,7 +24,6 @@ import { FeatureUsageStore } from "../admin/feature-usage-store";
 import { featureWritingProbe } from "../admin/feature-writing-probe";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService } from "../admin/admin-models.service";
-import { legacySecretFor } from "../admin/feature-config.legacy";
 import { TitleWritingService } from "./title-writing.service";
 
 const WS = "11111111-1111-4111-8111-111111111111";
@@ -103,30 +102,33 @@ describe("DeepSeek writing connect (isolated, no real outbound)", () => {
       TITLE_WRITING_DEFAULT_PROVIDER: "anthropic",
     });
     const bootstrap = adminBootstrap(env)!;
-    const models = await AdminModelsService.open(env, bootstrap, async () => true);
+    const catalogueFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(new URL(String(input)).hostname).toBe("api.deepseek.com");
+      expect(new URL(String(input)).pathname).toMatch(/^\/(?:v1\/)?models$/);
+      expect(init?.method ?? "GET").toBe("GET");
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${VENDOR_KEY}`);
+      return Response.json({ data: [{ id: "deepseek-v4-pro" }] });
+    });
+    const models = await AdminModelsService.open(env, bootstrap, async () => true, undefined, null, catalogueFetch);
     const before = await models.view();
-    expect(before.saved.defaultProvider).toBe("anthropic");
-    const saved = await models.updateProvider("deepseek", {
-      expectedRevision: before.savedRevision,
-      models: [],
-      secretAction: "replace",
-      apiKey: VENDOR_KEY,
+    const initial = await models.vendor("deepseek");
+    const selected = { model: "deepseek-v4-pro", channel: "deepseek-direct" };
+    const saved = await models.saveVendor("deepseek", {
+      ...selected, expectedRevision: initial.revision, secretAction: "replace", apiKey: VENDOR_KEY,
     });
-    expect(saved.saved.defaultProvider).toBe("anthropic");
-    expect(saved.saved.providers.find((item) => item.providerKey === "deepseek")).toMatchObject({
-      keyConfigured: true,
-      models: ["deepseek-flash", "deepseek-v4-pro"],
-    });
+    expect(saved).toMatchObject({ ...selected, keyConfigured: true });
     expect(JSON.stringify(saved)).not.toContain(VENDOR_KEY);
-    expect(await models.pendingRestart()).toBe(true);
-    expect(models.runtimeSettings().providers.deepseek.apiKey).toBeNull();
-    const snapshot = await models.savedSettings();
-    expect(snapshot.defaultProvider).toBe("anthropic");
-    expect(snapshot.providers.deepseek.apiKey).toBe(VENDOR_KEY);
+    expect(catalogueFetch).not.toHaveBeenCalled();
+    expect(await models.checkVendor("deepseek", { ...selected, expectedRevision: saved.revision }))
+      .toMatchObject({ ...selected, status: "listed" });
+    expect(catalogueFetch).toHaveBeenCalledTimes(1);
 
-    // A process restart still must not flip the default writing provider.
-    const applied = await AdminModelsService.open(env, bootstrap, async () => true);
-    expect((await applied.view()).active.defaultProvider).toBe("anthropic");
+    // Restarting reads the supplier preference without activating it for an existing business.
+    const restarted = await AdminModelsService.open(env, bootstrap, async () => true);
+    expect(await restarted.vendor("deepseek")).toEqual(saved);
+    expect((await restarted.view()).active).toEqual(before.active);
+    expect((await restarted.view()).saved).toEqual(before.saved);
+    expect(await restarted.pendingRestart()).toBe(false);
 
     const outbound: Array<{ url: string; model: string; authorization: string | null; responseFormat: unknown; body: string }> = [];
     const fetchImpl: typeof fetch = async (input, init) => {
@@ -156,14 +158,9 @@ describe("DeepSeek writing connect (isolated, no real outbound)", () => {
       homeWorkspaceId: WS,
       legacy: {
         live: async () => ({ writing: null, storyboard: null, voice: null }),
-        secret: async (feature, vendor) => legacySecretFor(feature, vendor, {
-          defaultProvider: snapshot.defaultProvider,
-          providers: {
-            deepseek: { apiKey: snapshot.providers.deepseek.apiKey, models: [...snapshot.providers.deepseek.models] },
-            openai: { apiKey: snapshot.providers.openai.apiKey, models: [...snapshot.providers.openai.models] },
-            anthropic: { apiKey: snapshot.providers.anthropic.apiKey, models: [...snapshot.providers.anthropic.models] },
-          },
-        }, null),
+        secret: async () => null,
+        vendorSecret: async (feature, vendor) => feature === "writing" && vendor === "deepseek"
+          ? restarted.vendorSecret(vendor) : null,
       },
     });
 
@@ -176,8 +173,9 @@ describe("DeepSeek writing connect (isolated, no real outbound)", () => {
       secretAction: "bind_vendor",
     });
     expect(view.features.find((item) => item.feature === "writing")?.live).toBeNull();
+    expect(outbound).toHaveLength(0);
     const tested = await featureConfig.testDraft("writing", { expectedRevision: view.revision, vendor: "deepseek", confirmCost: true });
-    expect(tested.probe).toMatchObject({ ok: true, message: "已用所选模型完成一次最小 JSON 编剧探测，可以启用这一份草稿。" });
+    expect(tested.probe.ok).toBe(true);
     expect(tested.view.features.find((item) => item.feature === "writing")?.live).toBeNull();
     expect(outbound).toHaveLength(1);
     expect(outbound[0]).toMatchObject({ model: "deepseek-v4-pro", authorization: `Bearer ${VENDOR_KEY}` });
@@ -319,7 +317,7 @@ describe("DeepSeek writing connect (isolated, no real outbound)", () => {
       timeoutMs: 30,
     });
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("不会自动重试");
+    expect(result.outcome).toBe("unknown");
     expect(calls).toBe(1);
   });
 });

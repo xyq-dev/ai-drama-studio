@@ -1,549 +1,597 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import {
-  type AdminModelsView,
-  type AdminProviderView,
-  type FeatureConfigView,
-  type TitleWritingProviderKey,
-} from "@ai-drama/contracts";
-import { MODEL_CANDIDATES } from "../lib/admin-model-catalog";
+import { useEffect, useRef, useState } from "react";
+import { WRITING_MODEL_CHANNELS, type AdminVendorView } from "@ai-drama/contracts";
 import { AdminFrame, AdminGateView, useOperatorGate } from "./admin-access";
 import {
   AI_MODELS_CATALOG_HREF,
   AI_MODEL_VENDORS,
   SAVED_SECRET_MASK,
   aiModelVendor,
-  isAiModelVendorId,
   type AiModelVendorDef,
   type AiModelVendorId,
 } from "../lib/ai-model-vendors";
 import { createAdminModelsClient, AdminApiError } from "../lib/admin-models-client";
-import { createFeatureConfigClient, featureErrorCopy } from "../lib/feature-config-client";
+import { useModalKeyboard } from "../lib/modal-keyboard";
+import { ModelSelect } from "./model-select";
 import styles from "./ai-model-vendors.module.css";
 
-const VAULT_VENDORS: readonly TitleWritingProviderKey[] = ["openai", "anthropic", "deepseek"];
+type Client = ReturnType<typeof createAdminModelsClient>;
 
-function isVaultVendor(id: AiModelVendorId): id is TitleWritingProviderKey {
-  return (VAULT_VENDORS as readonly string[]).includes(id);
+function channelLabel(view: AdminVendorView) {
+  const official = WRITING_MODEL_CHANNELS[view.vendor];
+  return view.channel === official.id ? official.label : view.channel;
 }
 
-function modelLabel(vendor: AiModelVendorId, id: string): string {
-  if (isVaultVendor(vendor)) {
-    const found = MODEL_CANDIDATES[vendor].find((item) => item.id === id);
-    if (found) return found.name;
-  }
-  if (vendor === "bailian" && id === "qwen-plus") return "通义千问 Plus";
-  return id;
+function emptyCatalogHint(view: AdminVendorView) {
+  return view.vendor === "openai" || view.vendor === "anthropic"
+    ? "请先为此渠道配置可用模型白名单。"
+    : "当前渠道暂无可选模型";
 }
 
-function providerOf(
-  models: AdminModelsView | null,
-  id: TitleWritingProviderKey,
-): AdminProviderView | null {
-  return models?.saved.providers.find((item) => item.providerKey === id) ?? null;
-}
-
-function defaultModel(
-  models: AdminModelsView | null,
-  features: FeatureConfigView | null,
-  id: AiModelVendorId,
-): { id: string; label: string } | null {
-  if (id === "bailian") {
-    return featureBound(features, "bailian") ? { id: "qwen-plus", label: "通义千问 Plus" } : null;
-  }
-  if (!isVaultVendor(id)) return null;
-  const saved = providerOf(models, id)?.models[0];
-  return saved ? { id: saved, label: modelLabel(id, saved) } : null;
-}
-
-/**
- * The vault replaces a provider's whole model list on save. Keep every configured model and only move the chosen
- * default to the front, so saving a credential never deletes other models.
- */
-export function preservedModels(existing: readonly string[], chosen: string): string[] {
-  if (!chosen) return [...existing];
-  return [chosen, ...existing.filter((item) => item !== chosen)].slice(0, 10);
-}
-
-/** Neutral copy when the saved vendor config is not yet what the running API uses. Never implies 连接正常. */
-export function activationCopy(view: AdminModelsView | null): string | null {
-  if (!view) return null;
-  if (view.activationDeferred) {
-    return "配置已保存，应用已推迟：有创作任务尚未结束，运行中的服务继续使用原有凭证。";
-  }
-  if (view.pendingRestart) {
-    return "配置已保存，尚未生效：运行中的服务仍使用原有凭证，需由部署流程受控重启 API 后才会使用新凭证。";
-  }
-  return null;
-}
-
-function secretCopy(configured: boolean, label: string): string {
-  return configured ? `${label} 项目密钥  ${SAVED_SECRET_MASK}` : "未绑定";
-}
-
-function featureBound(features: FeatureConfigView | null, vendor: AiModelVendorId): boolean {
-  return Boolean(
-    features?.features.some((card) =>
-      card.slots.some((slot) => slot.vendor === vendor && slot.keyConfigured),
-    ),
+function SavedModel({ view }: { view: AdminVendorView }) {
+  if (!view.model) return <>未设置</>;
+  const selected = view.models.find(({ id }) => id === view.model);
+  return selected ? (
+    <>{selected.label}</>
+  ) : (
+    <>
+      {view.model}
+      <small className={styles.detail}>当前列表不可用</small>
+    </>
   );
 }
 
 export function AiModelCatalog() {
-  const modelsClient = useMemo(() => createAdminModelsClient(), []);
-  const featureClient = useMemo(() => createFeatureConfigClient(), []);
+  return <VendorScreen />;
+}
+
+export function AiModelVendorSettings({ vendorId }: { vendorId: string }) {
+  const vendor = aiModelVendor(vendorId);
+  if (vendor) return <VendorScreen key={vendor.id} vendor={vendor} />;
+  return (
+    <AdminFrame>
+      <p className={styles.fail}>没有这家供应商。</p>
+      <BackLink />
+    </AdminFrame>
+  );
+}
+
+function BackLink() {
+  return (
+    <a className={styles.back} href={AI_MODELS_CATALOG_HREF}>
+      全部供应商
+    </a>
+  );
+}
+
+function VendorScreen({ vendor }: { vendor?: AiModelVendorDef }) {
+  const [client] = useState(() => createAdminModelsClient());
   const { gate, reload } = useOperatorGate();
-  const [models, setModels] = useState<AdminModelsView | null>(null);
-  const [features, setFeatures] = useState<FeatureConfigView | null>(null);
+  const [views, setViews] = useState<AdminVendorView[] | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (gate !== "ready") return;
-    let live = true;
+    let current = true;
     setFailed(false);
-    Promise.all([modelsClient.models(), featureClient.view()])
-      .then(([nextModels, nextFeatures]) => {
-        if (!live) return;
-        setModels(nextModels);
-        setFeatures(nextFeatures);
+    const read = vendor ? client.vendor(vendor.id).then((view) => [view]) : client.vendors();
+    read
+      .then((received) => {
+        if (current) setViews(received);
       })
       .catch(() => {
-        if (live) setFailed(true);
+        if (current) setFailed(true);
       });
     return () => {
-      live = false;
+      current = false;
     };
-  }, [modelsClient, featureClient, gate]);
+  }, [client, gate, vendor]);
 
-  if (gate !== "ready") {
-    return (
-      <AdminFrame>
-        <CatalogIntro />
-        <AdminGateView gate={gate} onRetry={gate === "failed" ? reload : undefined} />
-      </AdminFrame>
-    );
-  }
-  if (failed) {
-    return (
-      <AdminFrame>
-        <CatalogIntro />
-        <AdminGateView
-          gate="failed"
-          onRetry={() => {
-            setFailed(false);
-            reload();
-          }}
-        />
-      </AdminFrame>
-    );
-  }
-  if (!models || !features) {
-    return (
-      <AdminFrame>
-        <CatalogIntro />
-        <AdminGateView gate="loading" />
-      </AdminFrame>
-    );
-  }
-
+  const state = gate !== "ready" ? gate : failed ? "failed" : !views ? "loading" : "ready";
   return (
     <AdminFrame>
-      <CatalogIntro />
-      <section className={styles.table} aria-label="模型供应商">
-        <div className={styles.columns}>
-          <span>供应商</span>
-          <span>默认模型</span>
-          <span>API 凭证</span>
-          <span />
-        </div>
-        <ul>
-          {AI_MODEL_VENDORS.map((vendor) => (
-            <CatalogRow key={vendor.id} vendor={vendor} models={models} features={features} />
-          ))}
-        </ul>
-      </section>
+      {vendor && <BackLink />}
+      <header className={styles.intro}>
+        {vendor ? (
+          <div className={styles.vendorTitle}>
+            <span className={styles.mark} data-vendor={vendor.id}>
+              {vendor.mark}
+            </span>
+            <div>
+              <h1>{vendor.label}</h1>
+              <p>供应商设置</p>
+            </div>
+          </div>
+        ) : (
+          <h1>模型供应商</h1>
+        )}
+      </header>
+      {state !== "ready" ? (
+        <AdminGateView gate={state} onRetry={state === "failed" ? reload : undefined} />
+      ) : vendor && views?.[0] ? (
+        <VendorSettings
+          client={client}
+          view={views[0]}
+          onSave={(next) => {
+            if (next.vendor === vendor.id) setViews([next]);
+            else window.location.assign(aiModelVendor(next.vendor)!.href);
+          }}
+        />
+      ) : (
+        <section className={styles.table} aria-label="模型供应商">
+          <div className={styles.columns}>
+            <span>供应商</span>
+            <span>默认模型</span>
+            <span>API 凭证</span>
+            <span />
+          </div>
+          <ul>
+            {AI_MODEL_VENDORS.map((item) => {
+              const view = views?.find(({ vendor }) => vendor === item.id);
+              if (!view) return null;
+              return (
+                <li key={item.id} className={styles.row}>
+                  <div className={styles.vendorCell}>
+                    <span className={styles.mark} data-vendor={item.id}>
+                      {item.mark}
+                    </span>
+                    <div>
+                      <strong>{item.label}</strong>
+                      <small>{view.models.length} 个可选模型</small>
+                    </div>
+                  </div>
+                  <div>
+                    <SavedModel view={view} />
+                  </div>
+                  <div>
+                    {view.keyConfigured
+                      ? `${item.shortLabel} 项目密钥  ${SAVED_SECRET_MASK}`
+                      : "未绑定"}
+                  </div>
+                  <div className={styles.rowAction}>
+                    <a href={item.href}>进入设置</a>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
     </AdminFrame>
   );
 }
 
-function CatalogIntro() {
-  return (
-    <header className={styles.intro}>
-      <div className={styles.introHead}>
-        <h1>模型供应商</h1>
-      </div>
-      <p>按厂商管理模型、密钥和 SDK 接入。</p>
-    </header>
-  );
+function apiError(error: unknown) {
+  if (error instanceof AdminApiError) {
+    if (error.status === 409) return "配置已更新，请刷新后再操作。";
+    if (error.status === 401 || error.status === 403) return "请使用有配置权限的账号重新登录。";
+  }
+  return "操作未完成，请检查连接后再试。";
 }
 
-function CatalogRow({
-  vendor,
-  models,
-  features,
+function VendorSettings({
+  client,
+  view,
+  onSave,
 }: {
-  vendor: AiModelVendorDef;
-  models: AdminModelsView;
-  features: FeatureConfigView;
+  client: Client;
+  view: AdminVendorView;
+  onSave: (next: AdminVendorView) => void;
 }) {
-  const vault = isVaultVendor(vendor.id) ? providerOf(models, vendor.id) : null;
-  const configured =
-    vendor.id === "bailian" ? featureBound(features, "bailian") : Boolean(vault?.keyConfigured);
-  const model = defaultModel(models, features, vendor.id);
-  return (
-    <li className={styles.row}>
-      <div className={styles.vendorCell}>
-        <span className={styles.mark} data-vendor={vendor.id}>
-          {vendor.mark}
-        </span>
-        <div>
-          <strong>{vendor.label}</strong>
-          <small>{vendor.capability}</small>
-        </div>
-      </div>
-      <div>{configured || vendor.id === "bailian" ? (model?.label ?? "未设置") : "未设置"}</div>
-      <div>
-        {vendor.id === "bailian"
-          ? configured
-            ? `功能配置已绑定  ${SAVED_SECRET_MASK}`
-            : "未绑定"
-          : secretCopy(configured, vendor.shortLabel)}
-      </div>
-      <div className={styles.rowAction}>
-        <a href={vendor.href}>进入设置</a>
-      </div>
-    </li>
-  );
-}
-
-export function AiModelVendorSettings({ vendorId }: { vendorId: string }) {
-  const vendor = isAiModelVendorId(vendorId) ? aiModelVendor(vendorId) : null;
-  const modelsClient = useMemo(() => createAdminModelsClient(), []);
-  const featureClient = useMemo(() => createFeatureConfigClient(), []);
-  const { gate, reload } = useOperatorGate();
-  const [models, setModels] = useState<AdminModelsView | null>(null);
-  const [features, setFeatures] = useState<FeatureConfigView | null>(null);
-  const [failed, setFailed] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [draftKey, setDraftKey] = useState("");
-  const [replacing, setReplacing] = useState(false);
-  const [draftModel, setDraftModel] = useState("");
-  const [workspace, setWorkspace] = useState("");
+  const [receipt, setReceipt] = useState("");
+  const [pendingRevision, setPendingRevision] = useState<number | null>(null);
+  const checking = view.revision === pendingRevision;
+  const editButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+  const epoch = useRef(0);
+  const pending = useRef(new Set<number>());
+  const selected = view.models.some((item) => item.id === view.model);
+  const canCheck = view.keyConfigured && selected;
+  const status =
+    receipt ||
+    (!view.keyConfigured
+      ? "请先保存密钥"
+      : view.model && !selected
+        ? "请更换模型后再检测"
+        : "密钥已保存 · 连接待测试");
 
   useEffect(() => {
-    if (gate !== "ready" || !vendor) return;
-    let live = true;
-    setFailed(false);
-    Promise.all([modelsClient.models(), featureClient.view()])
-      .then(([nextModels, nextFeatures]) => {
-        if (!live) return;
-        setModels(nextModels);
-        setFeatures(nextFeatures);
-      })
-      .catch(() => {
-        if (live) setFailed(true);
-      });
-    return () => {
-      live = false;
-    };
-  }, [modelsClient, featureClient, gate, vendor]);
-
-  if (!vendor) {
-    return (
-      <AdminFrame>
-        <p className={styles.fail}>没有这家供应商。</p>
-        <a className={styles.back} href={AI_MODELS_CATALOG_HREF}>
-          全部供应商
-        </a>
-      </AdminFrame>
-    );
-  }
-  if (gate !== "ready") {
-    return (
-      <AdminFrame>
-        <SettingsIntro vendor={vendor} />
-        <AdminGateView gate={gate} onRetry={gate === "failed" ? reload : undefined} />
-      </AdminFrame>
-    );
-  }
-  if (failed) {
-    return (
-      <AdminFrame>
-        <SettingsIntro vendor={vendor} />
-        <AdminGateView
-          gate="failed"
-          onRetry={() => {
-            setFailed(false);
-            reload();
-          }}
-        />
-      </AdminFrame>
-    );
-  }
-  if (!models || !features) {
-    return (
-      <AdminFrame>
-        <SettingsIntro vendor={vendor} />
-        <AdminGateView gate="loading" />
-      </AdminFrame>
-    );
-  }
-
-  const vault = isVaultVendor(vendor.id) ? providerOf(models, vendor.id) : null;
-  const configured =
-    vendor.id === "bailian" ? featureBound(features, "bailian") : Boolean(vault?.keyConfigured);
-  const currentModel = defaultModel(models, features, vendor.id);
-  const candidates = isVaultVendor(vendor.id)
-    ? MODEL_CANDIDATES[vendor.id]
-    : vendor.id === "bailian"
-      ? [{ id: "qwen-plus", name: "通义千问 Plus", note: "编剧一期锁定的中国站兼容模型" }]
-      : [];
-  // Vendor vault has no connection-test receipt. A saved key stays "待测试" after refresh
-  // and this page never shows 连接正常.
-  const statusCopy = configured ? "密钥已保存 · 连接待测试" : "未绑定";
-
-  async function save() {
-    if (!vendor || !isVaultVendor(vendor.id) || !models || busy) return;
-    const modelsToSave = preservedModels(vault?.models ?? [], draftModel);
-    const secretAction =
-      replacing && draftKey.trim().length >= 8 ? ("replace" as const) : ("keep" as const);
-    if (replacing && secretAction !== "replace") {
-      setError("请填写这一家服务商的 API Key。");
-      return;
+    if (!editing && restoreFocus.current) {
+      editButton.current?.focus();
+      restoreFocus.current = false;
     }
-    setBusy(true);
-    setError("");
+  }, [editing]);
+
+  function invalidate() {
+    epoch.current++;
+    setReceipt("");
+  }
+  async function check() {
+    if (!canCheck || !view.model || pending.current.has(view.revision)) return;
+    const generation = ++epoch.current;
+    pending.current.add(view.revision);
+    setPendingRevision(view.revision);
+    setReceipt("");
     try {
-      const next = await modelsClient.provider(vendor.id, {
-        expectedRevision: models.savedRevision,
-        models: modelsToSave,
-        secretAction,
-        ...(secretAction === "replace" ? { apiKey: draftKey.trim() } : {}),
-        ...(vendor.id === "anthropic" && secretAction === "replace"
-          ? workspace.trim()
-            ? { workspaceAction: "replace" as const, workspaceId: workspace.trim() }
-            : { workspaceAction: "clear" as const }
-          : vendor.id === "anthropic"
-            ? { workspaceAction: "keep" as const }
-            : {}),
+      const result = await client.checkVendor(view.vendor, {
+        expectedRevision: view.revision,
+        channel: view.channel,
+        model: view.model,
       });
-      setModels(next);
-      setDraftKey("");
-      setReplacing(false);
-      setEditing(false);
-      setNotice(secretAction === "replace" ? "密钥已保存 · 连接待测试" : "配置已保存。");
-    } catch (caught) {
-      setError(caught instanceof AdminApiError ? "这份配置无法保存。" : featureErrorCopy(caught));
+      if (generation !== epoch.current) return;
+      if (
+        result.revision !== view.revision ||
+        result.vendor !== view.vendor ||
+        result.channel !== view.channel ||
+        result.model !== view.model
+      ) {
+        setReceipt("结果未知");
+        return;
+      }
+      setReceipt(result.message || "结果未知");
+    } catch (error) {
+      if (generation === epoch.current) {
+        setReceipt(
+          error instanceof AdminApiError &&
+            error.status > 0 &&
+            error.status < 500 &&
+            error.status !== 408
+            ? apiError(error)
+            : "结果未知",
+        );
+      }
     } finally {
-      setBusy(false);
+      pending.current.delete(view.revision);
+      setPendingRevision((revision) => (revision === view.revision ? null : revision));
     }
   }
-
-  function openEdit() {
-    setDraftModel(currentModel?.id ?? candidates[0]?.id ?? "");
-    setDraftKey("");
-    setReplacing(!configured);
-    setWorkspace(vault?.workspaceId ?? "");
-    setError("");
-    setEditing(true);
+  function close() {
+    restoreFocus.current = true;
+    setEditing(false);
   }
 
   return (
-    <AdminFrame>
-      <a className={styles.back} href={AI_MODELS_CATALOG_HREF}>
-        全部供应商
-      </a>
-      <SettingsIntro vendor={vendor} />
+    <>
       <section className={styles.current} aria-label="当前配置">
         <div className={styles.currentHead}>
           <h2>当前配置</h2>
-          <button
-            type="button"
-            className={styles.primary}
-            onClick={openEdit}
-            disabled={vendor.id === "bailian"}
-          >
-            编辑设置
-          </button>
+          <div className={styles.buttons}>
+            <button
+              type="button"
+              className={styles.secondary}
+              disabled={!canCheck || checking}
+              aria-describedby="vendor-check-status"
+              onClick={() => void check()}
+            >
+              {checking ? "正在检测…" : "检测连接"}
+            </button>
+            <button
+              ref={editButton}
+              type="button"
+              className={styles.primary}
+              onClick={() => setEditing(true)}
+            >
+              编辑设置
+            </button>
+          </div>
         </div>
         <dl className={styles.facts}>
           <div>
             <dt>默认模型</dt>
-            <dd>{currentModel?.label ?? "未设置"}</dd>
-          </div>
-          <div>
-            <dt>API 凭证</dt>
             <dd>
-              {vendor.id === "bailian"
-                ? configured
-                  ? `功能配置已绑定  ${SAVED_SECRET_MASK}`
-                  : "未绑定"
-                : secretCopy(configured, vendor.shortLabel)}
+              {!view.model && view.keyConfigured && view.models.length ? (
+                "请先选择并保存模型"
+              ) : (
+                <SavedModel view={view} />
+              )}
             </dd>
           </div>
           <div>
+            <dt>API 凭证</dt>
+            <dd>{view.keyConfigured ? SAVED_SECRET_MASK : "未绑定"}</dd>
+          </div>
+          <div>
             <dt>配置状态</dt>
-            <dd>{vendor.id === "bailian" ? (configured ? "按功能绑定" : "未绑定") : statusCopy}</dd>
+            <dd id="vendor-check-status" role="status">
+              {checking ? "正在读取模型列表…" : status}
+            </dd>
           </div>
         </dl>
-        {vendor.id === "bailian" ? (
-          <p className={styles.hint}>
-            阿里云百炼的密钥目前按功能保存在功能配置中，没有供应商级凭证仓。请到
-            <a href="/admin/features?feature=writing"> 功能配置 → 编剧 </a>
-            保存或测试写作凭证。本页不会把未接入的能力画成已接通。
-          </p>
-        ) : (
-          <p className={styles.hint}>
-            密钥只显示掩码。保存成功后，在实际检测通过前显示「密钥已保存 ·
-            连接待测试」，不会显示「连接正常」。
-          </p>
-        )}
-        {notice ? (
-          <p className={styles.banner} role="status">
-            {notice}
-          </p>
-        ) : null}
-        {isVaultVendor(vendor.id) && configured && activationCopy(models) ? (
-          <p className={styles.banner} role="note" data-state="pending-activation">
-            {activationCopy(models)}
-          </p>
-        ) : null}
       </section>
-      {vendor.sdk ? (
-        <section className={styles.sdk} aria-label="SDK">
-          <div>
-            <h2>Vercel AI SDK</h2>
-            <p>{vendor.sdk}</p>
-          </div>
-          <button
-            type="button"
-            className={styles.secondary}
-            disabled
-            title="隔离环境不会对供应商发出真实预览调用"
-          >
-            预览调用
-          </button>
-        </section>
-      ) : (
-        <section className={styles.sdk} aria-label="SDK">
-          <div>
-            <h2>SDK 接入</h2>
-            <p>这家供应商目前没有供应商级 SDK 预览，写作走功能配置中的已接入适配器。</p>
-          </div>
-        </section>
-      )}
+      <section className={styles.channel} aria-label="接入渠道">
+        <h2>接入渠道</h2>
+        <span>{channelLabel(view)}</span>
+      </section>
       <section className={styles.models} aria-label="可选模型">
         <h2>可选模型</h2>
-        <ul>
-          {candidates.map((item) => (
-            <li key={item.id}>
-              <span>{item.name}</span>
-              <code>{item.id}</code>
-            </li>
-          ))}
-        </ul>
+        {view.models.length ? (
+          <ul>
+            {view.models.map((item) => (
+              <li key={item.id}>
+                <span>{item.label}</span>
+                <code>{item.id}</code>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className={styles.hint}>{emptyCatalogHint(view)}</p>
+        )}
       </section>
-      {editing && isVaultVendor(vendor.id) ? (
-        <div className={styles.modal}>
-          <div className={styles.drawer} role="dialog" aria-modal="true" aria-label="编辑设置">
-            <div className={styles.drawerHead}>
-              <h2>编辑设置</h2>
-              <button
-                type="button"
-                className={styles.quiet}
-                onClick={() => setEditing(false)}
-                disabled={busy}
-              >
-                取消
-              </button>
-            </div>
-            <label className={styles.field}>
-              <span>默认模型</span>
-              <select
-                aria-label="默认模型"
-                value={draftModel}
-                disabled={busy}
-                onChange={(event) => setDraftModel(event.target.value)}
-              >
-                {candidates.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+      {editing && (
+        <VendorEditor
+          client={client}
+          initial={view}
+          onChange={invalidate}
+          onClose={close}
+          onSave={(next) => {
+            invalidate();
+            close();
+            onSave(next);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function VendorEditor({
+  client,
+  initial,
+  onClose,
+  onSave,
+  onChange,
+}: {
+  client: Client;
+  initial: AdminVendorView;
+  onClose: () => void;
+  onSave: (view: AdminVendorView) => void;
+  onChange: () => void;
+}) {
+  const [vendor, setVendor] = useState(initial.vendor);
+  const [view, setView] = useState<AdminVendorView | null>(initial);
+  const [model, setModel] = useState(initial.model ?? "");
+  const [key, setKey] = useState("");
+  const [replacing, setReplacing] = useState(false);
+  const [workspace, setWorkspace] = useState(initial.workspaceId ?? "");
+  const [error, setError] = useState<{
+    field: "key" | "workspace" | "model" | "form";
+    text: string;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const pendingSave = useRef(false);
+  const requestNumber = useRef(0);
+  const modal = useRef<HTMLDivElement>(null);
+
+  function fieldError(field: "key" | "workspace" | "model" | "form") {
+    return (
+      error?.field === field && (
+        <p className={styles.fail} role="alert">
+          {error.text}
+        </p>
+      )
+    );
+  }
+  function clearField(field: "key" | "workspace" | "model") {
+    setError((previous) => (previous?.field === field ? null : previous));
+  }
+
+  const dirty = Boolean(
+    key || (model && model !== view?.model) || workspace !== (view?.workspaceId ?? ""),
+  );
+  function cancel() {
+    if (!pendingSave.current && (!dirty || window.confirm("放弃未保存的修改？"))) onClose();
+  }
+  useModalKeyboard(true, modal, cancel);
+  useEffect(() => {
+    modal.current?.querySelector("select")?.focus();
+    return () => {
+      requestNumber.current++;
+    };
+  }, []);
+
+  async function switchVendor(id: AiModelVendorId) {
+    const request = ++requestNumber.current;
+    setVendor(id);
+    setView(null);
+    setModel("");
+    setKey("");
+    setWorkspace("");
+    setError(null);
+    setReplacing(false);
+    onChange();
+    try {
+      const next = await client.vendor(id);
+      if (request !== requestNumber.current) return;
+      setView(next);
+      setWorkspace(next.workspaceId ?? "");
+    } catch (caught) {
+      if (request === requestNumber.current) setError({ field: "form", text: apiError(caught) });
+    }
+  }
+
+  async function save() {
+    if (!view || pendingSave.current) return;
+    const secret = key.trim();
+    const replace = replacing || secret.length > 0;
+    if (replace && (secret.length < 8 || secret.length > 256 || /\s/u.test(secret))) {
+      setError({ field: "key", text: "请输入 8 至 256 个不含空格的密钥字符。" });
+      return;
+    }
+    if (!model && (view.model || !replace)) {
+      setError({ field: "model", text: "请选择模型" });
+      return;
+    }
+    const request = requestNumber.current;
+    pendingSave.current = true;
+    setSaving(true);
+    setError(null);
+    try {
+      const next = await client.saveVendor(view.vendor, {
+        expectedRevision: view.revision,
+        channel: view.channel,
+        model: model || null,
+        secretAction: replace ? "replace" : "keep",
+        ...(replace ? { apiKey: secret } : {}),
+        ...(vendor === "anthropic" && replace
+          ? workspace.trim()
+            ? { workspaceAction: "replace", workspaceId: workspace.trim() }
+            : { workspaceAction: "clear" }
+          : {}),
+      });
+      if (request === requestNumber.current) onSave(next);
+    } catch (caught) {
+      if (request !== requestNumber.current) return;
+      if (
+        caught instanceof AdminApiError &&
+        [
+          "ADMIN_CONFIG_KEY_KIND",
+          "ADMIN_CONFIG_KEY_FORMAT",
+          "ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT",
+        ].includes(caught.code)
+      ) {
+        setError({ field: "key", text: "密钥格式不符，请填写此供应商签发的 API Key。" });
+      } else if (
+        caught instanceof AdminApiError &&
+        caught.code === "ADMIN_CONFIG_WORKSPACE_FORMAT"
+      ) {
+        setError({ field: "workspace", text: "请核对 Workspace ID 的格式。" });
+      } else {
+        setError({ field: "form", text: apiError(caught) });
+      }
+    } finally {
+      pendingSave.current = false;
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className={styles.modal}>
+      <div
+        ref={modal}
+        className={styles.drawer}
+        role="dialog"
+        aria-modal="true"
+        aria-label="编辑设置"
+      >
+        <div className={styles.drawerHead}>
+          <h2>编辑设置</h2>
+          <button type="button" className={styles.quiet} onClick={cancel} disabled={saving}>
+            取消
+          </button>
+        </div>
+        <label className={styles.field}>
+          <span>供应商</span>
+          <select
+            value={vendor}
+            disabled={saving}
+            onChange={(event) => void switchVendor(event.target.value as AiModelVendorId)}
+          >
+            {AI_MODEL_VENDORS.map(({ id, label }) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {view && <small className={styles.detail}>{channelLabel(view)}</small>}
+        <div className={styles.field}>
+          <ModelSelect
+            key={vendor}
+            label="模型"
+            value={model}
+            options={view?.models ?? []}
+            disabled={saving || !view?.models.length}
+            onChange={(value) => {
+              setModel(value);
+              clearField("model");
+              onChange();
+            }}
+          />
+          {fieldError("model")}
+          {view && !view.models.length && (
+            <small className={styles.detail}>{emptyCatalogHint(view)}</small>
+          )}
+        </div>
+        {view && (
+          <>
             <div className={styles.field}>
               <span>API 凭证</span>
-              {configured && !replacing ? (
+              {view.keyConfigured && !replacing ? (
                 <div className={styles.keyRow}>
                   <span aria-label="已保存密钥">{SAVED_SECRET_MASK}</span>
-                  <button type="button" onClick={() => setReplacing(true)}>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => {
+                      setReplacing(true);
+                      setWorkspace("");
+                      onChange();
+                    }}
+                  >
                     更换
                   </button>
                 </div>
               ) : (
-                <input
-                  aria-label="API Key"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={draftKey}
-                  disabled={busy}
-                  onChange={(event) => setDraftKey(event.target.value)}
-                />
+                <>
+                  <input
+                    aria-label="API Key"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={key}
+                    disabled={saving}
+                    onChange={(event) => {
+                      setKey(event.target.value);
+                      clearField("key");
+                      onChange();
+                    }}
+                  />
+                  {replacing && <small className={styles.detail}>保存后将替换现有密钥。</small>}
+                  {fieldError("key")}
+                </>
               )}
             </div>
-            {vendor.id === "anthropic" && (replacing || !configured) ? (
+            {vendor === "anthropic" && (replacing || !view.keyConfigured) && (
               <label className={styles.field}>
                 <span>Workspace ID（可选）</span>
                 <input
-                  aria-label="Workspace ID"
                   value={workspace}
-                  disabled={busy}
-                  onChange={(event) => setWorkspace(event.target.value)}
+                  disabled={saving}
+                  onChange={(event) => {
+                    setWorkspace(event.target.value);
+                    clearField("workspace");
+                    onChange();
+                  }}
                 />
+                {fieldError("workspace")}
               </label>
-            ) : null}
-            {error ? (
-              <p className={styles.fail} role="alert">
-                {error}
-              </p>
-            ) : null}
-            <div className={styles.actions}>
-              <button
-                type="button"
-                className={styles.primary}
-                disabled={busy}
-                onClick={() => void save()}
-              >
-                {busy ? "正在保存…" : "保存凭证"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </AdminFrame>
-  );
-}
-
-function SettingsIntro({ vendor }: { vendor: AiModelVendorDef }) {
-  return (
-    <header className={styles.intro}>
-      <div className={styles.vendorTitle}>
-        <span className={styles.mark} data-vendor={vendor.id}>
-          {vendor.mark}
-        </span>
-        <div>
-          <div className={styles.introHead}>
-            <h1>{vendor.label}</h1>
-          </div>
-          <p>供应商设置</p>
+            )}
+          </>
+        )}
+        {fieldError("form")}
+        <div className={styles.actions}>
+          {!view && error ? (
+            <button
+              type="button"
+              className={styles.secondary}
+              onClick={() => void switchVendor(vendor)}
+            >
+              重新读取
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={styles.primary}
+              disabled={saving || !view}
+              onClick={() => void save()}
+            >
+              {saving ? "正在保存…" : "保存设置"}
+            </button>
+          )}
         </div>
       </div>
-    </header>
+    </div>
   );
 }

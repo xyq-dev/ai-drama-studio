@@ -11,11 +11,6 @@
   font-size: 14px;
   line-height: 22px;
 }
-.introHead {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
 .vendorTitle {
   display: flex;
   align-items: center;
@@ -23,7 +18,7 @@
 }
 .table,
 .current,
-.sdk,
+.channel,
 .models {
   margin-top: 20px;
   border: 1px solid var(--admin-line, #dce2ea);
@@ -115,12 +110,12 @@
   margin-bottom: 8px;
 }
 .current,
-.sdk,
+.channel,
 .models {
   padding: 20px 24px 24px;
 }
 .currentHead,
-.sdk,
+.channel,
 .drawerHead {
   display: flex;
   align-items: center;
@@ -128,7 +123,7 @@
   gap: 12px;
 }
 .current h2,
-.sdk h2,
+.channel h2,
 .models h2,
 .drawer h2 {
   margin: 0;
@@ -196,18 +191,11 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
-.banner,
 .fail {
   margin: 16px 0 0;
   padding: 12px 14px;
   border-radius: 8px;
   font-size: 14px;
-}
-.banner {
-  background: #fff4d6;
-  color: #87530a;
-}
-.fail {
   background: #fff0ee;
   color: #bb3439;
 }
@@ -269,5 +257,37 @@
   }
   .rowAction {
     text-align: left;
+  }
+}
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.detail {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--admin-muted, #53637b);
+  overflow-wrap: anywhere;
+}
+.drawer {
+  box-sizing: border-box;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+.models li > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .currentHead {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .models li {
+    flex-direction: column;
+    gap: 4px;
   }
 }

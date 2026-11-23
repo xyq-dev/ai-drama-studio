@@ -242,18 +242,20 @@ export class StudioRuntime implements OnModuleDestroy {
             },
             secret: async (feature, vendor) => {
               const snapshot = await legacySnapshots();
-              const saved = adminModels ? await adminModels.savedSettings() : null;
-              const models = saved
-                ? { defaultProvider: saved.defaultProvider, providers: saved.providers }
-                : snapshot.models;
-              return legacySecretFor(feature, vendor, models, snapshot.media);
+              return legacySecretFor(feature, vendor, snapshot.models, snapshot.media);
+            },
+            vendorSecret: async (feature, vendor) => {
+              if (feature === "writing" && adminModels && (vendor === "openai" || vendor === "deepseek" || vendor === "bailian" || vendor === "anthropic")) {
+                return adminModels.vendorSecret(vendor);
+              }
+              const snapshot = await legacySnapshots();
+              return legacySecretFor(feature, vendor, snapshot.models, snapshot.media);
             },
           },
           policy: {
-            writingAllowlist: async () => {
+            writingAllowlist: async (vendor) => {
               const settings = adminModels?.runtimeSettings();
-              if (!settings) return null;
-              return [...settings.providers.openai.models, ...settings.providers.deepseek.models, ...settings.providers.anthropic.models];
+              return settings && vendor === "openai" ? settings.providers.openai.models : null;
             },
           },
         });

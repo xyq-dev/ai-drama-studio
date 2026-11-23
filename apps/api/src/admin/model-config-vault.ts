@@ -5,7 +5,8 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
   TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_STORED_PROVIDER_KEYS, TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS,
-  adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema,
+  adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema, adminVendorKeySchema, adminVendorSaveSchema, WRITING_MODEL_CHANNELS,
+  type AdminVendorKey, type AdminVendorSave,
   ANTHROPIC_WORKSPACE_ID_SHAPE, workspaceUpdateOf,
   type AdminAuditView, type AdminLimitsUpdate, type AdminProviderUpdate, type TitleWritingProviderKey,
   type TitleWritingV1LeftOutProviderKey,
@@ -53,7 +54,17 @@ const settingsSchema = z.object({
   maxActiveRuns: z.number().int().min(1).max(10),
   providers: z.object({ openai: providerSchema, anthropic: providerSchema, deepseek: providerSchema.optional() }).strict(),
 }).strict();
+const vendorRecordSchema = z.object({
+  revision: revisionSchema,
+  channel: adminVendorSaveSchema.shape.channel,
+  model: adminVendorSaveSchema.shape.model,
+  apiKey: SECRET_SCHEMA,
+  workspaceId: providerSchema.shape.workspaceId,
+}).strict();
+export type VendorRecord = z.infer<typeof vendorRecordSchema>;
 const documentSchema = z.object({
+  // Supplier drafts are separate from the saved/active runtime pair, including across service restarts.
+  vendors: z.partialRecord(adminVendorKeySchema, vendorRecordSchema).optional(),
   active: settingsSchema,
   saved: settingsSchema,
   audit: z.array(z.object({
@@ -111,10 +122,23 @@ export interface RetiredProviderNote {
 }
 /** Server-only document. Never serialize this object into an HTTP response or log. */
 export interface ManagedModelDocument {
+  vendors?: Partial<Record<AdminVendorKey, VendorRecord>>;
   active: ManagedModelSettings;
   saved: ManagedModelSettings;
   audit: AdminAuditView[];
   retired?: RetiredProviderNote;
+}
+
+/** Preserve the exact historical first model and saved key until an operator edits this supplier. */
+export function vendorRecord(doc: ManagedModelDocument, vendor: AdminVendorKey): VendorRecord {
+  const stored = doc.vendors?.[vendor];
+  if (stored) return stored;
+  const previous = vendor === "bailian" ? undefined : doc.saved.providers[vendor];
+  return {
+    revision: doc.saved.revision, channel: WRITING_MODEL_CHANNELS[vendor].id,
+    model: previous?.models[0] ?? null, apiKey: previous?.apiKey ?? null,
+    ...(previous?.workspaceId ? { workspaceId: previous.workspaceId } : {}),
+  };
 }
 
 function storageError(): AdminConfigError {
@@ -587,6 +611,27 @@ export class ModelConfigVault {
       doc.saved.revision += 1;
       doc.audit = [...doc.audit, { action: "provider_updated" as const, providerKey: key, revision: doc.saved.revision, at: new Date().toISOString() }].slice(-50);
       await this.persist(doc);
+    });
+  }
+
+  async saveVendor(vendor: AdminVendorKey, input: AdminVendorSave): Promise<VendorRecord> {
+    return this.locked(async (doc) => {
+      const previous = vendorRecord(doc, vendor);
+      if (previous.revision !== input.expectedRevision) {
+        throw new AdminConfigError(409, "ADMIN_CONFIG_CONFLICT", "供应商配置已更新，请刷新。");
+      }
+      const next: VendorRecord = {
+        ...previous, revision: previous.revision + 1, channel: input.channel, model: input.model,
+      };
+      if (input.secretAction === "replace") next.apiKey = input.apiKey!;
+      if (input.secretAction === "clear") next.apiKey = null;
+      const workspace = workspaceUpdateOf(input);
+      if (workspace === null) delete next.workspaceId;
+      else if (workspace !== "keep") next.workspaceId = workspace;
+      doc.vendors ??= {};
+      doc.vendors[vendor] = next;
+      await this.persist(doc);
+      return next;
     });
   }
 

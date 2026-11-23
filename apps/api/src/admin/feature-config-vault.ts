@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { FEATURE_KEYS, FEATURE_VENDOR_KEYS, type FeatureKey, type FeatureVendor } from "@ai-drama/contracts";
+import { FEATURE_KEYS, FEATURE_VENDOR_KEYS, type FeatureDraftStatus, type FeatureKey, type FeatureVendor } from "@ai-drama/contracts";
 
 /**
  * Encrypted per-feature drafts. Sibling of models.enc, same MODEL_ADMIN_MASTER_KEY.
@@ -17,7 +17,7 @@ const revisionSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const slotSchema = z.object({
   model: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).nullable(),
   credentialRef: z.string().regex(/^fc_[A-Za-z0-9_-]{8,80}$/).nullable(),
-  draftStatus: z.enum(["blank", "saved", "testing", "passed", "failed"]),
+  draftStatus: z.enum(["blank", "saved", "testing", "passed", "failed", "unknown"]),
   testToken: z.string().regex(/^[A-Za-z0-9_-]{16,80}$/).nullable(),
   testedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   failureMessage: z.string().max(400).nullable(),
@@ -51,7 +51,7 @@ const envelopeSchema = z.object({
 export interface FeatureSlotRecord {
   model: string | null;
   credentialRef: string | null;
-  draftStatus: "blank" | "saved" | "testing" | "passed" | "failed";
+  draftStatus: FeatureDraftStatus;
   testToken: string | null;
   testedFingerprint: string | null;
   failureMessage: string | null;

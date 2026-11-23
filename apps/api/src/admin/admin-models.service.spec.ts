@@ -276,3 +276,62 @@ describe.skipIf(process.platform === "win32")("managed models runtime (real encr
     expect((await service.view()).titleWriting).toMatchObject({ enabled: false, productionBlocked: true });
   });
 });
+
+describe("supplier model selections and catalog checks", () => {
+  it("preserves retired IDs, filters the active allowlist, and persists changes without activating them on restart", async () => {
+    const { env, bootstrap } = await fixture({ TITLE_WRITING_OPENAI_MODELS: "retired-model,gpt-6-astra", TITLE_WRITING_DEFAULT_PROVIDER: "openai" });
+    const network = vi.fn<typeof fetch>();
+    const open = () => AdminModelsService.open(env, bootstrap, async () => true, undefined, null, network);
+    const service = await open();
+    expect(await service.vendor("openai")).toMatchObject({ model: "retired-model", models: [{ id: "gpt-6-astra" }] });
+    const runtime = service.runtimeSettings();
+    await expect(service.checkVendor("openai", { expectedRevision: 0, channel: "openai-direct", model: "retired-model" }))
+      .rejects.toMatchObject({ status: 400 });
+    const save = { expectedRevision: 0, channel: "openai-direct", secretAction: "keep" as const, model: "gpt-6-astra" };
+    for (const patch of [{ channel: "bailian-cn" }, { model: "gpt-6-luna" }, { model: "qwen-plus" }]) {
+      await expect(service.saveVendor("openai", { ...save, ...patch })).rejects.toMatchObject({ status: 400 });
+    }
+    const key = "synthetic-supplier-key";
+    expect(await service.saveVendor("openai", { ...save, secretAction: "replace", apiKey: key }))
+      .toMatchObject({ revision: 1, keyConfigured: true });
+    await expect(service.saveVendor("openai", save)).rejects.toMatchObject({ status: 409 });
+    const restarted = await open();
+    expect(restarted.runtimeSettings()).toEqual(runtime);
+    expect((await restarted.view()).pendingRestart).toBe(false);
+    expect(await restarted.vendorSecret("openai")).toBe(key);
+    const reloaded = await restarted.vendors();
+    expect(reloaded.find(({ vendor }) => vendor === "openai")).toMatchObject({ model: "gpt-6-astra", revision: 1 });
+    expect(JSON.stringify(reloaded)).not.toContain(key);
+    expect(network).not.toHaveBeenCalled();
+  });
+
+  it("offers the runtime’s approved Claude default without choosing it for a new supplier", async () => {
+    const { env, bootstrap } = await fixture({ TITLE_WRITING_OPENAI_MODELS: "" });
+    const service = await AdminModelsService.open(env, bootstrap, async () => true, undefined, null, vi.fn());
+    expect(await service.vendor("anthropic")).toMatchObject({ model: null, models: [{ id: "claude-opus-5-5" }] });
+    expect(await service.vendor("openai")).toMatchObject({ model: null, models: [] });
+  });
+
+  it("deduplicates a pending GET and discards its response when a key rotates", async () => {
+    const { env, bootstrap } = await fixture({ TITLE_WRITING_OPENAI_MODELS: "gpt-6-astra" });
+    let finish!: (response: Response) => void;
+    const network = vi.fn<typeof fetch>().mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const service = await AdminModelsService.open(env, bootstrap, async () => true, undefined, null, network);
+    const check = { expectedRevision: 0, channel: "openai-direct", model: "gpt-6-astra" };
+    const pair = Promise.allSettled([service.checkVendor("openai", check), service.checkVendor("openai", check)]);
+    await vi.waitFor(() => expect(network).toHaveBeenCalledTimes(1));
+    expect(network).toHaveBeenCalledWith("https://api.openai.com/v1/models", expect.objectContaining({
+      method: "GET", redirect: "error", headers: { accept: "application/json", authorization: "Bearer sk-legacy-test-secret" },
+    }));
+    await service.saveVendor("openai", { ...check, secretAction: "replace", apiKey: "synthetic-rotated-key" });
+    finish(Response.json({ data: [{ id: check.model }] }));
+    for (const result of await pair) expect(result).toMatchObject({ status: "rejected", reason: { status: 409 } });
+    await expect(service.checkVendor("openai", check)).rejects.toMatchObject({ status: 409 });
+    expect(network).toHaveBeenCalledTimes(1);
+    network.mockResolvedValueOnce(Response.json({ data: [{ id: check.model }] }));
+    expect(await service.checkVendor("openai", { ...check, expectedRevision: 1 })).toEqual({
+      vendor: "openai", revision: 1, channel: "openai-direct", model: "gpt-6-astra", status: "listed", message: "已读取模型列表",
+    });
+    expect(network.mock.calls[1]?.[1]?.headers).toMatchObject({ authorization: "Bearer synthetic-rotated-key" });
+  });
+});

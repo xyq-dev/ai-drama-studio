@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   FEATURE_CAPABILITIES,
@@ -50,7 +50,7 @@ function view(patch: (next: FeatureConfigView) => void = () => undefined): Featu
         connected: capability.connected,
         gap: capability.gap,
         models: capability.models.map((model) => ({ ...model })),
-        model: capability.models[0]?.id ?? null,
+        model: null,
         keyConfigured: false,
         draftStatus: "blank" as const,
         testToken: null,
@@ -83,7 +83,7 @@ afterEach(() => {
 function install(
   session: unknown,
   config?: FeatureConfigView,
-  write?: (url: string, init?: RequestInit) => Response,
+  write?: (url: string, init?: RequestInit) => Response | Promise<Response>,
 ) {
   vi.stubGlobal(
     "fetch",
@@ -155,12 +155,15 @@ it("opens the qwen-plus editor from a first-time writing tab and keeps the featu
   render(<FeatureConfig />);
   expect(await screen.findByRole("button", { name: "修改配置" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "模型与密钥" })).toBeTruthy();
-  expect(screen.getByText("按功能管理模型与凭证。")).toBeTruthy();
   expectFeatureSelected("编剧");
   expect(within(currentCard()).getByText("尚未配置")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "修改配置" }));
   expect(await screen.findByRole("dialog", { name: "修改配置" })).toBeTruthy();
-  expect(screen.getByRole("option", { name: "通义千问 Plus" })).toBeTruthy();
+  const picker = screen.getByRole("combobox", { name: "模型" });
+  expect(picker.textContent).toBe("请选择模型");
+  fireEvent.click(picker);
+  expect(screen.getByRole("option", { name: FEATURE_CAPABILITIES.writing.find(({ vendor }) => vendor === "bailian")!.models[0]!.label })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
   expect(screen.queryByRole("heading", { name: "该服务商尚未接入" })).toBeNull();
   expectFeatureSelected("编剧");
   fireEvent.click(tab("视频"));
@@ -270,8 +273,7 @@ it("keeps a typed key on its own vendor and cancels a test without calling the v
   });
   install(operatorSession(), config);
   render(<FeatureConfig />);
-  expect(await screen.findByText(/当前生效配置仍用于新任务/)).toBeTruthy();
-  expect(screen.getByText("草稿未启用")).toBeTruthy();
+  expect(await screen.findByText("草稿未启用")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "检测连接" }));
   expect(screen.getByRole("dialog", { name: "确认测试费用" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "取消" }));
@@ -281,13 +283,9 @@ it("keeps a typed key on its own vendor and cancels a test without calling the v
   const editor = screen.getByRole("dialog", { name: "修改配置" });
   fireEvent.click(within(editor).getByRole("button", { name: "更换" }));
   fireEvent.change(screen.getByLabelText("API Key"), { target: { value: SECRET } });
-  fireEvent.click(
-    within(screen.getByRole("group", { name: "供应商" })).getByRole("button", { name: "OpenAI" }),
-  );
+  fireEvent.change(within(editor).getByLabelText("供应商"), { target: { value: "openai" } });
   expect((screen.getByLabelText("API Key") as HTMLInputElement).value).toBe("");
-  fireEvent.click(
-    within(screen.getByRole("group", { name: "供应商" })).getByRole("button", { name: "阿里云" }),
-  );
+  fireEvent.change(within(editor).getByLabelText("供应商"), { target: { value: "bailian" } });
   expect((screen.getByLabelText("API Key") as HTMLInputElement).value).toBe(SECRET);
   expect(JSON.stringify(calls)).not.toContain(SECRET);
 });
@@ -317,7 +315,8 @@ it("sends confirmCost only after the operator confirms, and keeps a failed draft
   render(<FeatureConfig />);
   fireEvent.click(await screen.findByRole("button", { name: "检测连接" }));
   fireEvent.click(screen.getByRole("button", { name: "确认测试" }));
-  expect(await screen.findByRole("dialog", { name: "测试没有通过" })).toBeTruthy();
+  expect(await screen.findByText("检测未通过")).toBeTruthy();
+  expect(screen.getByText("测试没有通过，草稿已保留，可以重试。")).toBeTruthy();
   const testCall = calls.find((call) => call.url.includes("/test"));
   expect(testCall?.init?.method).toBe("POST");
   expect(JSON.parse(String(testCall?.init?.body))).toMatchObject({
@@ -392,7 +391,7 @@ it("shows neutral production copy: no 演示 badge, no 模拟 wording, and a neu
   install(operatorSession(), config);
   render(<FeatureConfig />);
   expect(await screen.findByText("检测未通过")).toBeTruthy();
-  expect(screen.getByText(/原因：供应商拒绝了这次检测。/)).toBeTruthy();
+  expect(screen.getByText("供应商拒绝了这次检测。")).toBeTruthy();
   expect(screen.queryByText("演示")).toBeNull();
   expect(document.body.textContent).not.toMatch(/演示|模拟/);
 });
@@ -411,9 +410,7 @@ it("opens 修改配置 on the vendor shown in 配置变更, not the first vendor
   await screen.findByText("检测未通过");
   fireEvent.click(screen.getByRole("button", { name: "修改配置" }));
   const drawer = screen.getByRole("dialog", { name: "修改配置" });
-  expect(
-    within(drawer).getByRole("button", { name: "DeepSeek" }).getAttribute("aria-pressed"),
-  ).toBe("true");
+  expect((within(drawer).getByLabelText("供应商") as HTMLSelectElement).value).toBe("deepseek");
 });
 
 it("restores the saved draft when 取消 closes the editor, so 检测连接 and 确认启用 work again", async () => {
@@ -500,14 +497,72 @@ it("binds a vendor-saved DeepSeek credential and lists both official writing mod
   render(<FeatureConfig />);
   fireEvent.click(await screen.findByRole("button", { name: "修改配置" }));
   const drawer = await screen.findByRole("dialog", { name: "修改配置" });
-  fireEvent.click(within(drawer).getByRole("button", { name: "DeepSeek" }));
-  expect(within(drawer).getByRole("option", { name: "DeepSeek Flash" })).toBeTruthy();
-  expect(within(drawer).getByRole("option", { name: "DeepSeek V4 Pro" })).toBeTruthy();
-  fireEvent.change(within(drawer).getByLabelText("模型"), { target: { value: "deepseek-v4-pro" } });
+  fireEvent.change(within(drawer).getByLabelText("供应商"), { target: { value: "deepseek" } });
+  const picker = within(drawer).getByRole("combobox", { name: "模型" });
+  expect(picker.textContent).toBe("请选择模型");
+  fireEvent.click(picker);
+  expect(within(drawer).getByRole("option", { name: /DeepSeek-V4.1-Flash-1017/ })).toBeTruthy();
+  fireEvent.click(within(drawer).getByRole("option", { name: /DeepSeek-V4-Pro-0813/ }));
   expect(within(drawer).getByLabelText("已保存密钥")).toBeTruthy();
   expect(within(drawer).queryByLabelText("API Key")).toBeNull();
-  expect(within(drawer).getByText("将使用已在「AI 大模型」保存的凭证。保存草稿不会把完整密钥再显示在页面上。")).toBeTruthy();
+  expect(within(drawer).getByText("使用「AI 大模型」已保存的密钥。")).toBeTruthy();
   fireEvent.click(within(drawer).getByRole("button", { name: "保存草稿" }));
   expect(await screen.findByText("草稿未启用")).toBeTruthy();
   expect(JSON.stringify(calls.map((call) => call.init?.body))).not.toContain(SECRET);
+});
+
+
+it("keeps a retired draft ID and requires a new model after every vendor change", async () => {
+  const config = view((next) => {
+    const writing = card(next, "writing");
+    const saved = writing.slots.find((item) => item.vendor === "deepseek")!;
+    Object.assign(saved, { model: "old-model", keyConfigured: true, draftStatus: "passed", testToken: "tt_previous-token" });
+  });
+  install(operatorSession(), config);
+  render(<FeatureConfig />);
+  expect((await screen.findByRole("button", { name: "确认启用" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "修改配置" }));
+  const editor = within(screen.getByRole("dialog", { name: "修改配置" }));
+  const model = () => editor.getByRole("combobox", { name: "模型" });
+  const vendor = editor.getByLabelText("供应商");
+  expect(model().textContent).toBe("old-model");
+  expect(editor.getByText("当前列表不可用")).toBeTruthy();
+  expect((editor.getByRole("button", { name: "保存草稿" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(vendor, { target: { value: "openai" } });
+  expect(model().textContent).toBe("请选择模型");
+  fireEvent.click(model());
+  expect(within(editor.getByRole("listbox")).queryByRole("option", { name: /deepseek/i })).toBeNull();
+  fireEvent.click(editor.getByRole("option", { name: /GPT-6 Astra/i }));
+  fireEvent.change(vendor, { target: { value: "deepseek" } });
+  expect(model().textContent).toBe("请选择模型");
+  expect(calls.filter(({ init }) => init?.method && init.method !== "GET")).toHaveLength(0);
+});
+
+it("keeps a new vendor selection when the previous probe finishes and never enables a timeout", async () => {
+  const config = view((next) => {
+    const writing = card(next, "writing");
+    const saved = writing.slots.find((item) => item.vendor === "deepseek")!;
+    Object.assign(saved, { model: "deepseek-v4-pro", keyConfigured: true, draftStatus: "saved" });
+  });
+  const timedOut = structuredClone(config);
+  timedOut.revision++;
+  Object.assign(card(timedOut, "writing").slots.find(({ vendor }) => vendor === "deepseek")!, {
+    draftStatus: "unknown", failureMessage: "请求超时，请核对供应商调用记录。",
+  });
+  let finish!: (response: Response) => void;
+  install(operatorSession(), config, () => new Promise((resolve) => { finish = resolve; }));
+  render(<FeatureConfig />);
+  fireEvent.click(await screen.findByRole("button", { name: "检测连接" }));
+  fireEvent.click(screen.getByRole("button", { name: "确认测试" }));
+  fireEvent.click(screen.getByRole("button", { name: "修改配置" }));
+  const editor = within(screen.getByRole("dialog", { name: "修改配置" }));
+  fireEvent.change(editor.getByLabelText("供应商"), { target: { value: "openai" } });
+  await act(async () => { finish(json({ view: timedOut, probe: { ok: false, outcome: "unknown", message: "超时" } })); });
+  expect((editor.getByLabelText("供应商") as HTMLSelectElement).value).toBe("openai");
+  expect(editor.getByRole("combobox", { name: "模型" }).textContent).toBe("请选择模型");
+  fireEvent.click(editor.getByRole("button", { name: "取消" }));
+  expect(screen.getByText("结果未知")).toBeTruthy();
+  expect(screen.queryByText("检测未通过")).toBeNull();
+  expect(screen.queryByRole("button", { name: "确认启用" })).toBeNull();
+  expect(calls.filter(({ url }) => url.endsWith("/test"))).toHaveLength(1);
 });

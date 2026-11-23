@@ -38,6 +38,7 @@ const { SiteAuth } = require(join(root, "apps/api/dist/auth/site-auth.js"));
 const { hashPassword } = require(join(root, "apps/api/dist/auth/password-hash.js"));
 const { featureWritingProbe } = require(join(root, "apps/api/dist/admin/feature-writing-probe.js"));
 const { legacyLiveFor, legacySecretFor } = require(join(root, "apps/api/dist/admin/feature-config.legacy.js"));
+const { WRITING_MODEL_CHANNELS } = require("@ai-drama/contracts");
 const { DEEPSEEK_CHAT_COMPLETIONS_URL } = require("@ai-drama/providers");
 
 const password = process.env.ADMIN_MODELS_TEST_PASSWORD;
@@ -85,7 +86,7 @@ function isolatedFeatureProbe() {
     return new Response(
       JSON.stringify({
         id: "chatcmpl-isolated",
-        model: "deepseek-flash",
+        model: JSON.parse(init.body).model,
         choices: [
           {
             index: 0,
@@ -122,6 +123,8 @@ const env = loadApiEnv({
   S3_ACCESS_KEY_ID: "unused",
   S3_SECRET_ACCESS_KEY: "unused",
   APP_WORKSPACE_ID: "11111111-1111-4111-8111-111111111111",
+  TITLE_WRITING_OPENAI_MODELS: WRITING_MODEL_CHANNELS.openai.models.map(({ id }) => id).join(","),
+  TITLE_WRITING_ANTHROPIC_MODELS: WRITING_MODEL_CHANNELS.anthropic.models.map(({ id }) => id).join(","),
   MODEL_ADMIN_ENABLED: "true",
   MODEL_ADMIN_MASTER_KEY: process.env.MODEL_ADMIN_MASTER_KEY,
   MODEL_ADMIN_CONFIG_PATH: join(directory, "models.enc"),
@@ -131,7 +134,26 @@ const env = loadApiEnv({
   SITE_AUTH_PASSWORD_HASH: passwordHash,
 });
 const bootstrap = adminBootstrap(env);
-const backend = await AdminModelsService.open(env, bootstrap, async () => true);
+const modelLists = new Map([
+  ["https://api.deepseek.com/models", WRITING_MODEL_CHANNELS.deepseek.models],
+  ["https://api.openai.com/v1/models", WRITING_MODEL_CHANNELS.openai.models],
+  ["https://api.anthropic.com/v1/models", WRITING_MODEL_CHANNELS.anthropic.models],
+]);
+async function isolatedModelList(input, init) {
+  const url = new URL(input);
+  const endpoint = url.origin + url.pathname;
+  if ((init?.method ?? "GET") !== "GET") throw new Error("Unexpected directory request.");
+  if (endpoint === "https://dashscope.aliyuncs.com/api/v1/models/permissions") {
+    const permissions = WRITING_MODEL_CHANNELS.bailian.models
+      .filter(({ id }) => id === url.searchParams.get("model"))
+      .map(({ id }) => ({ model: id, permissions: { inference: true } }));
+    return Response.json({ success: true, output: { permissions } });
+  }
+  const models = modelLists.get(endpoint);
+  if (!models) throw new Error("Unexpected directory request.");
+  return Response.json({ data: models.map(({ id }) => ({ id })) });
+}
+const backend = await AdminModelsService.open(env, bootstrap, async () => true, undefined, null, isolatedModelList);
 const featureVault = await FeatureConfigVault.open({
   path: featureVaultPath(bootstrap.path),
   masterKey: bootstrap.masterKey,
@@ -151,23 +173,12 @@ const featureConfig = await FeatureConfigService.open({
         voice: legacyLiveFor("voice", models, null),
       };
     },
-    secret: async (feature, vendor) => {
-      const saved = await backend.savedSettings();
-      return legacySecretFor(feature, vendor, {
-        defaultProvider: saved.defaultProvider,
-        providers: saved.providers,
-      }, null);
-    },
+    secret: async (feature, vendor) => legacySecretFor(feature, vendor, backend.runtimeSettings(), null),
+    vendorSecret: async (feature, vendor) =>
+      feature === "writing" && Object.hasOwn(WRITING_MODEL_CHANNELS, vendor) ? backend.vendorSecret(vendor) : null,
   },
   policy: {
-    writingAllowlist: async () => {
-      const saved = await backend.savedSettings();
-      return [
-        ...saved.providers.openai.models,
-        ...saved.providers.deepseek.models,
-        ...saved.providers.anthropic.models,
-      ];
-    },
+    writingAllowlist: async (vendor) => vendor === "openai" ? backend.runtimeSettings().providers.openai.models : null,
   },
 });
 const siteAuth = {
