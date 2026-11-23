@@ -122,6 +122,21 @@ describe("feature config HTTP boundary", () => {
     expect(JSON.stringify(await response.json())).not.toContain(SECRET);
   });
 
+  it("restricts both usage reads to staff with live usage permission", async () => {
+    const auth = await start({ staff: true });
+    const { cookie } = await login("staff");
+    const list = () => request("/admin/usage", { headers: { cookie } });
+    const detail = () => request("/admin/usage/fixture-record", { headers: { cookie } });
+    expect((await list()).status).toBe(403);
+    expect((await detail()).status).toBe(403);
+    expect(store.operatorUsage).not.toHaveBeenCalled();
+    expect(store.operatorUsageDetail).not.toHaveBeenCalled();
+    auth.syncStaff("staff", { status: "active", permissions: ["view_usage"] });
+    expect((await list()).status).toBe(200);
+    expect((await detail()).status).toBe(200);
+    expect(store.operatorUsageDetail).toHaveBeenCalledWith("fixture-record");
+  });
+
   it("requires key maintenance to change or bind credentials and activation permission to roll back", async () => {
     const auth = await start({ staff: true });
     const session = await login("staff");

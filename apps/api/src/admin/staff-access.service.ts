@@ -131,7 +131,7 @@ export class StaffAccessService {
     }
     const superRole = roles.find((role) => role.code === SUPER_ADMIN_ROLE_CODE);
     if (!superRole) return;
-    const existing = await this.deps.repository.findByUsername(this.deps.workspaceId, this.deps.envUsername);
+    let existing = await this.deps.repository.findByUsername(this.deps.workspaceId, this.deps.envUsername);
     if (!existing) {
       const account: StaffAccountRecord = {
         id: newId(),
@@ -147,12 +147,12 @@ export class StaffAccessService {
         lastLoginAt: null,
         authSource: "env",
       };
-      await this.deps.repository.saveStaff(account);
-      this.deps.sessions.sync(account.id, { status: "active", permissions: superRole.permissions });
-    } else {
-      const role = await this.deps.repository.getRole(existing.roleId);
-      this.deps.sessions.sync(existing.id, { status: existing.status, permissions: role?.permissions ?? [] });
+      await this.deps.repository.createEnvStaff(account);
+      existing = await this.deps.repository.findByUsername(this.deps.workspaceId, this.deps.envUsername);
+      if (!existing) return;
     }
+    const role = await this.deps.repository.getRole(existing.roleId);
+    this.deps.sessions.sync(existing.id, { status: existing.status, permissions: role?.permissions ?? [] });
     this.ensured = true;
   }
 
@@ -327,12 +327,10 @@ export class StaffAccessService {
     if (currentRole.code === SUPER_ADMIN_ROLE_CODE || nextRole.code === SUPER_ADMIN_ROLE_CODE) {
       await this.reauthenticate(actor.id, input.currentPassword, input.totpCode);
     }
-    if (input.displayName?.trim()) account.displayName = input.displayName.trim();
-    if (input.roleId && input.roleId !== account.roleId) {
-      account.roleId = nextRole.id;
-      account.permissionVersion += 1;
-    }
-    await this.deps.repository.saveStaff(account);
+    const changed = await this.deps.repository.updateManagement(account.id, account.permissionVersion, {
+      displayName: input.displayName?.trim() || undefined, roleId: nextRole.id,
+    });
+    if (!changed) throw new StaffAccessError(409, "STAFF_CHANGED", "管理员信息已变更，请刷新后重试。");
     this.deps.sessions.sync(account.id, { status: account.status, permissions: nextRole.permissions });
     await this.audit(actor, "修改管理员", account.username, `角色 ${nextRole.name}。`);
     });
@@ -350,9 +348,8 @@ export class StaffAccessService {
     });
     if (!guard.ok) throw new StaffAccessError(409, "LAST_SUPER_ADMIN", guard.message);
     if (role.code === SUPER_ADMIN_ROLE_CODE) await this.reauthenticate(actor.id, reauth?.currentPassword, reauth?.totpCode);
-    account.status = status;
-    account.permissionVersion += 1;
-    await this.deps.repository.saveStaff(account);
+    const changed = await this.deps.repository.updateManagement(account.id, account.permissionVersion, { status });
+    if (!changed) throw new StaffAccessError(409, "STAFF_CHANGED", "管理员信息已变更，请刷新后重试。");
     this.deps.sessions.sync(account.id, { status, permissions: role.permissions });
     if (status === "disabled") {
       const now = this.now().toISOString();
@@ -400,12 +397,13 @@ export class StaffAccessService {
   async changePassword(staffId: string, currentPassword: string, nextPassword: string): Promise<void> {
     if (nextPassword.length < 8 || nextPassword.length > 1024) throw new StaffAccessError(400, "PASSWORD_INVALID", "新密码需为 8–1024 位。");
     const account = await this.requireStaff(staffId);
-    if (!account.passwordHash || !await this.deps.verifyPassword(currentPassword, account.passwordHash)) {
-      throw new StaffAccessError(403, "REAUTH_FAILED", "当前密码不正确，没有修改密码。");
+    if (account.status !== "active" || !account.passwordHash || !await this.deps.verifyPassword(currentPassword, account.passwordHash)) {
+      throw new StaffAccessError(403, "REAUTH_FAILED", "当前密码不正确或账号已停用。");
     }
-    account.passwordHash = await this.deps.hashPassword(nextPassword, process.env.NODE_ENV === "test");
-    account.permissionVersion += 1;
-    await this.deps.repository.saveStaff(account);
+    const nextHash = await this.deps.hashPassword(nextPassword, process.env.NODE_ENV === "test");
+    if (!await this.deps.repository.changePassword(account.id, account.passwordHash, nextHash)) {
+      throw new StaffAccessError(409, "STAFF_CHANGED", "账号或密码已变更，请重新登录。");
+    }
     await this.audit({ id: staffId, username: account.username, permissions: [] }, "修改密码", account.username, "已修改自己的密码。", [currentPassword, nextPassword]);
   }
 
@@ -518,11 +516,8 @@ export class StaffAccessService {
   }
 
   private async syncRole(role: StaffRoleRecord): Promise<void> {
-    const staff = await this.deps.repository.listStaff(this.deps.workspaceId);
+    const staff = await this.deps.repository.refreshRoleMembers(this.deps.workspaceId, role.id);
     for (const account of staff) {
-      if (account.roleId !== role.id) continue;
-      account.permissionVersion += 1;
-      await this.deps.repository.saveStaff(account);
       this.deps.sessions.sync(account.id, { status: account.status, permissions: role.permissions });
     }
   }

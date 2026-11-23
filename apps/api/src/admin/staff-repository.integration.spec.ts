@@ -48,7 +48,7 @@ it("activates exactly once, keeps a disabled invite inactive, and never restores
   expect(active).toMatchObject({ status: "active", permissionVersion: 2, passwordHash: attempts.find(Boolean)?.passwordHash });
   await staff.saveInvite({ ...invite, revokedAt: now });
   expect(await staff.findInviteByHash(invite.tokenHash)).toMatchObject({ usedAt: now });
-  await staff.saveStaff({ ...active, status: "disabled", permissionVersion: 3 });
+  expect(await staff.updateManagement(account.id, active.permissionVersion, { status: "disabled" })).toBe(true);
   await staff.recordLogin(account.id, now);
   expect(await staff.getStaff(account.id)).toMatchObject({ status: "disabled", permissionVersion: 3, lastLoginAt: now });
   const other = { ...invite, id: randomUUID(), tokenHash: randomBytes(32).toString("hex") };
@@ -56,9 +56,37 @@ it("activates exactly once, keeps a disabled invite inactive, and never restores
   expect(await staff.activateInvite(other.id, account.id, "late", now)).toBeNull();
   expect(await staff.findInviteByHash(other.tokenHash)).toMatchObject({ usedAt: null });
   const code = { id: randomUUID(), staffId: account.id, codeHash: randomBytes(32).toString("hex"), usedAt: null };
-  await staff.saveStaff({ ...active, status: "active" });
+  expect(await staff.updateManagement(account.id, 3, { status: "active" })).toBe(true);
   expect(await staff.setAuthenticator(account.id, null, "fixture-secret", [code])).toBe(true);
   expect(await staff.setAuthenticator(account.id, null, "stale", [])).toBe(false);
   const used = await Promise.all([staff.consumeRecoveryCode(code.id, now), staff.consumeRecoveryCode(code.id, now)]);
   expect(used.sort()).toEqual([false, true]);
+});
+
+it("keeps password, authenticator and management writes independent while rejecting stale changes", async () => {
+  const account = { ...pending("dana"), status: "active" as const, authSource: "env" as const, passwordHash: "initial" };
+  await staff.createEnvStaff(account);
+  const otherRole = randomUUID();
+  await staff.saveRole({ id: otherRole, workspaceId, code: "changed", name: "调整岗位", builtIn: false, permissions: [] });
+  const changed = await Promise.all([
+    staff.changePassword(account.id, "initial", "password-a"),
+    staff.changePassword(account.id, "initial", "password-b"),
+    staff.updateManagement(account.id, account.permissionVersion, { displayName: "改名", roleId: otherRole }),
+    staff.setAuthenticator(account.id, null, "new-factor", []),
+  ]);
+  expect(changed.slice(0, 2).filter(Boolean)).toHaveLength(1);
+  expect(changed.slice(2)).toEqual([true, true]);
+  const hash = changed[0] ? "password-a" : "password-b";
+  expect(await staff.getStaff(account.id)).toMatchObject({
+    passwordHash: hash, displayName: "改名", roleId: otherRole, permissionVersion: 2, totpEnabled: true, totpSecret: "new-factor",
+  });
+  expect(await staff.updateManagement(account.id, account.permissionVersion, { roleId })).toBe(false);
+  expect(await staff.refreshRoleMembers(workspaceId, roleId)).not.toContainEqual({ id: account.id, status: "active" });
+  expect(await staff.updateManagement(account.id, 2, { status: "disabled" })).toBe(true);
+  expect(await staff.changePassword(account.id, hash, "queued-before-disable")).toBe(false);
+  expect(await staff.refreshRoleMembers(workspaceId, otherRole)).toContainEqual({ id: account.id, status: "disabled" });
+  await staff.createEnvStaff(account);
+  expect(await staff.getStaff(account.id)).toMatchObject({
+    passwordHash: hash, roleId: otherRole, status: "disabled", permissionVersion: 4, totpSecret: "new-factor",
+  });
 });
