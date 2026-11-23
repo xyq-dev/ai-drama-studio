@@ -24,6 +24,7 @@ const KEYS = {
   openai: "sk-test-isolated-openai-key-not-real",
   deepseek: "fake-deepseek-isolated-key-not-real",
   bailianFail: "FAILPROBE-bailian-isolated-key-not-real",
+  bailianPlan: "sk-sp-test-only-not-a-real-key",
   bailianPass: "fake-bailian-isolated-key-not-real",
   deepseekFail: "FAILPROBE-deepseek-isolated-key-not-real",
 };
@@ -134,14 +135,13 @@ async function shot(page, name) {
 }
 
 async function signIn(page) {
-  await page.goto(`${origin}/admin/ai-models`, { waitUntil: "networkidle" });
-  if (new URL(page.url()).pathname === "/login") {
-    await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
-    await page.locator('input[name="username"]').fill(username);
-    await page.getByLabel("密码", { exact: true }).fill(password);
-    await page.getByRole("button", { name: "登录", exact: true }).click();
-  }
-  await page.getByRole("heading", { name: "模型供应商", exact: true }).waitFor({ timeout: 60_000 });
+  await page.goto(`${origin}/login`);
+  await page.locator('input[name="username"]').fill(username);
+  await page.getByLabel("密码", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.waitForURL((url) => url.pathname !== "/login");
+  await page.goto(`${origin}/admin/ai-models`);
+  await page.getByRole("heading", { name: "模型供应商", exact: true }).waitFor();
 }
 
 async function gotoReady(page, path, heading) {
@@ -280,6 +280,22 @@ async function walkDesktop(page) {
     .click();
   await page.getByRole("region", { name: "当前生效配置" }).getByText("已生效", { exact: true }).waitFor();
   await shot(page, "desktop-writing-enabled");
+
+  await gotoReady(page, "/admin/ai-models/bailian", "阿里云百炼");
+  await page.getByRole("button", { name: "编辑设置" }).click();
+  const settings = page.getByRole("dialog", { name: "编辑设置" });
+  await chooseModel(settings, "bailian", "qwen-plus");
+  const key = settings.getByLabel("API Key");
+  await key.fill(KEYS.bailianPlan);
+  await settings.getByText("这是套餐密钥，请使用百炼按量付费 API Key", { exact: true }).waitFor();
+  assert.equal(await settings.getByRole("button", { name: "保存设置" }).isDisabled(), true);
+  await key.fill(KEYS.bailianPass);
+  await settings.getByLabel("业务空间 ID").fill("llm-isolated");
+  await settings.getByRole("button", { name: "保存设置" }).click();
+  await settings.waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByText("已读取模型列表", { exact: true }).waitFor();
+  await shot(page, "desktop-bailian-authorized-model");
 }
 
 async function walkMobile(page) {
@@ -315,21 +331,25 @@ const browser = await chromium.launch({
   args: ["--no-sandbox"],
 });
 
+async function isolatedContext(viewport) {
+  const target = new URL(origin);
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(target.hostname), "Expected a loopback preview");
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1, serviceWorkers: "block" });
+  await context.route("**/*", (route) =>
+    new URL(route.request().url()).origin === target.origin ? route.continue() : route.abort(),
+  );
+  return context;
+}
+
 try {
-  const desktop = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    deviceScaleFactor: 1,
-  });
+  const desktop = await isolatedContext({ width: 1440, height: 900 });
   const desktopPage = await desktop.newPage();
   desktopPage.setDefaultTimeout(60_000);
   await signIn(desktopPage);
   await walkDesktop(desktopPage);
   await desktop.close();
 
-  const mobile = await browser.newContext({
-    viewport: { width: 390, height: 844 },
-    deviceScaleFactor: 1,
-  });
+  const mobile = await isolatedContext({ width: 390, height: 844 });
   const mobilePage = await mobile.newPage();
   mobilePage.setDefaultTimeout(60_000);
   await signIn(mobilePage);

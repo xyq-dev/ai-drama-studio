@@ -318,6 +318,22 @@ describe("starting a run", () => {
     expect(JSON.stringify(store.runs)).not.toContain("synthetic-bailian-key-zzzz");
   });
 
+  it("refuses a historical subscription key even when another writing provider is ready", async () => {
+    const apiKey = "sk-sp-previous-subscription";
+    const { service, store, seen } = setup({
+      defaultProvider: "openai",
+      featureWritingLock: async () => ({
+        providerKey: "bailian", model: "qwen-plus", configVersion: "v1", apiKey, providerAdapter: "bailian.ai-sdk.v1",
+      }),
+    });
+    store.bailianReady = true;
+    const result = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("subscription"));
+    expect(result.status).toBe(503);
+    expect(store.runs).toHaveLength(0);
+    expect(seen).toHaveLength(0);
+    expect(JSON.stringify(result.body)).not.toContain(apiKey);
+  });
+
   it("uses the enabled writing configuration and ignores a client provider", async () => {
     const lock = async () => ({ providerKey: "openai" as const, model: "d-1", configVersion: "ver_locked" });
     const { service, settle, seen } = setup({ featureWritingLock: lock });

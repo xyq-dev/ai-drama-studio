@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  BAILIAN_PLAN_KEY_MESSAGE,
+  isBailianPlanKey,
+  isBailianWorkspaceId,
   WRITING_MODEL_CHANNELS,
   type AdminVendorCheckResult,
   type AdminVendorView,
@@ -170,6 +173,9 @@ function VendorScreen({ vendor }: { vendor?: AiModelVendorDef }) {
 
 function apiError(error: unknown) {
   if (error instanceof AdminApiError) {
+    if (error.code === "ADMIN_CONFIG_BAILIAN_PLAN_KEY") return BAILIAN_PLAN_KEY_MESSAGE;
+    if (error.code === "ADMIN_CONFIG_BAILIAN_WORKSPACE_FORMAT")
+      return "请核对北京地域的业务空间 ID。";
     if (error.status === 409) return "配置已更新，请刷新后再操作。";
     if (error.status === 401 || error.status === 403) return "请使用有配置权限的账号重新登录。";
   }
@@ -194,14 +200,17 @@ function VendorSettings({
   const epoch = useRef(0);
   const pending = useRef(new Set<number>());
   const selected = view.models.some((item) => item.id === view.model);
-  const canCheck = view.keyConfigured && selected;
+  const needsWorkspace = view.vendor === "bailian" && !isBailianWorkspaceId(view.workspaceId ?? "");
+  const canCheck = view.keyConfigured && selected && !needsWorkspace;
   const status =
     receipt?.message ??
     (!view.keyConfigured
       ? "请先保存密钥"
       : view.model && !selected
         ? "请更换模型后再检测"
-        : "密钥已保存 · 连接待测试");
+        : needsWorkspace && selected
+          ? "请先在编辑设置中保存业务空间 ID"
+          : "密钥已保存 · 连接待测试");
 
   useEffect(() => {
     if (!editing && restoreFocus.current) {
@@ -362,6 +371,8 @@ function VendorEditor({
   const [key, setKey] = useState("");
   const [replacing, setReplacing] = useState(false);
   const [workspace, setWorkspace] = useState(initial.workspaceId ?? "");
+  const bailian = vendor === "bailian";
+  const planKey = bailian && isBailianPlanKey(key);
   const [error, setError] = useState<{
     field: "key" | "workspace" | "model" | "form";
     text: string;
@@ -374,7 +385,7 @@ function VendorEditor({
   function fieldError(field: "key" | "workspace" | "model" | "form") {
     return (
       error?.field === field && (
-        <p className={styles.fail} role="alert">
+        <p className={styles.fail} role="alert" id={`vendor-${field}-error`}>
           {error.text}
         </p>
       )
@@ -419,7 +430,7 @@ function VendorEditor({
   }
 
   async function save() {
-    if (!view || pendingSave.current) return;
+    if (!view || pendingSave.current || planKey) return;
     const secret = key.trim();
     const replace = replacing || secret.length > 0;
     if (replace && (secret.length < 8 || secret.length > 256 || /\s/u.test(secret))) {
@@ -430,6 +441,14 @@ function VendorEditor({
       setError({ field: "model", text: "请选择模型" });
       return;
     }
+    const spaceId = workspace.trim();
+    if (bailian && spaceId && !isBailianWorkspaceId(spaceId)) {
+      setError({ field: "workspace", text: "请填写北京地域的业务空间 ID，无需填写网址。" });
+      return;
+    }
+    const updateWorkspace =
+      (bailian && (replace || spaceId !== (view.workspaceId ?? ""))) ||
+      (vendor === "anthropic" && replace);
     const request = requestNumber.current;
     pendingSave.current = true;
     setSaving(true);
@@ -441,16 +460,23 @@ function VendorEditor({
         model: model || null,
         secretAction: replace ? "replace" : "keep",
         ...(replace ? { apiKey: secret } : {}),
-        ...(vendor === "anthropic" && replace
-          ? workspace.trim()
-            ? { workspaceAction: "replace", workspaceId: workspace.trim() }
+        ...(updateWorkspace
+          ? spaceId
+            ? { workspaceAction: "replace", workspaceId: spaceId }
             : { workspaceAction: "clear" }
           : {}),
       });
       if (request === requestNumber.current) onSave(next);
     } catch (caught) {
       if (request !== requestNumber.current) return;
-      if (
+      if (caught instanceof AdminApiError && caught.code === "ADMIN_CONFIG_BAILIAN_PLAN_KEY") {
+        setError({ field: "key", text: BAILIAN_PLAN_KEY_MESSAGE });
+      } else if (
+        caught instanceof AdminApiError &&
+        caught.code === "ADMIN_CONFIG_BAILIAN_WORKSPACE_FORMAT"
+      ) {
+        setError({ field: "workspace", text: apiError(caught) });
+      } else if (
         caught instanceof AdminApiError &&
         [
           "ADMIN_CONFIG_KEY_KIND",
@@ -534,6 +560,7 @@ function VendorEditor({
                     onClick={() => {
                       setReplacing(true);
                       setWorkspace("");
+                      clearField("key");
                       onChange();
                     }}
                   >
@@ -544,6 +571,10 @@ function VendorEditor({
                 <>
                   <input
                     aria-label="API Key"
+                    aria-invalid={planKey || error?.field === "key"}
+                    aria-describedby={
+                      planKey || error?.field === "key" ? "vendor-key-error" : undefined
+                    }
                     type="password"
                     autoComplete="off"
                     spellCheck={false}
@@ -556,24 +587,47 @@ function VendorEditor({
                     }}
                   />
                   {replacing && <small className={styles.detail}>保存后将替换现有密钥。</small>}
-                  {fieldError("key")}
                 </>
               )}
+              {planKey ? (
+                <p id="vendor-key-error" role="alert" className={styles.fail}>
+                  {BAILIAN_PLAN_KEY_MESSAGE}
+                </p>
+              ) : (
+                fieldError("key")
+              )}
             </div>
-            {vendor === "anthropic" && (replacing || !view.keyConfigured) && (
-              <label className={styles.field}>
-                <span>Workspace ID（可选）</span>
+            {(bailian || (vendor === "anthropic" && (replacing || !view.keyConfigured))) && (
+              <div className={styles.field}>
+                <label htmlFor="vendor-workspace">
+                  {bailian ? "业务空间 ID" : "Workspace ID（可选）"}
+                </label>
                 <input
+                  id="vendor-workspace"
                   value={workspace}
                   disabled={saving}
+                  spellCheck={false}
+                  aria-invalid={error?.field === "workspace"}
+                  aria-describedby={
+                    error?.field === "workspace"
+                      ? "vendor-workspace-error"
+                      : bailian && !workspace
+                        ? "vendor-workspace-hint"
+                        : undefined
+                  }
                   onChange={(event) => {
                     setWorkspace(event.target.value);
                     clearField("workspace");
                     onChange();
                   }}
                 />
+                {bailian && !workspace && error?.field !== "workspace" && (
+                  <small id="vendor-workspace-hint" className={styles.detail}>
+                    检测连接时需要，请从百炼控制台北京地域复制。
+                  </small>
+                )}
                 {fieldError("workspace")}
-              </label>
+              </div>
             )}
           </>
         )}
@@ -591,7 +645,7 @@ function VendorEditor({
             <button
               type="button"
               className={styles.primary}
-              disabled={saving || !view}
+              disabled={saving || !view || planKey}
               onClick={() => void save()}
             >
               {saving ? "正在保存…" : "保存设置"}

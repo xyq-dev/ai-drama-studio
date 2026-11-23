@@ -5,6 +5,8 @@ import {
   frozenProviderAdapter,
   sdkWritingKind,
   isLegacyDeepseekRun,
+  isBailianPlanKey,
+  QWEN_PLUS_MODEL,
   settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
@@ -571,6 +573,9 @@ export class TitleWritingEngine {
     const { run } = bundle;
     const feature = await this.deps.featureCredential?.({ id: run.id, providerKey: run.input.providerKey, model: run.input.model }) ?? null;
     if (!feature || !feature.apiKey || !feature.models.includes(run.input.model) || !this.deps.sdkFetch) {
+      return this.finish(runId, "needs_attention", "provider_unconfigured");
+    }
+    if (kind === "bailian" && (isBailianPlanKey(feature.apiKey) || run.input.model !== QWEN_PLUS_MODEL)) {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
     const titleInput = titleInputOf(run);

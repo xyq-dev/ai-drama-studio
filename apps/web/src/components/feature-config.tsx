@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  BAILIAN_PLAN_KEY_MESSAGE,
   FEATURE_KEYS,
   FEATURE_VENDOR_KEYS,
+  isBailianPlanKey,
   type FeatureCardView,
   type FeatureConfigView,
   type FeatureKey,
@@ -92,6 +94,13 @@ const DRAFT_STATUS_LABEL = {
   passed: "检测通过",
 };
 
+function formError(caught: unknown) {
+  return {
+    message: featureErrorCopy(caught),
+    code: caught instanceof FeatureApiError ? caught.code : undefined,
+  };
+}
+
 export function FeatureConfig() {
   const client = useMemo(() => createFeatureConfigClient(), []);
   const { gate, reload } = useOperatorGate();
@@ -105,7 +114,9 @@ export function FeatureConfig() {
   const [replacing, setReplacing] = useState<Record<string, boolean>>({});
   const [editedModel, setEditedModel] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
-  const [error, setError] = useState<{ message: string; unknown?: boolean } | null>(null);
+  const [error, setError] = useState<{ message: string; code?: string; unknown?: boolean } | null>(
+    null,
+  );
   const [dialog, setDialog] = useState<"test" | "enable" | null>(null);
   const selectionVersion = useRef(0);
   const priorVendor = useRef<FeatureVendor | null>(null);
@@ -186,8 +197,12 @@ export function FeatureConfig() {
   const enteringKey = Boolean(
     slot && (replacingKey || (!slot.keyConfigured && !slot.vendorKeyConfigured)),
   );
+  const planKey =
+    feature === "writing" && selectedVendor === "bailian" && isBailianPlanKey(draftKey);
+  const keyError =
+    planKey || error?.code === "FEATURE_BAILIAN_PLAN_KEY" ? BAILIAN_PLAN_KEY_MESSAGE : null;
   const needsKey = Boolean(slot?.connected && enteringKey && draftKey.trim().length < 8);
-  const canSave = Boolean(slot?.connected && available && !busy && !needsKey);
+  const canSave = Boolean(slot?.connected && available && !busy && !needsKey && !keyError);
   const savedStatus =
     slot?.keyConfigured &&
     slot.draftStatus !== "blank" &&
@@ -199,10 +214,22 @@ export function FeatureConfig() {
       : null;
   const needsTest =
     savedStatus === "saved" || savedStatus === "failed" || savedStatus === "unknown";
-  const canTest = Boolean(needsTest && slot?.connected && available && slot.keyConfigured && !busy);
+  const canTest = Boolean(
+    needsTest && slot?.connected && available && slot.keyConfigured && !busy && !keyError,
+  );
   const visibleStatus = savedStatus && busy === `test:${fieldKey}` ? "testing" : savedStatus;
   const needsEnable = Boolean(savedStatus === "passed" && card && slot && !liveMatches(card, slot));
-  const canEnable = Boolean(needsEnable && slot?.connected && available && slot.testToken && !busy);
+  const storageError = needsEnable && error?.code === "FEATURE_WRITING_STORAGE_UNAVAILABLE";
+  const enableBlockReason = slot?.enableBlockReason || (storageError ? error.message : null);
+  const canEnable = Boolean(
+    needsEnable &&
+    slot?.connected &&
+    available &&
+    slot.testToken &&
+    !enableBlockReason &&
+    !keyError &&
+    !busy,
+  );
 
   // A newer server revision may be adopted after navigation; its receipt must not close a new editor.
   function acceptView(next: FeatureConfigView) {
@@ -232,7 +259,7 @@ export function FeatureConfig() {
       const next = await client.rollback(feature, { expectedRevision: view.revision });
       acceptView(next);
     } catch (caught) {
-      if (selectionVersion.current === version) setError({ message: featureErrorCopy(caught) });
+      if (selectionVersion.current === version) setError(formError(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -295,7 +322,7 @@ export function FeatureConfig() {
       setKeys({});
       setReplacing({});
     } catch (caught) {
-      if (selectionVersion.current === version) setError({ message: featureErrorCopy(caught) });
+      if (selectionVersion.current === version) setError(formError(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -323,6 +350,7 @@ export function FeatureConfig() {
           (caught.status === 0 || caught.status === 408 || caught.status === 504);
         setError({
           unknown,
+          code: caught instanceof FeatureApiError ? caught.code : undefined,
           message: unknown
             ? "结果未知，请刷新配置并核对供应商调用记录。"
             : featureErrorCopy(caught),
@@ -353,7 +381,7 @@ export function FeatureConfig() {
         cancelEdit();
       }
     } catch (caught) {
-      if (selectionVersion.current === version) setError({ message: featureErrorCopy(caught) });
+      if (selectionVersion.current === version) setError(formError(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -478,6 +506,7 @@ export function FeatureConfig() {
               bindingVendorKey={canBindVendor}
               busy={busy}
               needsKey={needsKey}
+              keyError={keyError}
               onVendor={selectVendor}
               onModel={(value) => {
                 selectionVersion.current++;
@@ -503,9 +532,14 @@ export function FeatureConfig() {
                     slot.failureMessage && <p>{slot.failureMessage}</p>}
                 </div>
               )}
-              {error && (
+              {error && !keyError && !storageError && (
                 <p className={error.unknown ? styles.hint : styles.fail} role="alert">
                   {error.message}
+                </p>
+              )}
+              {needsEnable && enableBlockReason && (
+                <p id="feature-enable-block" className={styles.hint}>
+                  {enableBlockReason}
                 </p>
               )}
               <div className={styles.actions}>
@@ -534,6 +568,7 @@ export function FeatureConfig() {
                     type="button"
                     className={styles.primary}
                     disabled={!canEnable}
+                    aria-describedby={enableBlockReason ? "feature-enable-block" : undefined}
                     onClick={() => setDialog("enable")}
                   >
                     {busy === "enable" ? "正在启用…" : "确认启用"}
@@ -639,6 +674,7 @@ function Editor({
   bindingVendorKey,
   busy,
   needsKey,
+  keyError,
   onVendor,
   onModel,
   onKey,
@@ -654,6 +690,7 @@ function Editor({
   bindingVendorKey: boolean;
   busy: string;
   needsKey: boolean;
+  keyError: string | null;
   onVendor: (vendor: FeatureVendor) => void;
   onModel: (model: string) => void;
   onKey: (value: string) => void;
@@ -714,6 +751,8 @@ function Editor({
             ) : (
               <input
                 aria-label="API Key"
+                aria-invalid={Boolean(keyError)}
+                aria-describedby={keyError ? "feature-key-error" : undefined}
                 type="password"
                 autoComplete="off"
                 spellCheck={false}
@@ -725,7 +764,13 @@ function Editor({
             {bindingVendorKey && !replacing ? (
               <small className={styles.hint}>使用「AI 大模型」已保存的密钥。</small>
             ) : null}
-            {needsKey ? <small className={styles.hint}>请输入至少 8 位的 API Key。</small> : null}
+            {keyError ? (
+              <small className={styles.fail} role="alert" id="feature-key-error">
+                {keyError}
+              </small>
+            ) : needsKey ? (
+              <small className={styles.hint}>请输入至少 8 位的 API Key。</small>
+            ) : null}
           </div>
         ) : null}
       </div>

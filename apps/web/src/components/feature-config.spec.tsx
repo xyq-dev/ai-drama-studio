@@ -191,6 +191,58 @@ it("selects live writing when the feature query is absent", async () => {
   expect(window.location.search).toBe("");
 });
 
+it("keeps a subscription key out of a Bailian writing draft and clears the error after correction", async () => {
+  window.history.replaceState(null, "", "/admin/features?feature=writing&vendor=bailian");
+  install(operatorSession(), view());
+  render(<FeatureConfig />);
+  const editor = await openEditor();
+  fireEvent.click(editor.getByRole("combobox", { name: "模型" }));
+  fireEvent.click(editor.getByRole("option", { name: /通义千问-Plus/ }));
+  const key = editor.getByLabelText("API Key");
+  const save = editor.getByRole("button", { name: "保存草稿" }) as HTMLButtonElement;
+  fireEvent.change(key, { target: { value: "sk-sp-browser-fixture" } });
+  expect(editor.getByRole("alert").textContent).toBe("这是套餐密钥，请使用百炼按量付费 API Key");
+  expect(save.disabled).toBe(true);
+  fireEvent.click(save);
+  expect(calls.filter(({ init }) => init?.method && init.method !== "GET")).toHaveLength(0);
+  fireEvent.change(key, { target: { value: "normal-fake-key" } });
+  expect(editor.queryByRole("alert")).toBeNull();
+  expect(save.disabled).toBe(false);
+});
+
+it("preserves live writing and explains the activation block beside the passed Bailian draft", async () => {
+  const config = liveWritingView();
+  const slot = card(config, "writing").slots.find((item) => item.vendor === "bailian")!;
+  Object.assign(slot, { model: "qwen-plus", keyConfigured: true, draftStatus: "passed",
+    testToken: "tt_fixture_passed", enableBlockReason: "编剧存储尚未就绪，请联系运维" });
+  window.history.replaceState(null, "", "/admin/features?feature=writing&vendor=bailian");
+  install(operatorSession(), config);
+  render(<FeatureConfig />);
+  const editor = await openEditor();
+  expect(editor.getByText("检测通过")).toBeTruthy();
+  const enable = editor.getByRole("button", { name: "确认启用", description: "编剧存储尚未就绪，请联系运维" }) as HTMLButtonElement;
+  expect(enable.disabled).toBe(true);
+  fireEvent.click(enable);
+  expect(within(currentCard()).getByText("DeepSeek")).toBeTruthy();
+  expect(calls.filter(({ init }) => init?.method && init.method !== "GET")).toHaveLength(0);
+});
+
+it("shows a fresh storage rejection if readiness changed after the page loaded", async () => {
+  const config = liveWritingView();
+  const slot = card(config, "writing").slots.find((item) => item.vendor === "bailian")!;
+  Object.assign(slot, { model: "qwen-plus", keyConfigured: true, draftStatus: "passed", testToken: "tt_fixture_passed" });
+  window.history.replaceState(null, "", "/admin/features?feature=writing&vendor=bailian");
+  install(operatorSession(), config, () => json({ error: { code: "FEATURE_WRITING_STORAGE_UNAVAILABLE" } }, 503));
+  render(<FeatureConfig />);
+  const editor = await openEditor();
+  fireEvent.click(editor.getByRole("button", { name: "确认启用" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "确认启用" })).getByRole("button", { name: "确认启用" }));
+  await editor.findByText("编剧存储尚未就绪，请联系运维");
+  expect((editor.getByRole("button", { name: "确认启用" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(within(currentCard()).getByText("DeepSeek")).toBeTruthy();
+  expect(calls.filter(({ url }) => url.endsWith("/enable"))).toHaveLength(1);
+});
+
 it("keeps the feature tabs on a first-time storyboard or voice empty state and returns to writing", async () => {
   install(operatorSession(), liveWritingView());
   render(<FeatureConfig />);

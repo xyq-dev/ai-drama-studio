@@ -8,9 +8,8 @@ const credentialFields = z.object({
   secretAction: z.enum(["keep", "replace", "clear"]),
   apiKey: z.string().min(8).max(256).regex(/^\S+$/u).optional(),
   /**
-   * Claude only: the optional anthropic-workspace-id. Omitted: kept, except that a replaced or cleared key also clears
-   * it (a new key never inherits the previous key's workspace). "keep" with a replaced key is refused. The shape is
-   * checked by the console service (ADMIN_CONFIG_WORKSPACE_FORMAT) and again by the vault.
+   * Claude workspace header or Bailian Beijing workspace for permission queries. Replacing or clearing the key drops
+   * its workspace unless a new ID is supplied. The service and vault validate the format for the selected vendor.
    */
   workspaceAction: z.enum(["keep", "replace", "clear"]).optional(),
   workspaceId: z.string().min(1).max(128).optional(),

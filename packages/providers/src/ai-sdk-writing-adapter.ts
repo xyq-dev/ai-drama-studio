@@ -4,6 +4,7 @@ import { createDeepSeek } from "@ai-sdk/deepseek";
 import {
   BAILIAN_COMPATIBLE_BASE_URL,
   DEEPSEEK_AI_SDK_BASE_URL,
+  isBailianPlanKey,
   QWEN_PLUS_MODEL,
 } from "@ai-drama/contracts";
 import {
@@ -19,7 +20,6 @@ import {
  * Vercel AI SDK writing adapters for Bailian (qwen-plus, China compatible-mode) and DeepSeek.
  * The business layer receives a WritingExchange only. Provider bodies, headers and error text stay here.
  * maxRetries is 0: a timeout or an unclear result is unknown and is never sent again by this function.
- * The production feature probe is a different path and stays networkRefusingFeatureProbe().
  */
 export type SdkWritingKind = "bailian" | "deepseek";
 
@@ -95,6 +95,7 @@ function usageOf(usage: { inputTokens?: number; outputTokens?: number; totalToke
 function statusClass(status: number | undefined): { code: WritingErrorCode; outcome: "rejected" | "unknown" } {
   if (status === undefined) return { code: "disconnected", outcome: "unknown" };
   if (status === 401 || status === 403) return { code: "auth", outcome: "rejected" };
+  if (status === 408 || status === 504) return { code: "timeout", outcome: "unknown" };
   if (status === 402) return { code: "quota", outcome: "rejected" };
   if (status === 429) return { code: "rate_limited", outcome: "rejected" };
   if (status === 400 || status === 404 || status === 413 || status === 422) return { code: "bad_request", outcome: "rejected" };
@@ -123,12 +124,16 @@ export async function sendAiSdkWriting(options: {
   const { kind, apiKey, request } = options;
   if (!options.fetchImpl) return exchange("unknown", "disconnected");
   if (kind === "bailian" && request.model !== QWEN_PLUS_MODEL) return exchange("rejected", "bad_request");
+  if (kind === "bailian" && isBailianPlanKey(apiKey)) return exchange("rejected", "auth");
   if (apiKey.length < 8 || /\s/u.test(apiKey)) return exchange("rejected", "auth");
   const timeoutMs = Math.min(options.timeoutMs ?? TEXT_WRITING_TIMEOUT_MS, TEXT_WRITING_TIMEOUT_MS);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const baseURL = sdkWritingBaseUrl(kind);
-  const fetchImpl = kind === "deepseek" ? withDeepseekJsonFormat(options.fetchImpl) : options.fetchImpl;
+  const transport = options.fetchImpl;
+  const fetchImpl: typeof fetch = kind === "deepseek"
+    ? withDeepseekJsonFormat(transport)
+    : (input, init) => transport(input, { ...init, redirect: "error" });
   try {
     const model = kind === "bailian"
       ? createAlibaba({ apiKey, baseURL, fetch: fetchImpl })(request.model)
@@ -139,14 +144,19 @@ export async function sendAiSdkWriting(options: {
       prompt: request.user,
       maxOutputTokens: request.maxOutputTokens,
       maxRetries: 0,
+      include: { responseBody: kind === "bailian" },
       timeout: timeoutMs,
       abortSignal: controller.signal,
       providerOptions: kind === "bailian"
         ? { alibaba: { enableThinking: false } }
         : { deepseek: { thinking: { type: "disabled" } } },
     });
-    const responseModel = safeToken(result.response.modelId, apiKey);
-    const providerRequestId = safeToken(result.response.id, apiKey);
+    // The SDK synthesizes an ID and the requested model when the upstream omits them.
+    const body = result.response.body;
+    const metadata = kind === "bailian" ? body : { model: result.response.modelId, id: result.response.id };
+    const raw = typeof metadata === "object" && metadata !== null ? metadata : {};
+    const responseModel = safeToken("model" in raw ? raw.model : null, apiKey);
+    const providerRequestId = safeToken("id" in raw ? raw.id : null, apiKey);
     const usage = usageOf(result.usage, apiKey);
     const text = result.text.trim();
     if (apiKey.length > 0 && text.includes(apiKey)) return exchange("rejected", "invalid_output", { responseModel, providerRequestId, usage });

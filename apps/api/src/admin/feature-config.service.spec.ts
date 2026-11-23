@@ -52,9 +52,9 @@ async function open(options: { probe?: FeatureProbe; legacy?: LegacyFeatureSourc
   });
   const service = await FeatureConfigService.open({
     vault, usage, probe, legacy: options.legacy ?? null, homeWorkspaceId: options.homeWorkspaceId ?? WS_A,
-    ...(options.policy ? { policy: options.policy } : {}),
+    policy: { bailianWritingStorageReady: async () => true, ...options.policy },
   });
-  return { service, seen, dir };
+  return { service, seen, dir, vault, usage };
 }
 
 function card(view: FeatureConfigView, feature: FeatureKey) {
@@ -366,7 +366,7 @@ describe("feature configuration", () => {
     });
     expect(await service.readBinding("writing")).toBeNull();
     expect(JSON.stringify(view)).not.toContain(secret);
-    expect(slot(view, "writing", "bailian").label).toBe("百炼千问");
+    expect(slot(view, "writing", "bailian").label).toBe("阿里云百炼（北京 · 按量付费）");
     const tested = await service.testDraft("writing", { expectedRevision: view.revision, vendor: "bailian", confirmCost: true });
     expect(tested.probe?.ok).toBe(false);
     expect(tested.probe?.message).not.toContain(secret);
@@ -376,6 +376,88 @@ describe("feature configuration", () => {
       expectedRevision: tested.view.revision, vendor: "bailian", testToken: "a".repeat(16),
     })).rejects.toMatchObject({ code: "FEATURE_TEST_REQUIRED" });
     expect(await service.readBinding("writing")).toBeNull();
+  });
+
+  it("blocks package keys on save, bind, historical probes, activation and rollback before any call", async () => {
+    const plan = "sk-sp-synthetic-only";
+    const { service, seen, vault } = await open({ legacy: {
+      live: async () => ({ writing: null, storyboard: null, voice: null }),
+      secret: async () => null,
+      vendorSecret: async () => plan,
+    } });
+    const deepseek = await enable(service, "writing", "deepseek", "deepseek-flash", KEYS.writingDeepseek);
+    const initial = { vendor: "bailian", model: "qwen-plus", expectedRevision: deepseek.revision } as const;
+    const blocked = { code: "FEATURE_BAILIAN_PLAN_KEY", message: "这是套餐密钥，请使用百炼按量付费 API Key" };
+    await expect(service.saveDraft("writing", { ...initial, secretAction: "replace", apiKey: plan })).rejects.toMatchObject(blocked);
+    await expect(service.saveDraft("writing", { ...initial, secretAction: "bind_vendor" })).rejects.toMatchObject(blocked);
+    expect((await service.view()).revision).toBe(deepseek.revision);
+    const saved = await service.saveDraft("writing", { ...initial, secretAction: "replace", apiKey: KEYS.writing });
+    const tested = await service.testDraft("writing", { expectedRevision: saved.revision, vendor: "bailian", confirmCost: true });
+    const token = slot(tested.view, "writing", "bailian").testToken!;
+    const before = await vault.update((doc) => {
+      doc.credentials[doc.features.writing.slots.bailian!.credentialRef!] = plan;
+    }, tested.view.revision);
+    await expect(service.saveDraft("writing", { ...initial, expectedRevision: before.revision, secretAction: "keep" })).rejects.toMatchObject(blocked);
+    await expect(service.testDraft("writing", { expectedRevision: before.revision, vendor: "bailian", confirmCost: true })).rejects.toMatchObject(blocked);
+    await expect(service.enable("writing", { expectedRevision: before.revision, vendor: "bailian", testToken: token })).rejects.toMatchObject(blocked);
+    expect(slot(await service.view(), "writing", "bailian").enableBlockReason).toBe(blocked.message);
+    expect((await vault.read()).revision).toBe(before.revision);
+    expect(await service.readBinding("writing")).toMatchObject({ vendor: "deepseek", secret: KEYS.writingDeepseek });
+    const beforeRollback = await vault.update((doc) => {
+      const live = doc.features.writing.live!;
+      doc.features.writing.previousLive = { ...live, vendor: "bailian", model: "qwen-plus", credentialRef: doc.features.writing.slots.bailian!.credentialRef! };
+    }, before.revision);
+    await expect(service.rollback("writing", { expectedRevision: beforeRollback.revision })).rejects.toMatchObject(blocked);
+    const retired = await vault.update((doc) => {
+      doc.features.writing.previousLive!.model = "qwen-retired";
+    }, beforeRollback.revision);
+    await expect(service.rollback("writing", { expectedRevision: retired.revision })).rejects.toMatchObject({ code: "FEATURE_MODEL_NOT_APPROVED" });
+    expect(seen).toHaveLength(2);
+    expect(seen.some((call) => call.apiKey === plan)).toBe(false);
+    expect(JSON.stringify(await service.view())).not.toContain(plan);
+  });
+
+  it("keeps the cost receipt for a late draft probe without verifying the replacement key", async () => {
+    let finish!: (result: { ok: boolean }) => void;
+    const reply = new Promise<{ ok: boolean }>((resolve) => { finish = resolve; });
+    const probe = vi.fn(() => reply);
+    const { service, usage } = await open({ probe });
+    const draft = { vendor: "bailian", model: "qwen-plus", secretAction: "replace" } as const;
+    const saved = await service.saveDraft("writing", { ...draft, expectedRevision: 0, apiKey: KEYS.writing });
+    const pending = service.testDraft("writing", { expectedRevision: saved.revision, vendor: "bailian", confirmCost: true });
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledOnce());
+    const edited = await service.saveDraft("writing", { ...draft, expectedRevision: (await service.view()).revision, apiKey: "sk-fake-new-payg" });
+    finish({ ok: true });
+    await expect(pending).rejects.toMatchObject({ code: "FEATURE_TEST_STALE" });
+    expect(await service.view()).toEqual(edited);
+    expect(slot(edited, "writing", "bailian")).toMatchObject({ draftStatus: "saved", testToken: null });
+    expect((await usage.read()).records).toMatchObject([{ kind: "admin_test", model: "qwen-plus", result: "succeeded" }]);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks writing storage before activation and rollback, preserving live version and test receipt on rejection", async () => {
+    let ready = false;
+    const { service, seen } = await open({ policy: { bailianWritingStorageReady: async () => ready } });
+    const live = await enable(service, "writing", "deepseek", "deepseek-flash", KEYS.writingDeepseek);
+    const saved = await service.saveDraft("writing", {
+      vendor: "bailian", model: "qwen-plus", expectedRevision: live.revision, secretAction: "replace", apiKey: KEYS.writing,
+    });
+    const tested = await service.testDraft("writing", { vendor: "bailian", expectedRevision: saved.revision, confirmCost: true });
+    const draft = slot(tested.view, "writing", "bailian");
+    const blocked = { code: "FEATURE_WRITING_STORAGE_UNAVAILABLE", message: "编剧存储尚未就绪，请联系运维" };
+    expect(draft).toMatchObject({ draftStatus: "passed", enableBlockReason: blocked.message });
+    const enableBailian = () => service.enable("writing", { vendor: "bailian", expectedRevision: tested.view.revision, testToken: draft.testToken! });
+    await expect(enableBailian()).rejects.toMatchObject(blocked);
+    expect(await service.view()).toEqual(tested.view);
+    ready = true;
+    expect(slot(await service.view(), "writing", "bailian").enableBlockReason).toBeUndefined();
+    await enableBailian();
+    expect(await service.readBinding("writing")).toMatchObject({ vendor: "bailian", model: "qwen-plus" });
+    expect(seen).toHaveLength(2);
+    const switched = await enable(service, "writing", "deepseek", "deepseek-flash", KEYS.writingDeepseek);
+    ready = false;
+    await expect(service.rollback("writing", { expectedRevision: switched.revision })).rejects.toMatchObject(blocked);
+    expect((await service.readBinding("writing"))?.vendor).toBe("deepseek");
   });
 
   it("clears other vendors' passed test receipts when a new writing version is enabled", async () => {

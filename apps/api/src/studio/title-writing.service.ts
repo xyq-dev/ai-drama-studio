@@ -10,6 +10,8 @@ import {
   storedTitleWritingProviderLabel,
   TITLE_WRITING_PROVIDER_PREFERENCE,
   BAILIAN_WRITING_PROVIDER_KEY,
+  isBailianPlanKey,
+  QWEN_PLUS_MODEL,
   isActiveTitleWritingProvider,
   sdkWritingKind,
   isLegacyDeepseekRun,
@@ -159,6 +161,7 @@ export class TitleWritingService {
     const locked = await this.deps.featureWritingLock?.() ?? null;
     if (!locked?.apiKey || !locked.model) return null;
     if (locked.providerKey === BAILIAN_WRITING_PROVIDER_KEY) {
+      if (isBailianPlanKey(locked.apiKey) || locked.model !== QWEN_PLUS_MODEL) return null;
       return await bailianStorageReady(this.deps.store) ? { providerKey: locked.providerKey, model: locked.model } : null;
     }
     if (!isActiveTitleWritingProvider(locked.providerKey)) return null;
@@ -296,7 +299,10 @@ export class TitleWritingService {
       // New requests only: a retired provider is refused here, never moved to another provider.
       // Bailian is a new stored key and is not in the process-provider table.
       if (providerKey === BAILIAN_WRITING_PROVIDER_KEY) {
-        if (!locked?.apiKey || !model) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: ["FEATURE_WRITING_KEY"] });
+        if (!locked?.apiKey || isBailianPlanKey(locked.apiKey)) {
+          return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: ["FEATURE_WRITING_KEY"] });
+        }
+        if (model !== QWEN_PLUS_MODEL) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
         if (!await bailianStorageReady(this.deps.store)) {
           return failure(503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: ["20261122000100_writing_provider_bailian"] });
         }

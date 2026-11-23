@@ -156,6 +156,8 @@ export interface FeatureSlotView {
   failureMessage: string | null;
   /** True when this slot's model and saved credential are exactly the enabled version. Never exposes the credential. */
   isLive?: boolean;
+  /** Current prerequisite preventing activation of an otherwise tested draft. */
+  enableBlockReason?: string | null;
   /**
    * True when「AI 大模型」already holds a key for this vendor. Never includes the secret.
    * The editor may bind that saved credential without asking the operator to paste it again.

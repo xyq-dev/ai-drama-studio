@@ -154,6 +154,9 @@
 .facts [data-outcome="unavailable"] {
   color: #bb3439;
 }
+.facts [data-outcome="unknown"] {
+  color: var(--admin-muted, #53637b);
+}
 .models ul {
   list-style: none;
   margin: 12px 0 0;

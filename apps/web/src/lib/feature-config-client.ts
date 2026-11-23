@@ -1,3 +1,4 @@
+import { BAILIAN_PLAN_KEY_MESSAGE } from "@ai-drama/contracts";
 import type {
   FeatureConfigView, FeatureDraftSave, FeatureEnableRequest, FeatureKey, FeatureMutationResult, FeatureRollbackRequest, FeatureTestRequest,
   UsageRecordView, UsageSummaryView,
@@ -14,6 +15,8 @@ export class FeatureApiError extends Error {
 }
 
 const CODE_COPY: Record<string, string> = {
+  FEATURE_BAILIAN_PLAN_KEY: BAILIAN_PLAN_KEY_MESSAGE,
+  FEATURE_WRITING_STORAGE_UNAVAILABLE: "编剧存储尚未就绪，请联系运维",
   FEATURE_VENDOR_UNCONNECTED: "该服务商尚未接入。",
   FEATURE_MODEL_NOT_APPROVED: "该模型不在获准列表中，已阻止这次操作。",
   FEATURE_BUDGET_BLOCKED: "今日写作调用次数已用完，已阻止测试和启用。",

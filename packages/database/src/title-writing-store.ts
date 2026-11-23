@@ -185,7 +185,6 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
   private breakdownReadyConfirmed = false;
   private anthropicReadyConfirmed = false;
   private deepseekReadyConfirmed = false;
-  private bailianReadyConfirmed = false;
 
   constructor(private readonly pool: DatabasePool, private readonly textChain: TextChainService) {}
 
@@ -227,22 +226,22 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     }
   }
 
-  /**
-   * True only when both live provider_key CHECKs name bailian. The draft that widens them is not applied by this process.
-   * A positive result is cached; a negative result is read again so a later authorized migration is noticed.
-   */
+  /** Check the current schema on activation and execution, including after a database rollback. */
   async bailianStorageReady(): Promise<boolean> {
-    if (this.bailianReadyConfirmed) return true;
     if (!(await this.storageReady())) return false;
     try {
+      // PostgreSQL deparses the repository's provider_key IN ('a', 'b', …) CHECK as a text-array ANY.
+      // Only trust that positive list of literals; an expression merely mentioning 'bailian' could exclude it.
+      const providerList = String.raw`^\(provider_key = ANY \(ARRAY\['[a-z0-9_-]+'::text(, '[a-z0-9_-]+'::text)*\]\)\)$`;
       const checks = await this.query(
-        `SELECT count(*)::int AS allowed FROM pg_constraint
-          WHERE conrelid IN (to_regclass('title_writing_run'), to_regclass('title_writing_call')) AND contype = 'c'
-            AND pg_get_constraintdef(oid) LIKE '%provider_key%' AND pg_get_constraintdef(oid) LIKE '%''bailian''%'`,
-        [],
+        `SELECT count(*) = 2 AND count(DISTINCT conrelid) = 2
+            AND bool_and(predicate ~ $1 AND predicate LIKE '%''bailian''::text%') AS ready
+           FROM (SELECT conrelid, pg_get_expr(conbin, conrelid) AS predicate FROM pg_constraint
+                  WHERE conrelid IN (to_regclass('title_writing_run'), to_regclass('title_writing_call'))
+                    AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%provider_key%') checks`,
+        [providerList],
       );
-      this.bailianReadyConfirmed = Number(checks.rows[0]?.allowed) === 2;
-      return this.bailianReadyConfirmed;
+      return checks.rows[0]?.ready === true;
     } catch {
       return false;
     }
