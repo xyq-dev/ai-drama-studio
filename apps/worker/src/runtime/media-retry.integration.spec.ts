@@ -81,7 +81,7 @@ async function insertId(query: string, values: unknown[]): Promise<string> {
   return result.rows[0].id;
 }
 
-async function seedApprovedShot(): Promise<World> {
+async function seedApprovedShot(referenceCharacterId?: string): Promise<World> {
   const checksum = "ab".repeat(32);
   const workspaceId = await insertId("INSERT INTO workspace (name) VALUES ($1) RETURNING id", [`ws-${randomUUID()}`]);
   const projectId = await insertId("INSERT INTO project (workspace_id, title) VALUES ($1, 'retry') RETURNING id",
@@ -116,11 +116,24 @@ async function seedApprovedShot(): Promise<World> {
     VALUES ($1,$2,$3,$4) RETURNING id`, [workspaceId, projectId, episode, scene]);
   const shotRevisionId = await insertId(`INSERT INTO shot_revision
     (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
-     ordinal, shot_type, camera, action, prompt_text, dialogue, content_hash, review_status,
-     reviewed_by, reviewed_at, reviewed_content_hash, created_by)
-    VALUES ($1,$2,$3,$4,1,$5,1,'close','static','look',$6,$7,$8,
-      'APPROVED','test',now(),$8,'test') RETURNING id`,
+     ordinal, shot_type, camera, action, prompt_text, dialogue, content_hash, created_by)
+    VALUES ($1,$2,$3,$4,1,$5,1,'close','static','look',$6,$7,$8,'test') RETURNING id`,
   [workspaceId, projectId, scene, shotId, sceneRevision, PROMPT, DIALOGUE, checksum]);
+  if (referenceCharacterId) {
+    await sql("INSERT INTO character (id, workspace_id, project_id, name) VALUES ($1, $2, $3, 'lin')",
+      [referenceCharacterId, workspaceId, projectId]);
+    const revisionId = await insertId(
+      `INSERT INTO character_revision (workspace_id, project_id, character_id, revision_no, content_json, content_hash,
+         review_status, reviewed_by, reviewed_at, reviewed_content_hash, created_by)
+       VALUES ($1, $2, $3, 1, '{}'::jsonb, $4, 'APPROVED', 'test', now(), $4, 'test') RETURNING id`,
+      [workspaceId, projectId, referenceCharacterId, checksum]);
+    await sql("UPDATE character SET current_revision_id = $1, approved_revision_id = $1 WHERE id = $2",
+      [revisionId, referenceCharacterId]);
+    await sql(`INSERT INTO shot_character_reference (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+      VALUES ($1, $2, $3, $4, 'lead')`, [workspaceId, projectId, shotRevisionId, revisionId]);
+  }
+  await sql(`UPDATE shot_revision SET review_status = 'APPROVED', reviewed_by = 'test',
+    reviewed_at = now(), reviewed_content_hash = content_hash WHERE id = $1`, [shotRevisionId]);
   await sql(`UPDATE shot SET current_revision_id = $1, approved_revision_id = $1 WHERE id = $2`,
     [shotRevisionId, shotId]);
   const providers = {} as Record<Kind, string>;
@@ -831,26 +844,30 @@ describe("a strict video whose reference probe hits a transient database error",
   });
 });
 
-/** Polls until a backend waits on a lock for exactly this statement text. No fixed sleep. */
-async function waitForLockWaiter(statement: string): Promise<void> {
+/** Observe the project tuple and its blocking backend, regardless of the access predicates in its SQL. */
+async function waitForProjectLockWaiter(holderPid: number): Promise<void> {
   const deadline = Date.now() + 10_000;
   for (;;) {
-    const waiting = await sql<{ count: number }>(
-      `SELECT count(*)::int AS count FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query = $1`, [statement]);
-    if ((waiting.rows[0]?.count ?? 0) > 0) return;
-    if (Date.now() > deadline) throw new Error("no backend waited on the project lock");
+    const waiting = await sql<{ blocked: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_stat_activity waiter JOIN pg_locks tuple_lock ON tuple_lock.pid = waiter.pid
+         WHERE waiter.datname = current_database() AND waiter.wait_event_type = 'Lock'
+           AND tuple_lock.locktype = 'tuple' AND tuple_lock.relation = 'project'::regclass
+           AND $1 = ANY(pg_blocking_pids(waiter.pid))
+       ) AS blocked`, [holderPid]);
+    if (waiting.rows[0]?.blocked) return;
+    if (Date.now() > deadline) throw new Error(`no project row waiter blocked by backend ${holderPid}`);
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
 
 /**
  * A pool whose next statement matching the pattern stops until released, inside its transaction and with every lock
- * the transaction already holds. `reached` resolves when the statement is about to run.
+ * the transaction already holds. `reached` identifies the backend holding those locks.
  */
-function barrierPool(pattern: RegExp) {
-  let notify!: () => void;
-  const reached = new Promise<void>((resolve) => { notify = resolve; });
+function barrierPool(matches: (text: string) => boolean) {
+  let notify!: (backendPid: number) => void;
+  const reached = new Promise<number>((resolve) => { notify = resolve; });
   let release!: () => void;
   const released = new Promise<void>((resolve) => { release = resolve; });
   let armed = true;
@@ -860,9 +877,10 @@ function barrierPool(pattern: RegExp) {
       const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
       (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = async (...args: unknown[]) => {
         const text = typeof args[0] === "string" ? args[0] : "";
-        if (armed && pattern.test(text)) {
+        if (armed && matches(text)) {
           armed = false;
-          notify();
+          const backend = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          notify(backend.rows[0]!.pid);
           await released;
         }
         return query(...args);
@@ -879,39 +897,40 @@ function barrierPool(pattern: RegExp) {
   return { pool: wrapped, reached, release: () => release() };
 }
 
-const PROJECT_LOCK = "SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE";
-
 describe("a reference selection and a video completion in the same project are serialized", () => {
-  it("makes the selection wait while a video completion holds the project lock", async () => {
+  it.each(["video", "selection"] as const)("serializes both operations when %s locks the project first", async first => {
     const world = await seedApprovedShot();
     const objectDir = await mkdtemp(join(tmpdir(), "lock-order-"));
-    const characterId = (await sql<{ id: string }>(
+    const characterId = await insertId(
       "INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
-      [world.workspaceId, world.projectId])).rows[0]!.id;
-    // Stop the completion right before it inserts the video asset: it already holds the project lock from the gate.
-    const barrier = barrierPool(/^\s*INSERT INTO asset\s/);
+      [world.workspaceId, world.projectId]);
+    const videoFirst = first === "video";
+    // Both checkpoints occur after locking the project: asset insertion for completion, storage probe for selection.
+    const barrier = barrierPool(videoFirst ? text => /^\s*INSERT INTO asset\s/.test(text) : isReferenceStructureProbe);
     const job = await createMediaJob(world, "MEDIA_VIDEO", snapshotFor("MEDIA_VIDEO", world.shotRevisionId, "lock-order"));
     const row = await jobRow(job.jobId);
-    try {
-      const completion = runMockAvJob({ workspaceId: world.workspaceId, projectId: world.projectId,
+    const videoPool = videoFirst ? barrier.pool : pool;
+    const references = new CharacterReferenceStore(videoFirst ? pool : barrier.pool);
+    const complete = async () => {
+      const asset = await runMockAvJob({ workspaceId: world.workspaceId, projectId: world.projectId,
         shotRevisionId: world.shotRevisionId, jobId: job.jobId, dispatchSeq: job.dispatchSeq,
         providerConfigurationId: world.providers.MEDIA_VIDEO, inputHash: row?.input_hash as string,
         inputSnapshot: row?.input_snapshot, traceId: "lock-order", capability: "video.generate" },
-      { jobs: new JobPersistenceService(barrier.pool), assets: new MediaAssetStore(barrier.pool), adapter,
+      { jobs: new JobPersistenceService(videoPool), assets: new MediaAssetStore(videoPool), adapter,
         objects: new LocalMockObjects(objectDir) });
-      await barrier.reached;
-      const references = new CharacterReferenceStore(pool);
-      let selectionSettled = false;
-      const selection = references.transaction((client) => references.selectInTransaction(client, {
-        workspaceId: world.workspaceId, characterId, assetId: randomUUID(), expectedSelectedAssetId: null,
-        selectedBy: "owner", traceId: "lock-order" })).finally(() => { selectionSettled = true; });
-      selection.catch(() => undefined);
-      await waitForLockWaiter(PROJECT_LOCK);
-      expect(selectionSettled).toBe(false);
+      expect(asset).not.toBeNull();
+    };
+    const select = () => expect(references.transaction(client => references.selectInTransaction(client, {
+      workspaceId: world.workspaceId, characterId, assetId: randomUUID(), expectedSelectedAssetId: null,
+      selectedBy: "owner", traceId: "lock-order" }))).rejects.toMatchObject({ code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE" });
+    try {
+      const firstRun = videoFirst ? complete() : select();
+      const holderPid = await barrier.reached;
+      const secondRun = videoFirst ? select() : complete();
+      await waitForProjectLockWaiter(holderPid);
       barrier.release();
-      expect(await completion).not.toBeNull();
+      await Promise.all([firstRun, secondRun]);
       expect((await jobRow(job.jobId))?.state).toBe("SUCCEEDED");
-      await expect(selection).rejects.toMatchObject({ code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE" });
     } finally {
       barrier.release();
       await rm(objectDir, { recursive: true, force: true });
@@ -921,7 +940,7 @@ describe("a reference selection and a video completion in the same project are s
 
 /**
  * The full race needs the reference draft (selection table, reference columns, IMAGE approval). These cases run only
- * on an isolated database where that SQL was explicitly authorized; CI does not set the variable. Written, not run.
+ * on an isolated database where that SQL was explicitly authorized; CI does not set the variable.
  */
 describe.runIf(process.env.CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED === "true")(
   "strict video completion against reference replacement on the authorized draft",
@@ -933,35 +952,13 @@ describe.runIf(process.env.CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED === "true")(
       await sql(draft);
     });
 
-    const SHOT_PROJECT_LOCK = "SELECT id FROM project WHERE id = $1 AND workspace_id = $2%FOR UPDATE%";
-
-    async function waitForLockWaiterLike(pattern: string): Promise<void> {
-      const deadline = Date.now() + 10_000;
-      for (;;) {
-        const waiting = await sql<{ count: number }>(
-          `SELECT count(*)::int AS count FROM pg_stat_activity
-            WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1`, [pattern]);
-        if ((waiting.rows[0]?.count ?? 0) > 0) return;
-        if (Date.now() > deadline) throw new Error(`no backend waited on a lock for ${pattern}`);
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-    }
-
     /** An approved current character referenced by the shot, two approved references A and B, and A selected. */
     async function strictWorld() {
-      const world = await seedApprovedShot();
+      const characterId = randomUUID();
+      const world = await seedApprovedShot(characterId);
       const hash = "ab".repeat(32);
-      const characterId = await insertId(
-        "INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
-        [world.workspaceId, world.projectId]);
-      const revisionId = await insertId(
-        `INSERT INTO character_revision (workspace_id, project_id, character_id, revision_no, content_json, content_hash,
-           review_status, reviewed_by, reviewed_at, reviewed_content_hash, created_by)
-         VALUES ($1, $2, $3, 1, '{}'::jsonb, $4, 'APPROVED', 'test', now(), $4, 'test') RETURNING id`,
-        [world.workspaceId, world.projectId, characterId, hash]);
-      await sql("UPDATE character SET current_revision_id = $1, approved_revision_id = $1 WHERE id = $2", [revisionId, characterId]);
-      await sql(`INSERT INTO shot_character_reference (workspace_id, project_id, shot_revision_id, character_revision_id, role)
-        VALUES ($1, $2, $3, $4, 'lead')`, [world.workspaceId, world.projectId, world.shotRevisionId, revisionId]);
+      const revisionId = (await sql<{ id: string }>(
+        "SELECT current_revision_id AS id FROM character WHERE id = $1", [characterId])).rows[0]!.id;
       const references = new CharacterReferenceStore(pool);
       const reference = async (key: string) => {
         const assetId = await insertId(
@@ -1004,18 +1001,18 @@ describe.runIf(process.env.CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED === "true")(
     it("video completes first, then A -> B: the video becomes STALE once and the references stay ACTIVE", async () => {
       const { world, characterId, a, b, frozen, references } = await strictWorld();
       const objectDir = await mkdtemp(join(tmpdir(), "race-video-first-"));
-      const barrier = barrierPool(/^\s*INSERT INTO asset_dependency/);
+      const barrier = barrierPool(text => /^\s*INSERT INTO asset_dependency/.test(text));
       const { input } = await strictJob(world, frozen, "video-first");
       try {
         const completion = runMockAvJob(input, { jobs: new JobPersistenceService(barrier.pool),
           assets: new MediaAssetStore(barrier.pool), adapter, objects: new LocalMockObjects(objectDir) });
-        await barrier.reached;
+        const holderPid = await barrier.reached;
         let replaced = false;
         const replacement = references.transaction((client) => references.selectInTransaction(client, {
           workspaceId: world.workspaceId, characterId, assetId: b, expectedSelectedAssetId: a, selectedBy: "test",
           traceId: "replace" })).finally(() => { replaced = true; });
         replacement.catch(() => undefined);
-        await waitForLockWaiter(PROJECT_LOCK);
+        await waitForProjectLockWaiter(holderPid);
         expect(replaced).toBe(false);
         barrier.release();
         const video = await completion;
@@ -1043,16 +1040,16 @@ describe.runIf(process.env.CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED === "true")(
     it("A -> B commits first: the video frozen on A is refused with no asset, cost or success event", async () => {
       const { world, characterId, a, b, frozen } = await strictWorld();
       const objectDir = await mkdtemp(join(tmpdir(), "race-selection-first-"));
-      const barrier = barrierPool(/WITH RECURSIVE affected/);
+      const barrier = barrierPool(text => /WITH RECURSIVE affected/.test(text));
       const blocked = new CharacterReferenceStore(barrier.pool);
       const { job, input } = await strictJob(world, frozen, "selection-first");
       try {
         const replacement = blocked.transaction((client) => blocked.selectInTransaction(client, {
           workspaceId: world.workspaceId, characterId, assetId: b, expectedSelectedAssetId: a, selectedBy: "test",
           traceId: "replace" }));
-        await barrier.reached;
+        const holderPid = await barrier.reached;
         const completion = runMockAvJob(input, { jobs, assets, adapter, objects: new LocalMockObjects(objectDir) });
-        await waitForLockWaiterLike(SHOT_PROJECT_LOCK);
+        await waitForProjectLockWaiter(holderPid);
         barrier.release();
         await replacement;
         expect(await completion).toBeNull();
