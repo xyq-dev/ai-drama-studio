@@ -144,7 +144,8 @@ try {
   await shot(page, "desktop-deepseek-after-refresh");
 
   await gotoReady(page, "/admin/features?feature=writing", "模型与密钥");
-  await page.getByText("暂无草稿").waitFor();
+  await page.getByRole("button", { name: "修改配置" }).waitFor();
+  assert.equal(await page.getByRole("region", { name: "配置变更" }).count(), 0);
   await shot(page, "desktop-writing-current-empty");
 
   const earlyMobile = await browser.newContext({
@@ -155,7 +156,8 @@ try {
   const earlyPage = await earlyMobile.newPage();
   await signIn(earlyPage);
   await gotoReady(earlyPage, "/admin/features?feature=writing", "模型与密钥");
-  await earlyPage.getByText("暂无草稿").waitFor();
+  await earlyPage.getByRole("button", { name: "修改配置" }).waitFor();
+  assert.equal(await earlyPage.getByRole("region", { name: "配置变更" }).count(), 0);
   await earlyPage.getByRole("button", { name: "修改配置" }).click();
   await earlyPage.getByRole("dialog", { name: "修改配置" }).waitFor();
   await earlyPage.getByRole("combobox", { name: "供应商" }).selectOption("deepseek");
@@ -179,7 +181,7 @@ try {
   await page.getByText("DeepSeek-V4-Pro-0813").first().waitFor();
   await shot(page, "desktop-writing-draft-unenabled");
 
-  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByRole("button", { name: "验证草稿", exact: true }).click();
   await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await shot(page, "desktop-writing-test-confirm");
   await page.getByRole("button", { name: "确认测试", exact: true }).click();
@@ -194,7 +196,7 @@ try {
     .getByRole("dialog", { name: "确认启用" })
     .getByRole("button", { name: "确认启用", exact: true })
     .click();
-  await page.getByLabel("配置变更").getByText("已生效", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "当前生效配置" }).getByText("已生效", { exact: true }).waitFor();
   await page.getByText("DeepSeek-V4-Pro-0813").first().waitFor();
   await shot(page, "desktop-writing-enabled");
 
@@ -218,7 +220,7 @@ try {
   await shot(mobilePage, "mobile-deepseek-saved");
 
   await gotoReady(mobilePage, "/admin/features?feature=writing", "模型与密钥");
-  await mobilePage.getByLabel("配置变更").getByText("已生效", { exact: true }).waitFor();
+  await mobilePage.getByRole("region", { name: "当前生效配置" }).getByText("已生效", { exact: true }).waitFor();
   const rollback = mobilePage.getByRole("button", { name: "回退到上一配置版本" });
   if (await rollback.count()) {
     await rollback.scrollIntoViewIfNeeded();

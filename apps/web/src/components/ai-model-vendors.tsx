@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { WRITING_MODEL_CHANNELS, type AdminVendorView } from "@ai-drama/contracts";
+import {
+  WRITING_MODEL_CHANNELS,
+  type AdminVendorCheckResult,
+  type AdminVendorView,
+} from "@ai-drama/contracts";
 import { AdminFrame, AdminGateView, useOperatorGate } from "./admin-access";
 import {
   AI_MODELS_CATALOG_HREF,
@@ -17,6 +21,8 @@ import { ModelSelect } from "./model-select";
 import styles from "./ai-model-vendors.module.css";
 
 type Client = ReturnType<typeof createAdminModelsClient>;
+type CheckReceipt = Pick<AdminVendorCheckResult, "status" | "message">;
+const UNKNOWN_CHECK: CheckReceipt = { status: "unknown", message: "结果未知" };
 
 function channelLabel(view: AdminVendorView) {
   const official = WRITING_MODEL_CHANNELS[view.vendor];
@@ -180,7 +186,7 @@ function VendorSettings({
   onSave: (next: AdminVendorView) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [receipt, setReceipt] = useState("");
+  const [receipt, setReceipt] = useState<CheckReceipt | null>(null);
   const [pendingRevision, setPendingRevision] = useState<number | null>(null);
   const checking = view.revision === pendingRevision;
   const editButton = useRef<HTMLButtonElement>(null);
@@ -190,7 +196,7 @@ function VendorSettings({
   const selected = view.models.some((item) => item.id === view.model);
   const canCheck = view.keyConfigured && selected;
   const status =
-    receipt ||
+    receipt?.message ??
     (!view.keyConfigured
       ? "请先保存密钥"
       : view.model && !selected
@@ -206,14 +212,14 @@ function VendorSettings({
 
   function invalidate() {
     epoch.current++;
-    setReceipt("");
+    setReceipt(null);
   }
   async function check() {
     if (!canCheck || !view.model || pending.current.has(view.revision)) return;
     const generation = ++epoch.current;
     pending.current.add(view.revision);
     setPendingRevision(view.revision);
-    setReceipt("");
+    setReceipt(null);
     try {
       const result = await client.checkVendor(view.vendor, {
         expectedRevision: view.revision,
@@ -225,12 +231,13 @@ function VendorSettings({
         result.revision !== view.revision ||
         result.vendor !== view.vendor ||
         result.channel !== view.channel ||
-        result.model !== view.model
+        result.model !== view.model ||
+        !result.message
       ) {
-        setReceipt("结果未知");
+        setReceipt(UNKNOWN_CHECK);
         return;
       }
-      setReceipt(result.message || "结果未知");
+      setReceipt({ status: result.status, message: result.message });
     } catch (error) {
       if (generation === epoch.current) {
         setReceipt(
@@ -238,8 +245,8 @@ function VendorSettings({
             error.status > 0 &&
             error.status < 500 &&
             error.status !== 408
-            ? apiError(error)
-            : "结果未知",
+            ? { status: "failed", message: apiError(error) }
+            : UNKNOWN_CHECK,
         );
       }
     } finally {
@@ -294,7 +301,7 @@ function VendorSettings({
           </div>
           <div>
             <dt>配置状态</dt>
-            <dd id="vendor-check-status" role="status">
+            <dd id="vendor-check-status" role="status" data-outcome={receipt?.status}>
               {checking ? "正在读取模型列表…" : status}
             </dd>
           </div>

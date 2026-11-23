@@ -25,6 +25,11 @@ const records = new Map(Object.entries(WRITING_MODEL_CHANNELS).map(([vendor, cat
 const writes = [];
 const checks = [];
 const errors = [];
+const checkMessage = {
+  listed: "已读取模型列表",
+  failed: "无法读取模型列表，请检查密钥及访问权限。",
+  unknown: "结果未知",
+};
 let checkStatus = "listed";
 let holdCheck;
 let holdRead;
@@ -74,7 +79,7 @@ async function mockApi(request, response) {
   assert.equal(body.model, record.model);
   const receipt = {
     vendor: record.vendor, channel: record.channel, revision: record.revision, model: record.model,
-    status: checkStatus, message: checkStatus === "listed" ? "已读取模型列表" : "结果未知",
+    status: checkStatus, message: checkMessage[checkStatus],
   };
   checks.push({ vendor: record.vendor, channel: body.channel, model: body.model });
   if (holdCheck) await holdCheck;
@@ -136,9 +141,13 @@ async function openSettings(page, vendor) {
   await page.goto(`${origin}/admin/ai-models/${vendor}`);
   await byButton(page, "编辑设置").waitFor();
 }
+async function statusColor(page) {
+  return page.locator("#vendor-check-status").evaluate(node => getComputedStyle(node).color);
+}
 async function listed(page) {
   await page.getByText("已读取模型列表", { exact: true }).waitFor();
   assert.equal(await page.getByText("检测通过", { exact: true }).count(), 0);
+  assert.equal(await statusColor(page), "rgb(9, 101, 73)");
 }
 
 let browser;
@@ -181,6 +190,7 @@ try {
   const hold = Promise.withResolvers();
   holdCheck = hold.promise;
   const checkButton = byButton(page, "检测连接");
+  const neutralColor = await statusColor(page);
   const listRequest = page.waitForRequest((req) => req.url().endsWith("/check"));
   await checkButton.dblclick();
   await listRequest;
@@ -193,6 +203,7 @@ try {
   checkStatus = "unknown";
   await checkButton.click();
   await page.getByText("结果未知", { exact: true }).waitFor();
+  assert.equal(await statusColor(page), neutralColor);
   assert.equal(checks.length, 2);
 
   // An old check may finish after the user begins editing another supplier.
@@ -274,6 +285,15 @@ try {
   await dialog.waitFor({ state: "detached" });
   assert.equal(writes.length, 1);
   assert.equal(checks.length, 4);
+  checkStatus = "failed";
+  for (const [viewport, target] of [["desktop", page], ["mobile", mobile]]) {
+    await openSettings(target, "openai");
+    await byButton(target, "检测连接").click();
+    await target.getByText(checkMessage.failed, { exact: true }).waitFor();
+    assert.equal(await statusColor(target), "rgb(187, 52, 57)");
+    await screenshot(target, viewport + "-model-list-failed.png");
+  }
+  assert.equal(checks.length, 6);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ writes, checks, modelInvocations: 0, screenshots: output }, null, 2));
 } catch (error) {
