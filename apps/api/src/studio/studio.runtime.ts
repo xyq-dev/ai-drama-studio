@@ -40,6 +40,7 @@ import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
 import { AdminMediaKeysService } from "../admin/admin-media-keys.service";
 import { FeatureConfigService } from "../admin/feature-config.service";
+import { featureWritingProbe } from "../admin/feature-writing-probe";
 import { FeatureConfigVault, featureVaultPath } from "../admin/feature-config-vault";
 import { FeatureUsageStore, featureUsagePath } from "../admin/feature-usage-store";
 import { OperationLogStore, operationLogPath, setOperationJournal } from "../admin/operation-log-store";
@@ -228,6 +229,7 @@ export class StudioRuntime implements OnModuleDestroy {
         featureConfig = await FeatureConfigService.open({
           vault: await FeatureConfigVault.open({ path: featureVaultPath(admin.path), masterKey: admin.masterKey }),
           usage: new FeatureUsageStore(featureUsagePath(admin.path)),
+          probe: featureWritingProbe(globalThis.fetch),
           homeWorkspaceId: workspaceId,
           legacy: {
             live: async () => {
@@ -240,7 +242,11 @@ export class StudioRuntime implements OnModuleDestroy {
             },
             secret: async (feature, vendor) => {
               const snapshot = await legacySnapshots();
-              return legacySecretFor(feature, vendor, snapshot.models, snapshot.media);
+              const saved = adminModels ? await adminModels.savedSettings() : null;
+              const models = saved
+                ? { defaultProvider: saved.defaultProvider, providers: saved.providers }
+                : snapshot.models;
+              return legacySecretFor(feature, vendor, models, snapshot.media);
             },
           },
           policy: {

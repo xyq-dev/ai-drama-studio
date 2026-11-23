@@ -1,6 +1,7 @@
 // Isolated admin fixture for T-ENG-ADMIN-AI-MODELS-AND-WRITING.
 // Real site login + admin HTTP + encrypted temporary vaults. No application DB.
-// Connection tests use an in-process mock probe only; all outbound fetch is forbidden.
+// Connection tests stay in-process: DeepSeek writing uses the official probe against a stub
+// fetch; other vendors keep the mock probe. globalThis.fetch remains forbidden.
 import { createRequire } from "node:module";
 import { chmod, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -35,6 +36,9 @@ const { setAdminResponseHeaders } = require(join(root, "apps/api/dist/admin/admi
 const { AuthModule } = require(join(root, "apps/api/dist/auth/auth.module.js"));
 const { SiteAuth } = require(join(root, "apps/api/dist/auth/site-auth.js"));
 const { hashPassword } = require(join(root, "apps/api/dist/auth/password-hash.js"));
+const { featureWritingProbe } = require(join(root, "apps/api/dist/admin/feature-writing-probe.js"));
+const { legacyLiveFor, legacySecretFor } = require(join(root, "apps/api/dist/admin/feature-config.legacy.js"));
+const { DEEPSEEK_CHAT_COMPLETIONS_URL } = require("@ai-drama/providers");
 
 const password = process.env.ADMIN_MODELS_TEST_PASSWORD;
 if (!password || password.length < 16) {
@@ -65,6 +69,39 @@ function isolatedMockProbe() {
       message: "隔离预览模拟：连接检测已通过。",
       usage: { status: "present", amount: 1, unit: "request" },
     };
+  };
+}
+
+/** Official DeepSeek writing probe, with a loopback stub that never leaves the process. */
+function isolatedFeatureProbe() {
+  const writing = featureWritingProbe(async (url, init) => {
+    if (String(url) !== DEEPSEEK_CHAT_COMPLETIONS_URL) {
+      throw new Error("Isolated fixture forbids unexpected outbound URLs.");
+    }
+    const auth = new Headers(init?.headers).get("authorization") ?? "";
+    if (/FAILPROBE/i.test(auth)) {
+      return new Response("{}", { status: 401, headers: { "content-type": "application/json" } });
+    }
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-isolated",
+        model: "deepseek-flash",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: '{"ok":true}' },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  });
+  const fallback = isolatedMockProbe();
+  return async (input) => {
+    if (input.feature === "writing" && input.vendor === "deepseek") return writing(input);
+    return fallback(input);
   };
 }
 
@@ -103,7 +140,35 @@ const featureConfig = await FeatureConfigService.open({
   vault: featureVault,
   usage: new FeatureUsageStore(join(directory, "feature-usage.json")),
   homeWorkspaceId: env.APP_WORKSPACE_ID,
-  probe: isolatedMockProbe(),
+  probe: isolatedFeatureProbe(),
+  legacy: {
+    live: async () => {
+      const settings = backend.runtimeSettings();
+      const models = { defaultProvider: settings.defaultProvider, providers: settings.providers };
+      return {
+        writing: legacyLiveFor("writing", models, null),
+        storyboard: legacyLiveFor("storyboard", models, null),
+        voice: legacyLiveFor("voice", models, null),
+      };
+    },
+    secret: async (feature, vendor) => {
+      const saved = await backend.savedSettings();
+      return legacySecretFor(feature, vendor, {
+        defaultProvider: saved.defaultProvider,
+        providers: saved.providers,
+      }, null);
+    },
+  },
+  policy: {
+    writingAllowlist: async () => {
+      const saved = await backend.savedSettings();
+      return [
+        ...saved.providers.openai.models,
+        ...saved.providers.deepseek.models,
+        ...saved.providers.anthropic.models,
+      ];
+    },
+  },
 });
 const siteAuth = {
   kind: "enabled",
@@ -130,7 +195,7 @@ app.useBodyParser("json", { limit: "300kb" });
 app.setGlobalPrefix("api/v1");
 await app.listen(port, "127.0.0.1");
 console.log(
-  `Isolated admin API ready on loopback:${port}. Mock probe only. No DB or provider connections.`,
+  `Isolated admin API ready on loopback:${port}. In-process probe stub only. No DB or paid outbound.`,
 );
 process.once("SIGTERM", () => {
   void app.close().then(() => process.exit(0));

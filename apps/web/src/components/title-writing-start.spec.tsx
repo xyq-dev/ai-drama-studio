@@ -417,4 +417,26 @@ describe("the provider a start goes to", () => {
     await waitFor(() => expect(runPosts(calls)).toHaveLength(1));
     expect(runPosts(calls)[0]!.body).toMatchObject({ providerKey: "anthropic", model: "q-1" });
   });
+
+  it("an enabled DeepSeek binding is not blocked by an unready process default", async () => {
+    const { calls } = server((call) => call.url === "/api/v1/projects" ? json({ id: P1 }, 201) : json(finished(), 201), {
+      options: options({
+        defaultProvider: "deepseek",
+        providers: [
+          { providerKey: "openai", label: "OpenAI", ready: false, models: [], defaultModel: null, missing: ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"] },
+          { providerKey: "anthropic", label: "Claude", ready: false, models: [], defaultModel: null, missing: ["ANTHROPIC_API_KEY", "TITLE_WRITING_ANTHROPIC_MODELS"] },
+          { providerKey: "deepseek", label: "DeepSeek", ready: true, models: ["deepseek-flash", "deepseek-v4-pro"], defaultModel: "deepseek-v4-pro", missing: [] },
+        ],
+      }),
+    });
+    const { button } = await mount();
+    expect(screen.queryByTestId("ai-provider-blocked")).toBeNull();
+    expect(screen.queryByText(/还没有可用的模型服务/)).toBeNull();
+    expect(screen.getByTestId("ai-provider-target").textContent).toBe("本次发送给：DeepSeek · deepseek-v4-pro");
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
+    fireEvent.click(button);
+    await waitFor(() => expect(runPosts(calls)).toHaveLength(1));
+    expect(runPosts(calls)[0]!.body).toMatchObject({ providerKey: "deepseek", model: "deepseek-v4-pro" });
+    expect(projectPosts(calls)).toHaveLength(1);
+  });
 });

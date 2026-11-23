@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   BAILIAN_AI_SDK_ADAPTER,
   DEEPSEEK_AI_SDK_ADAPTER,
+  DEEPSEEK_WRITING_MODELS,
   QWEN_PLUS_MODEL,
   type FeatureWritingSdkAdapter,
 } from "./title-writing";
@@ -65,7 +66,10 @@ export const FEATURE_CAPABILITIES: Record<FeatureKey, readonly FeatureVendorCapa
       models: [{ id: QWEN_PLUS_MODEL, label: "通义千问 Plus" }],
     },
     { vendor: "openai", connected: true, gap: null, models: WRITING_OPENAI },
-    { vendor: "deepseek", connected: true, gap: null, models: [{ id: "deepseek-flash", label: "DeepSeek Flash" }] },
+    { vendor: "deepseek", connected: true, gap: null, models: DEEPSEEK_WRITING_MODELS.map((id) => ({
+      id,
+      label: id === "deepseek-v4-pro" ? "DeepSeek V4 Pro" : "DeepSeek Flash",
+    })) },
   ],
   storyboard: [
     { vendor: "bailian", connected: true, gap: null, models: [{ id: "qwen-image-3.0", label: "Qwen Image" }] },
@@ -125,7 +129,7 @@ export const featureDraftSaveSchema = z.object({
   expectedRevision: revision,
   vendor: vendorSchema,
   model: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
-  secretAction: z.enum(["keep", "replace", "clear"]),
+  secretAction: z.enum(["keep", "replace", "clear", "bind_vendor"]),
   apiKey: z.string().min(8).max(512).regex(/^\S+$/u).optional(),
 }).strict().superRefine((value, ctx) => {
   if ((value.secretAction === "replace") !== (value.apiKey !== undefined)) {
@@ -168,6 +172,11 @@ export interface FeatureSlotView {
   failureMessage: string | null;
   /** True when this slot's model and saved credential are exactly the enabled version. Never exposes the credential. */
   isLive?: boolean;
+  /**
+   * True when「AI 大模型」already holds a key for this vendor. Never includes the secret.
+   * The editor may bind that saved credential without asking the operator to paste it again.
+   */
+  vendorKeyConfigured?: boolean;
 }
 
 export interface FeatureLiveView {
@@ -334,8 +343,9 @@ export function featureChoiceBlock(input: FeatureChoiceInput): { ok: true } | { 
   if (!capability.models.some((item) => item.id === input.model)) {
     return { ok: false, code: "FEATURE_MODEL_NOT_APPROVED", message: "该模型不在获准列表中，已阻止这次操作。" };
   }
-  // Bailian writing models are approved by this catalog (qwen-plus). The older admin-model allowlist does not list them.
-  if (input.feature === "writing" && input.vendor !== "bailian" && input.writingAllowlist && !input.writingAllowlist.includes(input.model)) {
+  // Bailian and official DeepSeek writing models are approved by this catalog. The older admin-model
+  // allowlist may omit deepseek-v4-pro after a key was saved when only deepseek-flash was default.
+  if (input.feature === "writing" && input.vendor !== "bailian" && input.vendor !== "deepseek" && input.writingAllowlist && !input.writingAllowlist.includes(input.model)) {
     return { ok: false, code: "FEATURE_MODEL_NOT_APPROVED", message: "该模型不在当前写作白名单中，已阻止这次操作。" };
   }
   if (input.feature === "writing" && input.writingCallsRemaining !== null && input.writingCallsRemaining !== undefined && input.writingCallsRemaining < 1) {

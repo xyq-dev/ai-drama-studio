@@ -75,6 +75,12 @@ export {
   type SdkWritingKind,
 } from "./ai-sdk-writing-adapter";
 export {
+  DEEPSEEK_WRITING_PROBE_MAX_TOKENS,
+  DEEPSEEK_WRITING_PROBE_TIMEOUT_MS,
+  probeDeepseekWriting,
+  type DeepseekWritingProbeResult,
+} from "./deepseek-writing-probe";
+export {
   InMemoryTitleWritingStore,
   type MemoryBreakdownEpisode,
   type MemoryCharacter,

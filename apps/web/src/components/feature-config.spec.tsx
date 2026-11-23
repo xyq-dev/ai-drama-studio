@@ -471,3 +471,43 @@ it("keeps 检测连接 usable on a saved draft after a typed key is discarded wi
   fireEvent.click(within(drawer).getByRole("button", { name: "取消" }));
   expect((await test()).disabled).toBe(false);
 });
+
+it("binds a vendor-saved DeepSeek credential and lists both official writing models", async () => {
+  const config = view((next) => {
+    const writing = card(next, "writing");
+    writing.firstTime = false;
+    const deepseek = writing.slots.find((item) => item.vendor === "deepseek")!;
+    deepseek.vendorKeyConfigured = true;
+    deepseek.model = null;
+  });
+  install(operatorSession(), config, (url, init) => {
+    expect(url).toContain("/features/writing/draft");
+    const body = JSON.parse(String(init?.body)) as { vendor: string; model: string; secretAction: string; apiKey?: string };
+    expect(body).toMatchObject({ vendor: "deepseek", model: "deepseek-v4-pro", secretAction: "bind_vendor" });
+    expect(body).not.toHaveProperty("apiKey");
+    const saved = view((next) => {
+      const writing = card(next, "writing");
+      writing.firstTime = false;
+      const deepseek = writing.slots.find((item) => item.vendor === "deepseek")!;
+      deepseek.vendorKeyConfigured = true;
+      deepseek.keyConfigured = true;
+      deepseek.draftStatus = "saved";
+      deepseek.model = "deepseek-v4-pro";
+    });
+    return json(saved);
+  });
+  window.history.replaceState(null, "", "/admin/features?feature=writing");
+  render(<FeatureConfig />);
+  fireEvent.click(await screen.findByRole("button", { name: "修改配置" }));
+  const drawer = await screen.findByRole("dialog", { name: "修改配置" });
+  fireEvent.click(within(drawer).getByRole("button", { name: "DeepSeek" }));
+  expect(within(drawer).getByRole("option", { name: "DeepSeek Flash" })).toBeTruthy();
+  expect(within(drawer).getByRole("option", { name: "DeepSeek V4 Pro" })).toBeTruthy();
+  fireEvent.change(within(drawer).getByLabelText("模型"), { target: { value: "deepseek-v4-pro" } });
+  expect(within(drawer).getByLabelText("已保存密钥")).toBeTruthy();
+  expect(within(drawer).queryByLabelText("API Key")).toBeNull();
+  expect(within(drawer).getByText("将使用已在「AI 大模型」保存的凭证。保存草稿不会把完整密钥再显示在页面上。")).toBeTruthy();
+  fireEvent.click(within(drawer).getByRole("button", { name: "保存草稿" }));
+  expect(await screen.findByText("草稿未启用")).toBeTruthy();
+  expect(JSON.stringify(calls.map((call) => call.init?.body))).not.toContain(SECRET);
+});

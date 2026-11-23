@@ -268,11 +268,15 @@ describe("feature configuration", () => {
     const view = await service.view();
     expect(card(view, "writing").firstTime).toBe(false);
     expect(card(view, "writing").live).toMatchObject({ source: "legacy", vendor: "deepseek", model: "deepseek-flash" });
+    expect(slot(view, "writing", "deepseek").vendorKeyConfigured).toBe(true);
+    expect(slot(view, "writing", "openai").vendorKeyConfigured).toBe(false);
+    expect(JSON.stringify(view)).not.toContain(KEYS.legacyWriting);
+    // Presence checks during view() may ask every catalog vendor. readBinding still uses only the matching live slot.
+    calls.length = 0;
     expect((await service.readBinding("writing"))?.secret).toBe(KEYS.legacyWriting);
     expect((await service.readBinding("storyboard"))?.secret).toBe(KEYS.legacyImage);
     expect(calls).toEqual(["writing:deepseek", "storyboard:bailian"]);
     expect(calls).not.toContain("writing:bailian");
-    expect(JSON.stringify(view)).not.toContain(KEYS.legacyWriting);
   });
 
   it("refuses a real network probe when no mock is installed", async () => {
@@ -408,8 +412,13 @@ describe("feature configuration", () => {
     });
     expect(slot(view, "writing", "bailian").model).toBe("qwen-plus");
     await expect(service.saveDraft("writing", {
-      expectedRevision: view.revision, vendor: "deepseek", model: "deepseek-flash", secretAction: "replace", apiKey: KEYS.writingDeepseek,
+      expectedRevision: view.revision, vendor: "openai", model: "gpt-6-astra", secretAction: "replace", apiKey: KEYS.writing,
     })).rejects.toMatchObject({ code: "FEATURE_MODEL_NOT_APPROVED" });
+    // Official DeepSeek catalog models stay selectable even if the older allowlist is stale.
+    const deepseek = await service.saveDraft("writing", {
+      expectedRevision: view.revision, vendor: "deepseek", model: "deepseek-flash", secretAction: "replace", apiKey: KEYS.writingDeepseek,
+    });
+    expect(slot(deepseek, "writing", "deepseek").model).toBe("deepseek-flash");
   });
 
   it("rolls the live version back without changing a locked credential", async () => {
@@ -447,5 +456,37 @@ describe("feature configuration", () => {
     expect(filtered.totals).toHaveLength(3);
     expect(filtered.totals.find((item) => item.feature === "writing")?.costText).toBe("待回传费用");
     expect(JSON.stringify(filtered)).not.toContain(KEYS.writing);
+  });
+
+  it("binds a vendor-saved DeepSeek key without switching the live writing config or exposing the secret", async () => {
+    const liveBefore = { vendor: "openai", model: "gpt-6-astra", vendorLabel: "OpenAI", modelLabel: "GPT-6 Astra" };
+    const legacy: LegacyFeatureSource = {
+      live: async () => ({ writing: liveBefore, storyboard: null, voice: null }),
+      secret: async (feature, vendor) => feature === "writing" && vendor === "deepseek" ? KEYS.legacyWriting : null,
+    };
+    const { service } = await open({ legacy });
+    let view = await service.view();
+    expect(slot(view, "writing", "deepseek").vendorKeyConfigured).toBe(true);
+    expect(slot(view, "writing", "openai").vendorKeyConfigured).toBe(false);
+    expect(JSON.stringify(view)).not.toContain(KEYS.legacyWriting);
+    view = await service.saveDraft("writing", {
+      expectedRevision: view.revision, vendor: "deepseek", model: "deepseek-v4-pro", secretAction: "bind_vendor",
+    });
+    expect(slot(view, "writing", "deepseek")).toMatchObject({
+      keyConfigured: true, model: "deepseek-v4-pro", draftStatus: "saved", vendorKeyConfigured: true,
+    });
+    expect(card(view, "writing").live).toMatchObject(liveBefore);
+    const tested = await service.testDraft("writing", { expectedRevision: view.revision, vendor: "deepseek", confirmCost: true });
+    expect(tested.probe?.ok).toBe(true);
+    expect(card(tested.view, "writing").live).toMatchObject(liveBefore);
+    const enabled = await service.enable("writing", {
+      expectedRevision: tested.view.revision, vendor: "deepseek", testToken: slot(tested.view, "writing", "deepseek").testToken!,
+    });
+    const binding = await service.readBinding("writing");
+    expect(binding).toMatchObject({ vendor: "deepseek", model: "deepseek-v4-pro", secret: KEYS.legacyWriting, source: "enabled" });
+    expect(JSON.stringify(enabled)).not.toContain(KEYS.legacyWriting);
+    await expect(service.saveDraft("writing", {
+      expectedRevision: enabled.revision, vendor: "openai", model: "gpt-6-astra", secretAction: "bind_vendor",
+    })).rejects.toMatchObject({ code: "FEATURE_VENDOR_KEY_MISSING" });
   });
 });

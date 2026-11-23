@@ -354,9 +354,31 @@ export const anthropicWritingAdapter: WritingAdapter = {
  * system prompt (which itself is unchanged), together with the word "json" the mode requires. The answer is still
  * checked against the same zod schemas and domain rules as every other provider's: parsable JSON is not enough.
  */
+function jsonOutputExample(schema: Record<string, unknown>): string {
+  const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+    ? schema.properties as Record<string, unknown>
+    : null;
+  if (!properties) return "{\"ok\":true}";
+  const example: Record<string, unknown> = {};
+  for (const [key, definition] of Object.entries(properties)) {
+    if (!/^[A-Za-z0-9_]{1,64}$/.test(key)) continue;
+    const type = definition && typeof definition === "object" && "type" in definition
+      ? (definition as { type: unknown }).type
+      : undefined;
+    example[key] = type === "array" ? [] : type === "number" || type === "integer" ? 0 : type === "boolean" ? true : type === "object" ? {} : "...";
+    if (Object.keys(example).length >= 8) break;
+  }
+  return Object.keys(example).length > 0 ? JSON.stringify(example) : "{\"ok\":true}";
+}
+
+/**
+ * Official JSON Output requires the word "json" and an example in the prompt, plus response_format json_object.
+ * This appendix is added after the frozen system prompt; the business schema and prompt version are unchanged.
+ */
 export function deepseekSystemMessage(system: string, schemaName: string, jsonSchema: Record<string, unknown>): string {
   return `${system}\n\n输出格式（json）：只输出一个 JSON 对象，不要输出 Markdown 代码块、解释或其他文字。`
-    + `该对象必须符合下面名为 ${schemaName} 的 JSON Schema：\n${JSON.stringify(jsonSchema)}`;
+    + `该对象必须符合下面名为 ${schemaName} 的 JSON Schema：\n${JSON.stringify(jsonSchema)}`
+    + `\nEXAMPLE JSON OUTPUT:\n${jsonOutputExample(jsonSchema)}`;
 }
 
 function deepseekUsage(value: unknown): WritingUsage {

@@ -33,6 +33,28 @@ export function sdkWritingChatUrl(kind: SdkWritingKind): string {
   return `${sdkWritingBaseUrl(kind)}/chat/completions`;
 }
 
+/**
+ * Official JSON Output requires response_format type json_object on POST /chat/completions.
+ * The AI SDK may omit it; the outbound body is patched so the protocol is explicit and testable.
+ */
+function withDeepseekJsonFormat(fetchImpl: typeof fetch): typeof fetch {
+  return async (input, init) => {
+    let next = init;
+    if (init?.body && typeof init.body === "string") {
+      try {
+        const body = JSON.parse(init.body) as unknown;
+        if (body && typeof body === "object" && !Array.isArray(body)) {
+          (body as Record<string, unknown>).response_format = { type: "json_object" };
+          next = { ...init, body: JSON.stringify(body) };
+        }
+      } catch {
+        next = init;
+      }
+    }
+    return fetchImpl(input, next);
+  };
+}
+
 function exchange(
   outcome: WritingExchange["outcome"],
   errorCode: WritingErrorCode | null,
@@ -106,10 +128,11 @@ export async function sendAiSdkWriting(options: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const baseURL = sdkWritingBaseUrl(kind);
+  const fetchImpl = kind === "deepseek" ? withDeepseekJsonFormat(options.fetchImpl) : options.fetchImpl;
   try {
     const model = kind === "bailian"
-      ? createAlibaba({ apiKey, baseURL, fetch: options.fetchImpl })(request.model)
-      : createDeepSeek({ apiKey, baseURL, fetch: options.fetchImpl })(request.model);
+      ? createAlibaba({ apiKey, baseURL, fetch: fetchImpl })(request.model)
+      : createDeepSeek({ apiKey, baseURL, fetch: fetchImpl })(request.model);
     const result = await generateText({
       model,
       system: deepseekSystemMessage(request.system, request.schemaName, request.jsonSchema),

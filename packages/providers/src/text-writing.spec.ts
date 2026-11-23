@@ -358,13 +358,13 @@ describe("server configuration", () => {
     expect(configs.openai).toEqual({ providerKey: "openai", ok: false, models: [], missing: ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"] });
     // Claude without a model list uses TITLE_WRITING_DEFAULT_MODELS; the key is still missing, so it is not ready.
     expect(configs.anthropic).toEqual({ providerKey: "anthropic", ok: false, models: ["claude-opus-5-5"], missing: ["ANTHROPIC_API_KEY"] });
-    expect(configs.deepseek).toEqual({ providerKey: "deepseek", ok: false, models: ["deepseek-flash"], missing: ["DEEPSEEK_API_KEY"] });
+    expect(configs.deepseek).toEqual({ providerKey: "deepseek", ok: false, models: ["deepseek-flash", "deepseek-v4-pro"], missing: ["DEEPSEEK_API_KEY"] });
     expect(Object.keys(WRITING_ADAPTERS).sort()).toEqual(["anthropic", "deepseek", "openai"]);
   });
 
-  it("a DeepSeek key alone is a complete setup with deepseek-flash; the key is checked without any prefix rule", () => {
+  it("a DeepSeek key alone is a complete setup with official models; the key is checked without any prefix rule", () => {
     expect(titleWritingProviderConfigs({ DEEPSEEK_API_KEY: DEEPSEEK_KEY }).deepseek)
-      .toEqual({ providerKey: "deepseek", ok: true, url: DEEPSEEK_CHAT_COMPLETIONS_URL, apiKey: DEEPSEEK_KEY, models: ["deepseek-flash"], missing: [], workspaceId: null });
+      .toEqual({ providerKey: "deepseek", ok: true, url: DEEPSEEK_CHAT_COMPLETIONS_URL, apiKey: DEEPSEEK_KEY, models: ["deepseek-flash", "deepseek-v4-pro"], missing: [], workspaceId: null });
     for (const bad of ["short-key", "fake key with spaces 0123", "fake-deepseek-key-\u5bc6\u94a5-0123", `${"x".repeat(257)}`]) {
       expect(titleWritingProviderConfigs({ DEEPSEEK_API_KEY: bad }).deepseek).toMatchObject({ ok: false, missing: ["DEEPSEEK_API_KEY"] });
     }

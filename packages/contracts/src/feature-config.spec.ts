@@ -27,6 +27,8 @@ describe("feature config catalog", () => {
     expect(officialVoiceRoute("bailian")).toBe("bailian");
     expect(storyboardProviderForVendor("google")).toBeNull();
     expect(writingProviderForVendor("bailian")).toBe("bailian");
+    expect(FEATURE_CAPABILITIES.writing.find((item) => item.vendor === "deepseek")?.models.map((item) => item.id))
+      .toEqual(["deepseek-flash", "deepseek-v4-pro"]);
     expect(featureChoiceBlock({
       feature: "writing", vendor: "bailian", model: "qwen-plus", writingAllowlist: ["deepseek-flash"],
     }).ok).toBe(true);
@@ -37,8 +39,15 @@ describe("feature config catalog", () => {
     expect(featureChoiceBlock({ feature: "voice", vendor: "openai", model: "speech-2.8-hd" })).toMatchObject({ code: "FEATURE_VENDOR_UNCONNECTED" });
     expect(featureChoiceBlock({ feature: "storyboard", vendor: "google", model: "imagen" }).ok).toBe(false);
     expect(featureChoiceBlock({
-      feature: "writing", vendor: "deepseek", model: "deepseek-flash", writingAllowlist: ["other-model"],
+      feature: "writing", vendor: "openai", model: "gpt-6-astra", writingAllowlist: ["other-model"],
     })).toMatchObject({ code: "FEATURE_MODEL_NOT_APPROVED" });
+    // Official DeepSeek models stay selectable even when the older vault allowlist only has flash.
+    expect(featureChoiceBlock({
+      feature: "writing", vendor: "deepseek", model: "deepseek-flash", writingAllowlist: ["other-model"],
+    }).ok).toBe(true);
+    expect(featureChoiceBlock({
+      feature: "writing", vendor: "deepseek", model: "deepseek-v4-pro", writingAllowlist: ["deepseek-flash"],
+    }).ok).toBe(true);
     expect(featureChoiceBlock({
       feature: "writing", vendor: "deepseek", model: "deepseek-flash", writingCallsRemaining: 0,
     })).toMatchObject({ code: "FEATURE_BUDGET_BLOCKED" });

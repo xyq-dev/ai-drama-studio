@@ -71,7 +71,11 @@ function sentSchema(sent: { body: Record<string, unknown> }): Record<string, unk
   if (body.text) return body.text.format.schema;
   if (body.output_config) return body.output_config.format.schema;
   const system = body.messages!.find((message) => message.role === "system")!.content;
-  return JSON.parse(system.slice(system.indexOf("JSON Schema：\n") + "JSON Schema：\n".length)) as Record<string, unknown>;
+  const marker = "JSON Schema：\n";
+  let raw = system.slice(system.indexOf(marker) + marker.length);
+  const example = raw.indexOf("\nEXAMPLE JSON OUTPUT:");
+  if (example >= 0) raw = raw.slice(0, example);
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 describe("A. OpenAI, Claude and DeepSeek: the prompt, the JSON Schema sent and the check carry one catalog", () => {

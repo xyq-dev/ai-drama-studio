@@ -101,6 +101,15 @@ export class AdminModelsService implements AdminModelsBackend {
   /** Server-only startup copy; never returned by the controller. */
   runtimeSettings(): ManagedModelSettings { return structuredClone(this.effective); }
 
+  /**
+   * Saved vault settings, including a key that still waits for process restart.
+   * Feature-config bind_vendor reads this so a just-saved AI 大模型 key can be bound without a restart.
+   * Server-only; never returned by the controller.
+   */
+  async savedSettings(): Promise<ManagedModelSettings> {
+    return structuredClone((await this.vault.read()).saved);
+  }
+
   /** Whether saved settings wait for the restart. Reads only the revision numbers; never a secret. */
   async pendingRestart(): Promise<boolean> {
     return (await this.vault.read()).saved.revision !== this.effective.revision;
@@ -153,10 +162,10 @@ export class AdminModelsService implements AdminModelsBackend {
     // Only when a key is entered: saving an empty list with the key kept is how the list is emptied (not ready).
     const update = body.secretAction === "replace" && body.models.length === 0 && defaults.length > 0
       ? { ...body, models: [...defaults] } : body;
-    // Saving a DeepSeek key makes DeepSeek the default for new requests (the console says so before saving).
+    // Saving a vendor key must not switch the current writing provider. 功能配置 → 编剧 is the enablement path.
     await this.vault.updateProvider(providerKey, update, {
       claimDefault: providerKey === "anthropic",
-      makeDefault: providerKey === "deepseek" && body.secretAction === "replace",
+      makeDefault: false,
     });
     return this.view();
   }

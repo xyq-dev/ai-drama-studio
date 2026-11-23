@@ -40,7 +40,7 @@ const CREDENTIAL_ERRORS: Record<string, string> = {
   ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT: "DeepSeek API Key 的格式不受支持：应为 DeepSeek 开放平台 API keys 页面创建的完整密钥，长度 16–256 个字符，不能包含空格、换行或其他特殊字符。没有保存任何内容。",
 };
 
-export const DEEPSEEK_DEFAULT_NOTICE = "保存 DeepSeek 会将 DeepSeek 设为新创作的默认供应商；只影响新发起的请求，不改变已有任务，也不会把失败的请求改用其他供应商。";
+export const DEEPSEEK_DEFAULT_NOTICE = "保存 DeepSeek 密钥不会切换当前编剧供应商。请到「功能配置 → 编剧」选择模型并检测、启用后，新任务才会使用 DeepSeek。";
 export const DEEPSEEK_ADVANCED_NOTICE = DEEPSEEK_DEFAULT_NOTICE;
 export const CLAUDE_WORKSPACE_HINT = "通常只需填写 API Key。若密钥未限定 Workspace，请在高级设置填写 Workspace ID，或创建限定 Workspace 的密钥。";
 

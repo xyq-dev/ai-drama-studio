@@ -215,17 +215,20 @@ describe.skipIf(process.platform === "win32")("managed models runtime (real encr
     expect(managedProviderConfigs(other.runtimeSettings()).anthropic).toMatchObject({ ok: false, missing: ["ANTHROPIC_API_KEY"] });
     expect(claudeSetupState(await other.view()).state).toBe("key_missing");
   });
-  it("DeepSeek quick setup: only the key; the default model and the default provider come with it; nothing else changes", async () => {
+  it("DeepSeek key save: official models are filled in, the current default writing provider is left unchanged, and nothing else changes", async () => {
     const { env, bootstrap } = await fixture({ ANTHROPIC_API_KEY: CLAUDE_KEY, TITLE_WRITING_DEFAULT_PROVIDER: "anthropic" });
     const open = () => AdminModelsService.open(env, bootstrap, async () => true);
     let service = await open();
     const key = "fake-deepseek-service-key-0123456789";
+    const before = await service.view();
+    expect(before.saved.defaultProvider).toBe("anthropic");
     let view = await service.updateProvider("deepseek", { expectedRevision: 0, models: [], secretAction: "replace", apiKey: key });
     const deepseekOf = (which: "saved" | "active") => view[which].providers.find((item) => item.providerKey === "deepseek")!;
-    expect(deepseekOf("saved")).toMatchObject({ keyConfigured: true, models: ["deepseek-flash"], baseUrl: "https://api.deepseek.com/chat/completions", ready: true });
+    expect(deepseekOf("saved")).toMatchObject({ keyConfigured: true, models: ["deepseek-flash", "deepseek-v4-pro"], baseUrl: "https://api.deepseek.com/chat/completions", ready: true });
     expect(deepseekOf("saved")).not.toHaveProperty("workspaceId");
-    expect(view.saved.defaultProvider).toBe("deepseek");
-    // Saved is not applied: the running configuration and its default stay until the restart.
+    // Saving the vendor key must not switch the writing provider; 功能配置 → 编剧 is the enablement path.
+    expect(view.saved.defaultProvider).toBe("anthropic");
+    // Saved is not applied: the running configuration stays until the restart.
     expect(view).toMatchObject({ pendingRestart: true, savedRevision: 1, activeRevision: 0 });
     expect(view.active.defaultProvider).toBe("anthropic");
     expect(deepseekOf("active")).toMatchObject({ keyConfigured: false, ready: false });
@@ -237,9 +240,9 @@ describe.skipIf(process.platform === "win32")("managed models runtime (real encr
     service = await open();
     view = await service.view();
     expect(view).toMatchObject({ pendingRestart: false, activeRevision: 1 });
-    expect(view.active.defaultProvider).toBe("deepseek");
+    expect(view.active.defaultProvider).toBe("anthropic");
     expect(managedProviderConfigs(service.runtimeSettings()).deepseek).toEqual({ providerKey: "deepseek", ok: true,
-      url: "https://api.deepseek.com/chat/completions", apiKey: key, models: ["deepseek-flash"], missing: [], workspaceId: null });
+      url: "https://api.deepseek.com/chat/completions", apiKey: key, models: ["deepseek-flash", "deepseek-v4-pro"], missing: [], workspaceId: null });
     expect(managedProviderConfigs(service.runtimeSettings()).anthropic).toMatchObject({ ok: true, apiKey: CLAUDE_KEY });
   });
 
