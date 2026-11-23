@@ -32,6 +32,7 @@ function setup(options: {
   override?: (step: FixtureStep, attempt: number) => { status: number; body: unknown } | "hang" | "throw" | undefined;
   operatorToken?: string | null;
   siteOperator?: boolean;
+  defaultProvider?: "openai" | "anthropic" | "deepseek" | null;
   /** Episode plans by project; a project without one is a three-episode project with no target. */
   plans?: Record<string, { episodeCount: number; targetEpisodeSeconds: number }>;
   planReady?: boolean;
@@ -64,7 +65,7 @@ function setup(options: {
     allowProduction: options.allowProduction ?? false,
     operatorToken: options.operatorToken === undefined ? TOKEN : options.operatorToken,
     siteOperator: options.siteOperator ?? false,
-    defaultProvider: null,
+    defaultProvider: options.defaultProvider ?? null,
     providers,
     store,
     engine,
@@ -125,9 +126,63 @@ describe("title writing options", () => {
     expect((await waiting.service.options()).body).toMatchObject({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED" });
     waiting.store.bailianReady = true;
     const ready = await waiting.service.options();
-    expect(ready.body).toMatchObject({ code: "TITLE_WRITING_READY" });
+    expect(ready.body).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: null });
     expect(JSON.stringify(ready.body)).not.toContain("synthetic-bailian-key-zzzz");
     expect((ready.body as { providers: unknown[] }).providers).toHaveLength(3);
+    const leftover = setup({
+      env: {},
+      defaultProvider: "anthropic",
+      featureWritingLock: async () => ({
+        providerKey: "bailian", model: "qwen-plus", configVersion: "ver_bailian", apiKey: "synthetic-bailian-key-zzzz",
+        providerAdapter: "bailian.ai-sdk.v1",
+      }),
+    });
+    leftover.store.bailianReady = true;
+    const withDefault = await leftover.service.options();
+    expect(withDefault.body).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: null });
+    expect(JSON.stringify(withDefault.body)).not.toContain("synthetic-bailian-key-zzzz");
+  });
+
+  it("treats an enabled DeepSeek binding as ready when no process provider is", async () => {
+    const featureKey = "synthetic-deepseek-feature-key-zzzz";
+    const lock = async () => ({
+      providerKey: "deepseek" as const,
+      model: "deepseek-v4-pro",
+      configVersion: "ver_deepseek",
+      credentialRef: "fc_deepseek",
+      apiKey: featureKey,
+      providerAdapter: "deepseek.ai-sdk.v1" as const,
+    });
+    const only = setup({ env: {}, featureWritingLock: lock });
+    const body = (await only.service.options()).body as {
+      code: string;
+      defaultProvider: string | null;
+      providers: Array<{ providerKey: string; ready: boolean; defaultModel: string | null; missing: string[] }>;
+    };
+    expect(body.code).toBe("TITLE_WRITING_READY");
+    expect(body.defaultProvider).toBe("deepseek");
+    expect(body.providers).toEqual([
+      expect.objectContaining({ providerKey: "openai", ready: false }),
+      expect.objectContaining({ providerKey: "anthropic", ready: false }),
+      expect.objectContaining({ providerKey: "deepseek", ready: true, defaultModel: "deepseek-v4-pro", missing: [] }),
+    ]);
+    expect(body.providers.find((item) => item.providerKey === body.defaultProvider)?.ready).toBe(true);
+    expect(JSON.stringify(body)).not.toContain(featureKey);
+
+    for (const defaultProvider of ["anthropic", "openai"] as const) {
+      const leftover = setup({ env: {}, defaultProvider, featureWritingLock: lock });
+      const next = (await leftover.service.options()).body as typeof body;
+      expect(next.code).toBe("TITLE_WRITING_READY");
+      expect(next.defaultProvider).toBe("deepseek");
+      expect(next.providers.find((item) => item.providerKey === "deepseek")).toMatchObject({ ready: true, defaultModel: "deepseek-v4-pro" });
+      expect(next.providers.find((item) => item.providerKey === defaultProvider)?.ready).toBe(false);
+      expect(next.providers.find((item) => item.providerKey === next.defaultProvider)?.ready).toBe(true);
+      expect(JSON.stringify(next)).not.toContain(featureKey);
+    }
+
+    const stored = setup({ env: {}, featureWritingLock: lock });
+    stored.store.deepseekReady = false;
+    expect((await stored.service.options()).body).toMatchObject({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED" });
   });
 
   it("allows title writing in production only when explicitly authorized", async () => {

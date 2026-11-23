@@ -147,11 +147,24 @@ export class TitleWritingService {
     return this.deps.enabled && (this.deps.nodeEnv !== "production" || this.deps.allowProduction === true);
   }
 
-  /** True when the enabled writing binding is Bailian and the database can store that provider key. */
-  private async enabledBailianReady(): Promise<boolean> {
+  /**
+   * The enabled feature-config binding new tasks will use, once storage can accept that provider.
+   * Bailian keeps its own storage check. DeepSeek and the other process providers use providerStorageReady.
+   * The API key stays on the lock and is never copied into the options response.
+   */
+  private async enabledWritingBinding(): Promise<{
+    providerKey: TitleWritingProviderKey | typeof BAILIAN_WRITING_PROVIDER_KEY;
+    model: string;
+  } | null> {
     const locked = await this.deps.featureWritingLock?.() ?? null;
-    if (!locked?.apiKey || !locked.model || locked.providerKey !== BAILIAN_WRITING_PROVIDER_KEY) return false;
-    return bailianStorageReady(this.deps.store);
+    if (!locked?.apiKey || !locked.model) return null;
+    if (locked.providerKey === BAILIAN_WRITING_PROVIDER_KEY) {
+      return await bailianStorageReady(this.deps.store) ? { providerKey: locked.providerKey, model: locked.model } : null;
+    }
+    if (!isActiveTitleWritingProvider(locked.providerKey)) return null;
+    return await this.deps.store.providerStorageReady(locked.providerKey)
+      ? { providerKey: locked.providerKey, model: locked.model }
+      : null;
   }
 
   private schedule(runId: string): void {
@@ -165,37 +178,50 @@ export class TitleWritingService {
 
   async options(): Promise<TitleWritingResult> {
     const storageReady = await this.deps.store.storageReady();
+    // start() prefers this lock for new tasks. The page must see the same choice, including DeepSeek.
+    const binding = storageReady ? await this.enabledWritingBinding() : null;
     const providers = await Promise.all(TITLE_WRITING_PROVIDER_KEYS.map(async (providerKey) => {
       const config = this.deps.providers[providerKey];
       // A provider whose runs the database cannot store yet (Claude before its migration) is not offered as ready.
       const stored = storageReady && await this.deps.store.providerStorageReady(providerKey);
-      const missing = [...(config.ok ? [] : config.missing), ...(storageReady && !stored ? [PROVIDER_MIGRATION_GAP] : [])];
+      const fromBinding = binding?.providerKey === providerKey;
+      const processReady = config.ok && (!storageReady || stored);
+      const models = fromBinding && binding && !config.models.includes(binding.model)
+        ? [binding.model, ...config.models]
+        : config.models;
+      const missing = fromBinding
+        ? []
+        : [...(config.ok ? [] : config.missing), ...(storageReady && !stored ? [PROVIDER_MIGRATION_GAP] : [])];
       return {
         providerKey,
         label: WRITING_ADAPTERS[providerKey].label,
-        ready: config.ok && (!storageReady || stored),
-        models: config.models,
-        defaultModel: config.models[0] ?? null,
+        ready: processReady || Boolean(fromBinding),
+        models,
+        defaultModel: fromBinding && binding ? binding.model : (models[0] ?? null),
         missing,
       };
     }));
     // Without a ready configured default, Claude is offered first (TITLE_WRITING_PROVIDER_PREFERENCE).
     const firstReady = TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => providers.find((item) => item.providerKey === key)?.ready) ?? null;
-    // Feature-config Bailian is not a process provider. The creation page treats TITLE_WRITING_READY as permission to
-    // submit, and start() then uses the enabled binding. Storage must already accept the key.
-    const bailianReady = storageReady && await this.enabledBailianReady();
-    // A configured default is reported even when it is not ready: the page shows why and never substitutes another one.
+    // An enabled binding (Bailian or a process provider such as DeepSeek) is enough to submit. Storage must already
+    // accept that key. An unready process default is not reported while the binding will serve new tasks: the page
+    // would select it, mark the target blocked, and never reach start().
     const configuredDefault = this.deps.defaultProvider ?? null;
+    const configuredReady = configuredDefault !== null
+      && providers.some((item) => item.providerKey === configuredDefault && item.ready);
+    const reportedDefault = binding && isActiveTitleWritingProvider(binding.providerKey)
+      ? binding.providerKey
+      : binding ? (configuredReady ? configuredDefault : null) : (configuredDefault ?? firstReady);
     const code = !this.active() ? "TITLE_WRITING_DISABLED"
       : !operatorConfigured(this.deps) ? "TITLE_WRITING_FORBIDDEN"
         : !storageReady ? "TITLE_WRITING_STORAGE_UNAVAILABLE"
-          : firstReady === null && !bailianReady ? "TITLE_WRITING_PROVIDER_UNCONFIGURED" : "TITLE_WRITING_READY";
+          : firstReady === null && binding === null ? "TITLE_WRITING_PROVIDER_UNCONFIGURED" : "TITLE_WRITING_READY";
     const body: TitleWritingOptionsView = {
       enabled: this.active(),
       code,
       storageReady,
       operatorTokenRequired: this.deps.siteOperator !== true,
-      defaultProvider: configuredDefault ?? firstReady,
+      defaultProvider: reportedDefault,
       providers,
       configurationPending: await this.configurationPending(),
       maxCallsPerDay: this.deps.maxCallsPerDay,

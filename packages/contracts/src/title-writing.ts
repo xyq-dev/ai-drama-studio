@@ -633,9 +633,11 @@ export interface TitleWritingOptionsView {
    */
   operatorTokenRequired: boolean;
   /**
-   * The configured default provider even when it cannot be used now (its providers entry says why), else the first
-   * ready provider. A configured default that is not ready is never replaced by another provider: a request without a
-   * provider is refused until it is ready or the person explicitly names another one.
+   * The provider new tasks will use. An enabled, storage-writable feature-config binding is reported when it is a
+   * process provider (DeepSeek included), so an unready process default does not block the creation page. Bailian
+   * stays off this list: with no ready process default the value is null and the server lock chooses. Otherwise this
+   * is the configured default even when it cannot be used now, else the first ready provider. A configured default
+   * that is not ready is not replaced by another process provider unless that enabled binding will serve new tasks.
    */
   defaultProvider: TitleWritingProviderKey | null;
   providers: TitleWritingProviderOption[];

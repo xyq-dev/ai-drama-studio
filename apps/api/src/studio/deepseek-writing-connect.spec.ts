@@ -195,10 +195,8 @@ describe("DeepSeek writing connect (isolated, no real outbound)", () => {
 
     const store = new InMemoryTitleWritingStore();
     store.addProject(WS, PROJECT);
-    const providers = titleWritingProviderConfigs({
-      ANTHROPIC_API_KEY: CLAUDE_KEY,
-      TITLE_WRITING_ANTHROPIC_MODELS: "claude-opus-5-5",
-    });
+    // No process writing provider is ready. The leftover default stays anthropic, which saving the DeepSeek key did not switch.
+    const providers = titleWritingProviderConfigs({});
     const transport: WritingTransport = async () => { throw new Error("http transport"); };
     const engine = new TitleWritingEngine({
       workspaceId: WS,
@@ -264,6 +262,21 @@ describe("DeepSeek writing connect (isolated, no real outbound)", () => {
         });
       },
     });
+
+    const options = (await service.options()).body as {
+      code: string;
+      defaultProvider: string | null;
+      providers: Array<{ providerKey: string; ready: boolean; defaultModel: string | null; missing: string[] }>;
+    };
+    expect(options.code).toBe("TITLE_WRITING_READY");
+    expect(options.defaultProvider).toBe("deepseek");
+    expect(options.providers.find((item) => item.providerKey === "deepseek")).toMatchObject({
+      ready: true, defaultModel: "deepseek-v4-pro", missing: [],
+    });
+    expect(options.providers.find((item) => item.providerKey === "anthropic")?.ready).toBe(false);
+    expect(options.providers.find((item) => item.providerKey === options.defaultProvider)?.ready).toBe(true);
+    expect(JSON.stringify(options)).not.toContain(VENDOR_KEY);
+    expect(JSON.stringify(options)).not.toContain(CLAUDE_KEY);
 
     const started = await service.start(PROJECT, { title: TITLE }, { session: true, token: undefined }, {
       actorId: "operator",
