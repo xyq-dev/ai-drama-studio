@@ -2,6 +2,8 @@ import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Query, R
 import { PersistenceError } from "@ai-drama/database";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
 import { setAdminResponseHeaders } from "./admin-auth";
+import { StaffAccessError, assertStaffPermission } from "./staff-access.service";
+import type { StaffPermission } from "@ai-drama/domain";
 import { AdminDirectoryError, AdminDirectoryService } from "./admin-directory.service";
 
 export const ADMIN_DIRECTORY_SERVICE = "ADMIN_DIRECTORY_SERVICE";
@@ -29,7 +31,7 @@ export class AdminDirectoryController {
   @Get("works")
   works(@Headers() headers: RequestHeaders, @Query() query: Record<string, string | undefined>, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const { directory } = this.operator(headers);
+      const { directory } = this.operator(headers, "review_works");
       return directory.works({ q: query.q, status: query.status, owner: query.owner, cursor: query.cursor, limit: number(query.limit) });
     });
   }
@@ -37,7 +39,7 @@ export class AdminDirectoryController {
   @Get("works/:id")
   work(@Headers() headers: RequestHeaders, @Param("id") id: string, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const { directory } = this.operator(headers);
+      const { directory } = this.operator(headers, "review_works");
       return directory.workDetail(id);
     });
   }
@@ -100,7 +102,7 @@ export class AdminDirectoryController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
-      const { directory, auth, session } = this.operator(headers);
+      const { directory, auth, session } = this.operator(headers, "retry_paid");
       authorizeJsonWrite(auth, headers);
       const input = record(body);
       return directory.retryJob(session, id, {
@@ -126,7 +128,7 @@ export class AdminDirectoryController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
-      const { directory, auth } = this.operator(headers);
+      const { directory, auth } = this.operator(headers, "manage_creators");
       authorizeJsonWrite(auth, headers);
       const input = record(body);
       return directory.setUserStatus(id, { confirmed: input.confirmed === true, status: typeof input.status === "string" ? input.status : "" });
@@ -149,10 +151,11 @@ export class AdminDirectoryController {
     });
   }
 
-  private operator(headers: RequestHeaders): { directory: AdminDirectoryService; auth: SiteAuth; session: { username: string; accountId: string; role: string } } {
+  private operator(headers: RequestHeaders, permission?: StaffPermission): { directory: AdminDirectoryService; auth: SiteAuth; session: { username: string; accountId: string; role: string } } {
     if (!this.directory || this.site?.kind !== "enabled") throw new SiteAuthError(503, "AUTH_NOT_CONFIGURED");
     const session = this.site.auth.session(headers);
     if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+    if (permission) assertStaffPermission(session, permission);
     return { directory: this.directory, auth: this.site.auth, session };
   }
 
@@ -163,7 +166,7 @@ export class AdminDirectoryController {
       response.status(status);
       return body;
     } catch (cause) {
-      if (cause instanceof SiteAuthError) {
+      if (cause instanceof SiteAuthError || cause instanceof StaffAccessError) {
         response.status(cause.status);
         return { error: { code: cause.code, message: cause.message } };
       }

@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Query, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { SERIES_WRITING_SERVICE } from "./tokens";
 import { createTraceId } from "./studio.service";
 import { operatorProof } from "./operator-access";
@@ -44,7 +44,7 @@ export class SeriesWritingController {
   create(@Body() body: unknown, @Res({ passthrough: true }) response: StatusResponse, @Headers() headers: RequestHeaders,
     @Headers("idempotency-key") idempotencyKey?: string, @Headers("x-trace-id") traceHeader?: string) {
     return this.send(response, (service) => service.create(body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Get("projects/:projectId/series")
@@ -61,7 +61,7 @@ export class SeriesWritingController {
   grant(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Body() body: unknown, @Res({ passthrough: true }) response: StatusResponse,
     @Headers() headers: RequestHeaders, @Headers("idempotency-key") idempotencyKey?: string, @Headers("x-trace-id") traceHeader?: string) {
     return this.send(response, (service) => service.grant(projectId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Post("projects/:projectId/series/grants/:grantId/cancel")
@@ -75,31 +75,31 @@ export class SeriesWritingController {
     @Res({ passthrough: true }) response: StatusResponse, @Headers() headers: RequestHeaders, @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-trace-id") traceHeader?: string) {
     return this.send(response, (service) => service.resume(projectId, grantId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Post("projects/:projectId/series/batches/:batchNo/scripts")
   place(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Param("batchNo", BATCH_PARAM_PIPE) batchNo: number, @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse, @Headers("x-trace-id") traceHeader?: string) {
-    return this.send(response, (service) => service.placeBatch(projectId, batchNo, body, { actorId: "server-owner", traceId: createTraceId(traceHeader) }));
+    return this.send(response, (service) => service.placeBatch(projectId, batchNo, body, { actorId: storeActorId(), traceId: createTraceId(traceHeader) }));
   }
 
   @Post("projects/:projectId/series/plan-revisions")
   plan(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Body() body: unknown, @Res({ passthrough: true }) response: StatusResponse,
     @Headers("x-trace-id") traceHeader?: string) {
-    return this.send(response, (service) => service.savePlan(projectId, body, { actorId: "server-owner", traceId: createTraceId(traceHeader) }));
+    return this.send(response, (service) => service.savePlan(projectId, body, { actorId: storeActorId(), traceId: createTraceId(traceHeader) }));
   }
 
   @Post("projects/:projectId/series/ledger-revisions")
   ledger(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Body() body: unknown, @Res({ passthrough: true }) response: StatusResponse,
     @Headers("x-trace-id") traceHeader?: string) {
-    return this.send(response, (service) => service.saveLedger(projectId, body, { actorId: "server-owner", traceId: createTraceId(traceHeader) }));
+    return this.send(response, (service) => service.saveLedger(projectId, body, { actorId: storeActorId(), traceId: createTraceId(traceHeader) }));
   }
 
   @Post("projects/:projectId/series/decisions")
   decide(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Body() body: unknown, @Res({ passthrough: true }) response: StatusResponse,
     @Headers("x-trace-id") traceHeader?: string) {
-    return this.send(response, (service) => service.decide(projectId, body, { actorId: "server-owner", traceId: createTraceId(traceHeader) }));
+    return this.send(response, (service) => service.decide(projectId, body, { actorId: storeActorId(), traceId: createTraceId(traceHeader) }));
   }
 
   private async send(response: StatusResponse, work: (service: SeriesWritingService) => Promise<SeriesWritingResult>): Promise<unknown> {

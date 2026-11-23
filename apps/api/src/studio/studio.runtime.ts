@@ -276,6 +276,10 @@ export class StudioRuntime implements OnModuleDestroy {
     // Only the real fetch transport is wired. A missing configuration never falls back to a Mock answer. One engine
     // drives runs of both kinds, so recovery and the per-run in-process guard cover title writing and breakdowns alike.
     const writingUrl = { openai: OPENAI_RESPONSES_URL, anthropic: ANTHROPIC_MESSAGES_URL, deepseek: DEEPSEEK_CHAT_COMPLETIONS_URL };
+    const { installCreatorMembership } = await import("../membership/creator-task-guard");
+    const { PostgresMembershipStore } = await import("../membership/membership-store");
+    const membership = new PostgresMembershipStore(pool);
+    installCreatorMembership(membership, workspaceId);
     const titleEngine = new TitleWritingEngine({
       workspaceId,
       store: titleStore,
@@ -390,6 +394,7 @@ export class StudioRuntime implements OnModuleDestroy {
       defaultProvider,
       providers: titleProviders,
       store: candidateStore,
+      creatorMembership: membership,
       executor: new WritingCandidateExecutor({ workspaceId, store: candidateStore, providers: titleProviders, transport: createFetchTransport() }),
       projects: store,
       maxCallsPerDay,
@@ -412,6 +417,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const mediaStore = new RealMediaStore(pool, realRuntime.receiptCipher ? { receiptCipher: realRuntime.receiptCipher } : {});
     const autoCreation = new AutoCreationService({
       workspaceId,
+      creatorMembership: membership,
       enabled: autoCreationEnabled,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
       siteOperator: siteLoginValid,

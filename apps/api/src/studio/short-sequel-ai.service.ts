@@ -183,19 +183,32 @@ export class ShortSequelAiService {
   private async reserve(projectId: string, input: ShortSequelAiInput, context: Context, actor: StudioContext,
     requestHash: string, expectedAttemptId: string | null, confirmUncertainAttemptId: string | null): Promise<Result> {
     const now = this.now();
+    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
+    const hold = await openInstalledHold(actor, "writing", projectId, "short-sequel-ai");
+    if (hold.denied) return { status: 402, body: { error: { code: hold.denied.code, message: hold.denied.message } } };
+    try {
     const created = await this.deps.store.createShortSequel({ id: randomUUID(), workspaceId: this.deps.workspaceId, projectId,
       actorId: actor.actorId, idempotencyKey: actor.idempotencyKey!, requestHash, input, state: "reserved", errorCode: null,
       executorId: this.executorId, leaseUntil: new Date(now.getTime() + WRITING_CANDIDATE_LEASE_MS).toISOString(),
       script: null, usage: unknownUsage, createdAt: now.toISOString(), finishedAt: null },
     { nowIso: now.toISOString(), sinceIso: new Date(now.getTime() - 86_400_000).toISOString(), maxCallsPerDay: this.deps.maxCallsPerDay,
     maxActiveRuns: this.deps.maxActiveRuns, expectedAttemptId, confirmUncertainAttemptId });
-    if (!("attempt" in created)) return failure(created.kind);
+    if (!("attempt" in created)) {
+      if (created.kind === "conflict" && hold.holdId
+        && (await this.deps.store.findShortSequelByKey(this.deps.workspaceId, actor.actorId, actor.idempotencyKey!))?.projectId === projectId) hold.keep();
+      return failure(created.kind);
+    }
+    if (created.kind !== "advanced") hold.keep();
     if (created.kind === "created") {
+      if (hold.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.attempt.id);
       const run = () => this.execute(created.attempt);
       if (this.deps.schedule) this.deps.schedule(run);
       else setImmediate(() => { void run().catch(() => undefined); });
     }
     return { status: created.kind === "created" ? 202 : 200, body: this.view(context, [created.attempt], true) };
+    } finally {
+      await hold.release();
+    }
   }
 
   private async execute(attempt: ShortSequelAiAttempt) {

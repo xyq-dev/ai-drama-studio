@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { oneWritingUnit, verifyRefundedWritingResume } from "../../test/writing-resume-membership";
+import type { MemoryMembershipStore } from "../membership/membership-store";
 import { PersistenceError } from "@ai-drama/database";
 import {
   InMemoryTitleWritingStore,
@@ -24,6 +26,7 @@ const CONFIGURED: TitleWritingProviderEnv = {
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", ...(key ? { idempotencyKey: key } : {}) });
 
 function setup(options: {
+  creatorMembership?: MemoryMembershipStore;
   enabled?: boolean;
   allowProduction?: boolean;
   nodeEnv?: "development" | "test" | "production";
@@ -56,10 +59,12 @@ function setup(options: {
   const providers = titleWritingProviderConfigs(options.env ?? CONFIGURED);
   const transport: WritingTransport = fixtureChatTransport("夜班证词", { seen, ...(options.override ? { override: options.override } : {}) });
   const engine = new TitleWritingEngine({ workspaceId: WS, store, providers, transport, maxCallsPerDay: 30, timeoutMs: 20,
+    onMembershipSignal: options.creatorMembership?.noteRun.bind(options.creatorMembership),
     ...(options.featureCredential ? { featureCredential: options.featureCredential } : {}) });
   const pending: Array<Promise<void>> = [];
   const service = new TitleWritingService({
     workspaceId: WS,
+    creatorMembership: options.creatorMembership,
     nodeEnv: options.nodeEnv ?? "test",
     enabled: options.enabled ?? true,
     allowProduction: options.allowProduction ?? false,
@@ -215,6 +220,29 @@ describe("who may start a paid run", () => {
 });
 
 describe("starting a run", () => {
+  it.each(["duplicate", "different input", "another project"])("keeps only the winning task's writing unit after a racing %s", async (kind) => {
+    const member = await oneWritingUnit(WS);
+    const context = member.actor("same-submission");
+    const input = { title: "夜班证词" };
+    const { store, service, settle, seen } = setup({ creatorMembership: member.membership });
+    if (kind === "another project") {
+      await member.membership.adjust(WS, { accountId: member.accountId, feature: "writing", delta: 1, reason: "第二部作品", actorId: "admin" });
+    }
+    const create = store.createRun.bind(store);
+    vi.spyOn(store, "createRun").mockImplementationOnce(async (...args) => {
+      const winner = await service.start(P1, input, TOKEN, context);
+      expect(winner.status).toBe(201);
+      return create(...args);
+    });
+    const loser = await service.start(kind === "another project" ? P2 : P1, kind === "different input" ? { title: "新故事" } : input, TOKEN, context);
+    if (kind === "duplicate") expect(loser.status).toBe(200);
+    else expect(loser).toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_KEY_REUSED" } } });
+    expect(store.runs).toHaveLength(1);
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(kind === "another project" ? 1 : 0);
+    await settle();
+    expect(seen).toHaveLength(5);
+  });
+
   it("starts from the title alone and the run completes on the server", async () => {
     const { service, settle, seen, store } = setup();
     const result = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k1"));
@@ -393,6 +421,25 @@ describe("starting a run", () => {
 });
 
 describe("after a start", () => {
+  it("rechecks a refunded writing unit before resuming an unsent run and charges the replay only once", async () => {
+    const member = await oneWritingUnit(WS);
+    const { store, service, settle, seen } = setup({ creatorMembership: member.membership, plans: { [P1]: { episodeCount: 1, targetEpisodeSeconds: 60 } } });
+    const reserve = store.reserveCall.bind(store);
+    vi.spyOn(store, "reserveCall").mockImplementationOnce((call, limits, nowIso, lease) =>
+      reserve(call, { ...limits, maxCallsPerDay: 0 }, nowIso, lease));
+
+    const started = await service.start(P1, { title: "夜班证词" }, TOKEN, member.actor("new"));
+    expect(started.status).toBe(201);
+    const runId = (started.body as { run: { runId: string } }).run.runId;
+    await settle();
+    expect(store.runs.find((run) => run.id === runId)?.errorCode).toBe("TITLE_WRITING_DAILY_CAP");
+    await verifyRefundedWritingResume(member, {
+      runId, seen, settle, resume: () => service.resume(P1, runId, {}, TOKEN, member.actor("retry")),
+    });
+    expect(store.runs.find((run) => run.id === runId)?.state).toBe("completed");
+    expect(seen.map((item) => item.step)).toEqual(["concept", "outline", "episode:1"]);
+  });
+
   it("an uncertain call needs the operator token and an explicit confirmation to resend", async () => {
     const { service, settle, seen } = setup({ override: (step, attempt) => step === "concept" && attempt === 1 ? { status: 502, body: {} } : undefined });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));

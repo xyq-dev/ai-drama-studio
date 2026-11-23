@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { TITLE_WRITING_SERVICE } from "./tokens";
 import { createTraceId } from "./studio.service";
 import { operatorProof } from "./operator-access";
@@ -43,7 +43,7 @@ export class TitleWritingController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, this.writing.start(projectId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Get("projects/:projectId/title-runs/latest")
@@ -80,7 +80,7 @@ export class TitleWritingController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, this.writing.resume(projectId, runId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Post("projects/:projectId/title-runs/:runId/scripts")
@@ -92,7 +92,7 @@ export class TitleWritingController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, this.writing.placeScripts(projectId, runId, body,
-      { actorId: "server-owner", traceId: createTraceId(traceHeader) }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader) }));
   }
 
   private async send(response: StatusResponse, work: Promise<TitleWritingResult>): Promise<unknown> {

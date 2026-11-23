@@ -3,6 +3,7 @@ import { adminMediaKeyUpdateSchema, type MediaKeySlot } from "@ai-drama/contract
 import { noteCredentialChange } from "./operation-log-store";
 import type { AdminMediaKeysView } from "@ai-drama/contracts";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
+import { StaffAccessError, assertStaffPermission } from "./staff-access.service";
 import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
 import type { AdminMediaKeysBackend } from "./admin-media-keys.service";
 
@@ -27,6 +28,7 @@ export class AdminMediaKeysController {
   @Get("media-keys")
   mediaKeys(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
+      if (this.site?.kind === "enabled") this.requireOperator(headers, this.site.auth);
       const { auth, backend } = this.configured();
       this.requireOperator(headers, auth);
       return backend.view();
@@ -40,6 +42,7 @@ export class AdminMediaKeysController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, async () => {
+      if (this.site?.kind === "enabled") this.requireOperator(headers, this.site.auth);
       const { auth, backend } = this.configured();
       this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
@@ -74,6 +77,7 @@ export class AdminMediaKeysController {
   private requireOperator(headers: RequestHeaders, auth: SiteAuth): void {
     const session = auth.session(headers);
     if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+    assertStaffPermission(session, "maintain_model_keys");
   }
 
   private async send(response: AdminResponse, work: () => unknown | Promise<unknown>, status = 200): Promise<unknown> {
@@ -83,7 +87,7 @@ export class AdminMediaKeysController {
       response.status(status);
       return body;
     } catch (cause) {
-      if (cause instanceof SiteAuthError) {
+      if (cause instanceof SiteAuthError || cause instanceof StaffAccessError) {
         response.status(cause.status);
         return { error: { code: cause.code, message: cause.message } };
       }

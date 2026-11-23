@@ -102,11 +102,15 @@ export class VimaxPlanningService {
       const providerKey = this.choice(), provider = providerKey ? this.deps.providers[providerKey] : null;
       if (!providerKey || !provider?.ok || !provider.models[0]) return failure("VIMAX_PLANNING_PROVIDER_UNCONFIGURED");
       const now = this.now();
-      const created = await this.deps.store.create({ id: randomUUID(), workspaceId: this.deps.workspaceId, projectId, episodeId,
+      const { openInstalledHold } = await import("../membership/creator-task-guard");
+      const id = randomUUID();
+      const created = await this.deps.store.create({ id, workspaceId: this.deps.workspaceId, projectId, episodeId,
         actorId: context.actorId, idempotencyKey: context.idempotencyKey!, requestHash, request: parsed.data,
         providerKey, model: provider.models[0], executorId: this.deps.executor.executorId,
         leaseUntil: new Date(now.getTime() + 240000).toISOString(), createdAt: now.toISOString() },
-      { sinceIso: new Date(now.getTime() - 86400000).toISOString(), maxCallsPerDay: this.deps.maxCallsPerDay, maxActiveRuns: this.deps.maxActiveRuns });
+      { sinceIso: new Date(now.getTime() - 86400000).toISOString(), maxCallsPerDay: this.deps.maxCallsPerDay, maxActiveRuns: this.deps.maxActiveRuns },
+      async transaction => (await openInstalledHold(context, "writing", projectId, "vimax-planning", { transaction, taskKey: id })).denied);
+      if (created.kind === "quota_denied") return { status: 402, body: { error: created.denial } };
       if (created.kind === "created") {
         const work = () => this.deps.executor.execute(created.record.id);
         if (this.deps.schedule) this.deps.schedule(work); else setImmediate(() => { void work().catch(() => undefined); });

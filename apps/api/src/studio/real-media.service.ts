@@ -249,6 +249,8 @@ export class RealMediaService {
     return this.createJob(projectId,shotRevisionId,parsed.data,context);
   }
   private async createJob(projectId:string,shotRevisionId:string,input:{quoteId:string;budgetAuthorizationId:string},context:StudioContext,speech?:SpeechGenerationInput,batchOperation?:SpeechBatchDispatchRef){
+    const { openInstalledHold } = await import("../membership/creator-task-guard");
+    let feature: "video" | "voice" | "image";
     if(!context.idempotencyKey||!/^[-A-Za-z0-9_.:]{1,200}$/.test(context.idempotencyKey))throw new PersistenceError("IDEMPOTENCY_KEY_REQUIRED","An idempotency key is required");
     const routeKey=speech?`/speech-plans/${speech.planRevisionId}/lines/${speech.lineId}/generate`:`/projects/${projectId}/shot-revisions/${shotRevisionId}/real-media/generate`;
     const requestIdentity=speech?{...input,lineInputRevisionId:speech.lineInputRevisionId,inputHash:speech.inputHash}:input;
@@ -289,9 +291,12 @@ export class RealMediaService {
           }
         }else if(text!==snapshot.sourceText)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Saved source text changed; obtain a new quote");
       }
+      feature = snapshot.capability.startsWith("video") ? "video" : snapshot.capability === "audio.tts" ? "voice" : "image";
       return {workspaceId:this.options.workspaceId,projectId,sourceShotRevisionId:shotRevisionId,type:realMediaJobKind(snapshot.capability),
         requestedBy:context.actorId,kind:realMediaJobKind(snapshot.capability),inputHash:realMediaInputHash(snapshot),inputSnapshot:snapshot,traceId:context.traceId};
     },async(client,created)=>{
+      const hold = await openInstalledHold(context, feature, projectId, routeKey, { transaction: client, taskKey: created.jobId });
+      if (hold.denied) throw new PersistenceError("MEMBERSHIP_DENIED", hold.denied.message);
       await this.options.store.bindAuthorization(client,input.quoteId,created);
       if(batchOperation)await bindSpeechBatchJobInTransaction(client,batchOperation,created);
     });

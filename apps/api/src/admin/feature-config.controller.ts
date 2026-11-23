@@ -10,8 +10,10 @@ import {
   type FeatureKey,
   type FeatureVendor,
 } from "@ai-drama/contracts";
+import type { StaffPermission } from "@ai-drama/domain";
 import { noteCredentialChange, noteOperation } from "./operation-log-store";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
+import { StaffAccessError, assertStaffPermission } from "./staff-access.service";
 import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
 import { FeatureConfigError, type FeatureConfigService } from "./feature-config.service";
 
@@ -51,11 +53,12 @@ export class FeatureConfigController {
   ) {
     return this.send(response, async () => {
       const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
+      const session = this.requireOperator(headers, auth);
       authorizeJsonWrite(auth, headers);
       const key = this.feature(feature);
       const input = featureDraftSaveSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      if (input.data.secretAction !== "keep") assertStaffPermission(session, "maintain_model_keys");
       const view = await backend.saveDraft(key, input.data);
       const label = `${FEATURE_LABELS[key]} · ${vendorLabel(input.data.vendor)}`;
       if (input.data.secretAction === "replace" && input.data.apiKey) {
@@ -76,7 +79,7 @@ export class FeatureConfigController {
   ) {
     return this.send(response, async () => {
       const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
+      this.requireOperator(headers, auth, "probe_models");
       authorizeJsonWrite(auth, headers);
       const input = featureTestRequestSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -102,7 +105,7 @@ export class FeatureConfigController {
   ) {
     return this.send(response, async () => {
       const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
+      this.requireOperator(headers, auth, "enable_models");
       authorizeJsonWrite(auth, headers);
       const input = featureEnableRequestSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -128,7 +131,7 @@ export class FeatureConfigController {
   ) {
     return this.send(response, async () => {
       const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
+      this.requireOperator(headers, auth, "enable_models");
       authorizeJsonWrite(auth, headers);
       const input = featureRollbackRequestSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -157,7 +160,7 @@ export class FeatureConfigController {
   ) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
+      this.requireOperator(headers, auth, "view_usage");
       return backend.operatorUsage(projectId || null, episodeId || null, {
         feature: feature || null,
         vendor: vendor || null,
@@ -174,7 +177,7 @@ export class FeatureConfigController {
   ) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
-      this.requireOperator(headers, auth);
+      this.requireOperator(headers, auth, "view_usage");
       return backend.operatorUsageDetail(recordId);
     });
   }
@@ -189,9 +192,11 @@ export class FeatureConfigController {
     return { auth: this.site.auth, backend: this.backend };
   }
 
-  private requireOperator(headers: RequestHeaders, auth: SiteAuth): void {
+  private requireOperator(headers: RequestHeaders, auth: SiteAuth, permission?: StaffPermission) {
     const session = auth.session(headers);
     if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+    if (permission) assertStaffPermission(session, permission);
+    return session;
   }
 
   private async send(response: AdminResponse, work: () => unknown | Promise<unknown>): Promise<unknown> {
@@ -201,7 +206,7 @@ export class FeatureConfigController {
       response.status(200);
       return body;
     } catch (cause) {
-      if (cause instanceof SiteAuthError) {
+      if (cause instanceof SiteAuthError || cause instanceof StaffAccessError) {
         response.status(cause.status);
         return { error: { code: cause.code, message: cause.message } };
       }

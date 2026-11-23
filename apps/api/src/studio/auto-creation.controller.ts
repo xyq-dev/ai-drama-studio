@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Query, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { AUTO_CREATION_SERVICE } from "./tokens";
 import { createTraceId } from "./studio.service";
 import { operatorProof } from "./operator-access";
@@ -43,7 +43,7 @@ export class AutoCreationController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, (service) => service.start(projectId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Get("projects/:projectId/auto-runs/latest")
@@ -80,7 +80,7 @@ export class AutoCreationController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, (service) => service.resume(projectId, runId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Post("projects/:projectId/auto-runs/:runId/user-revise")
@@ -94,13 +94,13 @@ export class AutoCreationController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, (service) => service.userRevise(projectId, runId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Post("projects/:projectId/auto-runs/:runId/scripts")
   scripts(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Param("runId", UUID_PARAM_PIPE) runId: string, @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse, @Headers("x-trace-id") traceHeader?: string) {
-    return this.send(response, (service) => service.placeScripts(projectId, runId, body, { actorId: "server-owner", traceId: createTraceId(traceHeader) }));
+    return this.send(response, (service) => service.placeScripts(projectId, runId, body, { actorId: storeActorId(), traceId: createTraceId(traceHeader) }));
   }
 
   private canReadRejectionDiagnostic(headers: RequestHeaders): boolean {

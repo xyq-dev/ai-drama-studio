@@ -99,7 +99,7 @@ export class OperationLogStore {
       const handle = await fs.open(this.file, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const info = await handle.stat();
-        if (!info.isFile() || (info.mode & 0o777) !== 0o600 || info.size > 2_000_000) throw new Error("OPERATION_LOG_STORAGE");
+        if (!info.isFile() || !privateMode(info.mode, 0o600) || info.size > 2_000_000) throw new Error("OPERATION_LOG_STORAGE");
         const bytes = Buffer.alloc(info.size);
         await handle.read(bytes, 0, info.size, 0);
         return fileSchema.parse(JSON.parse(bytes.toString("utf8")));
@@ -116,7 +116,7 @@ export class OperationLogStore {
   private async persist(doc: { records: OperationLogRecord[] }): Promise<void> {
     const directory = dirname(this.file);
     const info = await fs.stat(directory);
-    if (!info.isDirectory() || (info.mode & 0o777) !== 0o700) throw new Error("OPERATION_LOG_STORAGE");
+    if (!info.isDirectory() || !privateMode(info.mode, 0o700)) throw new Error("OPERATION_LOG_STORAGE");
     const temporary = `${this.file}.${randomUUID()}.tmp`;
     const handle = await fs.open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
@@ -127,6 +127,15 @@ export class OperationLogStore {
     }
     await fs.rename(temporary, this.file);
   }
+}
+
+/**
+ * POSIX keeps the log directory at 0700 and the file at 0600.
+ * Node on Windows reports 0666 for both even after chmod, so that check cannot succeed there.
+ */
+function privateMode(actual: number, expected: number): boolean {
+  if (process.platform === "win32") return true;
+  return (actual & 0o777) === expected;
 }
 
 let journal: OperationLogStore | null = null;

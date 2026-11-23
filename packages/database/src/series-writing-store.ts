@@ -4,6 +4,7 @@ import {
   SERIES_UPSTREAM_BEFORE_SEND,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   currentUncertainCallIds,
+  writingMembershipOutcome,
   seriesBatchRange,
   seriesStageEpisodeNo,
   type SeriesAdmission,
@@ -40,6 +41,7 @@ import {
 } from "@ai-drama/contracts";
 import { seriesCurrentPlan, seriesGrantRemainingSends, seriesJobNormalSends, seriesJobSends, seriesJobUpstreamChange } from "@ai-drama/domain";
 import type { DatabasePool } from "./job-service";
+import { settleCreatorQuotaHold } from "./creator-quota-settle";
 import { episodePlanReadyIn } from "./episode-plan";
 import { SERIES_WRITING_MIGRATION } from "./migrations";
 import type { TextChainService } from "./text-chain";
@@ -528,6 +530,15 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
 
   private async stopGrant(client: PoolClient, grantId: string, state: SeriesGrantRecord["state"], reason: string | null, nowIso: string): Promise<void> {
     await client.query("UPDATE series_writing_grant SET state = $2, stop_reason = $3, updated_at = $4 WHERE id = $1", [grantId, state, reason, nowIso]);
+    if (state !== "canceled" && state !== "completed") return;
+    // A grant and its first job are created together. That job holds the one unit for all jobs in the grant.
+    const [firstJob] = (await client.query<{ id: string }>(
+      "SELECT id FROM series_writing_run WHERE grant_id = $1 ORDER BY job_seq LIMIT 1", [grantId])).rows;
+    if (!firstJob) return;
+    const calls = await client.query<Pick<SeriesCallRecord, "state" | "errorCode">>(
+      `SELECT state, error_code AS "errorCode" FROM series_writing_call
+        WHERE grant_id = $1 AND (state <> 'rejected' OR error_code IS DISTINCT FROM $2)`, [grantId, SERIES_UPSTREAM_BEFORE_SEND]);
+    await settleCreatorQuotaHold(client, firstJob.id, writingMembershipOutcome(calls.rows));
   }
 
   async finishJob(workspaceId: string, jobId: string, executorId: string, state: Exclude<SeriesRunState, "running" | "completed">, errorCode: string | null, nowIso: string): Promise<boolean> {

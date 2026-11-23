@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, Inject, Optional, Post, Res } from "@ne
 import type { CreatorAccountStore, CreatorPlanLedgerStore } from "@ai-drama/database";
 import { hashPassword } from "./password-hash";
 import { AUTH_WORKSPACE_ID, CREATOR_ACCOUNT_STORE, CREATOR_PLAN_LEDGER_STORE } from "./auth.tokens";
+import { STAFF_ACCESS_SERVICE, StaffAccessError, type StaffAccessService } from "../admin/staff-access.service";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuthState } from "./site-auth";
 
 interface AuthResponse {
@@ -26,6 +27,7 @@ export class AuthController {
     @Inject(AUTH_WORKSPACE_ID) private readonly workspaceId: string,
     @Optional() @Inject(CREATOR_ACCOUNT_STORE) private readonly creators: CreatorAccountStore | null = null,
     @Optional() @Inject(CREATOR_PLAN_LEDGER_STORE) private readonly plans: CreatorPlanLedgerStore | null = null,
+    @Optional() @Inject(STAFF_ACCESS_SERVICE) private readonly staff: StaffAccessService | null = null,
   ) {}
 
   @Get("session")
@@ -53,10 +55,12 @@ export class AuthController {
   login(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AuthResponse) {
     return this.send(response, async () => {
       const result = await this.auth().login(headers, body);
+      if (result.totpRequired) return { totpRequired: true, challenge: result.challenge };
       response.setHeader("Set-Cookie", result.cookies);
       if (result.session.role === "operator") {
         const { noteOperation } = await import("../admin/operation-log-store");
         await noteOperation({
+          actor: result.session.username,
           action: "登录后台",
           target: "/admin",
           result: "success",
@@ -65,6 +69,36 @@ export class AuthController {
         });
       }
       return result.session;
+    });
+  }
+
+  @Post("login/totp")
+  totp(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AuthResponse) {
+    return this.send(response, async () => {
+      const result = await this.auth().completeTotp(headers, body);
+      response.setHeader("Set-Cookie", result.cookies);
+      const { noteOperation } = await import("../admin/operation-log-store");
+      await noteOperation({
+        actor: result.session.username,
+        action: "登录后台",
+        target: "/admin",
+        result: "success",
+        source: "管理后台 /admin",
+        detail: "管理员通过验证器登录。日志不记录动态码或恢复码。",
+      }, [typeof body === "object" && body && "code" in body ? String((body as { code?: unknown }).code ?? "") : ""]);
+      return result.session;
+    });
+  }
+
+  @Post("invites/accept")
+  acceptInvite(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AuthResponse) {
+    return this.send(response, async () => {
+      if (!this.staff) throw new SiteAuthError(503, "AUTH_NOT_CONFIGURED");
+      this.auth().assertOrigin(headers);
+      const input = typeof body === "object" && body !== null ? body as Record<string, unknown> : {};
+      const token = typeof input.token === "string" ? input.token : "";
+      const password = typeof input.password === "string" ? input.password : "";
+      return this.staff.acceptInvite(token, password);
     });
   }
 
@@ -96,7 +130,7 @@ export class AuthController {
       if (!/^[A-Za-z0-9._-]{1,64}$/u.test(username) || password.length < 8 || password.length > 1_024) {
         throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
       }
-      if (username === auth.username) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+      if (username.toLowerCase() === auth.username.toLowerCase()) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
       const passwordHash = process.env.NODE_ENV === "test"
         ? await hashPassword(password, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 })
         : await hashPassword(password);
@@ -120,6 +154,10 @@ export class AuthController {
       response.status(status);
       return body;
     } catch (cause) {
+      if (cause instanceof StaffAccessError) {
+        response.status(cause.status);
+        return { error: { code: cause.code, message: cause.message } };
+      }
       const error = cause instanceof SiteAuthError ? cause : new SiteAuthError(503, "AUTH_NOT_CONFIGURED");
       response.status(error.status);
       return { error: { code: error.code, message: error.message } };

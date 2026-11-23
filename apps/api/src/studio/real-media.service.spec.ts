@@ -1,5 +1,6 @@
 import { describe,expect,it,vi } from "vitest";
 import { adoptAutoStoryboardImage, TextChainService, type DatabasePool } from "@ai-drama/database";
+import * as creatorTasks from "../membership/creator-task-guard";
 import type { RealMediaServiceOptions } from "./real-media.service";
 import { RealMediaService } from "./real-media.service";
 function options(){
@@ -155,6 +156,34 @@ describe("explicit real-media budget API",()=>{
     await expect(service.quote("project","shot",{capability:"video.generate",sourceImageAssetId:"11111111-1111-4111-8111-111111111111"})).rejects.toMatchObject({code:"REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED"});
     expect(o.raw.store.createQuote).not.toHaveBeenCalled();expect(o.raw.configurationFor).not.toHaveBeenCalled();
     expect((await service.capabilities("project")).unavailableCapabilities).toMatchObject({"video.generate":"REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED"});
+  });
+  it("reserves quota with the new job ID on the publishing transaction", async () => {
+    const o = options();
+    const client = { query: vi.fn(async () => ({ rows: [] })) };
+    const job = { jobId: "server-generated-job", workflowRunId: "workflow" };
+    const configuration = { capability: "image.generate", providerKey: "dashscope-media", enabled: true };
+    const snapshot = { shotRevisionId: "shot", capability: "image.generate", configuration, sourceText: "scene" };
+    const bindAuthorization = vi.fn();
+    const service = new RealMediaService({ ...o.typed, configurationFor: async () => configuration,
+      assets: { prepareRealShotGenerationInTransaction: async () => ({ promptText: "scene" }) },
+      store: { ...o.raw.store, consumeAuthorization: async () => snapshot, bindAuthorization },
+    } as unknown as RealMediaServiceOptions);
+    o.raw.jobs.createAndQueueWorkflowJob.mockImplementation(async (_scope, resolve, afterCreated) => {
+      await resolve(client);
+      await afterCreated(client, job);
+      return { status: 202, body: job };
+    });
+    const context = { actorId: "creator:22222222-2222-4222-8222-222222222222", traceId: "trace", idempotencyKey: "media-key" };
+    const body = { quoteId: "11111111-1111-4111-8111-111111111111", budgetAuthorizationId: "22222222-2222-4222-8222-222222222222" };
+    const quota = vi.spyOn(creatorTasks, "openInstalledHold").mockResolvedValue({
+      denied: { code: "QUOTA_EXHAUSTED", message: "额度已用完" }, holdId: null, keep() {}, async release() {},
+    });
+    try {
+      await expect(service.generate("project", "shot", body, context)).rejects.toMatchObject({ code: "MEMBERSHIP_DENIED" });
+      expect(quota).toHaveBeenCalledWith(context, "image", "project", "/projects/project/shot-revisions/shot/real-media/generate",
+        { transaction: client, taskKey: job.jobId });
+      expect(bindAuthorization).not.toHaveBeenCalled();
+    } finally { quota.mockRestore(); }
   });
   it("replays a permanent existing job before live feature, storage or provider checks",async()=>{
     const o=options();o.raw.enabled=false;o.raw.store.receiptReady=()=>false;

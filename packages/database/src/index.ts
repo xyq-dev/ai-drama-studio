@@ -13,6 +13,7 @@ export {
   SERIES_WRITING_MIGRATION,
   CREATOR_ACCOUNT_PLAN_MIGRATION,
   UPLOAD_SESSION_MIGRATION,
+  STAFF_MEMBERSHIP_MIGRATION,
   runMigrations,
   type MigrationClient,
   type MigrationOptions,
@@ -226,10 +227,12 @@ export {
 } from "./creator-access-context";
 export {
   CreatorAccountStore,
+  withAvailableLoginName,
   type CreatorAccountRecord,
   type CreatorAccountStatus,
   type CreatorAccountWithHash,
 } from "./creator-account-store";
+export { settleCreatorQuotaHold } from "./creator-quota-settle";
 export {
   CreatorPlanLedgerStore,
   type CreatorLedgerEntry,

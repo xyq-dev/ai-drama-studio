@@ -57,6 +57,11 @@ const NAV_GROUPS: NavGroup[] = [
         icon: "/design/tailadmin-v2/icon-users-round.svg",
       },
       {
+        href: "/admin/membership",
+        label: "会员管理",
+        icon: "/design/tailadmin-v2/icon-users-round.svg",
+      },
+      {
         href: "/admin/logs",
         label: "操作日志",
         icon: "/design/tailadmin-v2/icon-clipboard-list.svg",
@@ -77,6 +82,7 @@ function crumbFor(pathname: string): string[] {
   if (pathname.startsWith("/admin/jobs")) return ["管理后台", "任务与用量", "生成任务"];
   if (pathname.startsWith("/admin/usage")) return ["管理后台", "任务与用量", "调用记录"];
   if (pathname.startsWith("/admin/users")) return ["管理后台", "系统管理", "用户与权限"];
+  if (pathname.startsWith("/admin/membership")) return ["管理后台", "系统管理", "会员管理"];
   if (pathname.startsWith("/admin/logs")) return ["管理后台", "系统管理", "操作日志"];
   if (pathname.startsWith("/settings/storage")) return ["管理后台", "系统管理", "对象存储"];
   return ["管理后台", "功能配置", "模型与密钥"];

@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { oneWritingUnit, verifyRefundedWritingResume } from "../../test/writing-resume-membership";
+import type { MemoryMembershipStore } from "../membership/membership-store";
 import { AUTO_CREATION_CHECKS_VERSION, AUTO_CREATION_PROMPT_VERSION, autoCreationHardCap, autoCreationNormalCalls, type AutoCreationOptionsView, type AutoCreationRunView, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import type { AutoOfficialVideoProbe, AutoOfficialVoiceProbe, AutoStoryboardImageProbe, FetchedPage } from "@ai-drama/domain";
@@ -22,6 +24,7 @@ const CONTEXT = (key: string) => ({ actorId: "server-owner", traceId: "t", idemp
 
 interface Setup {
   plan?: { episodeCount: number; targetEpisodeSeconds: number | null };
+  creatorMembership?: MemoryMembershipStore;
   enabled?: boolean;
   env?: TitleWritingProviderEnv;
   defaultProvider?: TitleWritingProviderKey | null;
@@ -55,9 +58,11 @@ function setup(options: Setup = {}) {
   const providers = titleWritingProviderConfigs(options.env ?? BOTH);
   const maxCallsPerDay = options.maxCallsPerDay ?? 30;
   const engine = new AutoCreationEngine({ workspaceId: WS, store, providers, transport: autoFixtureTransport({ seen, plan: options.fixture }), maxCallsPerDay,
+    onMembershipSignal: options.creatorMembership?.noteRun.bind(options.creatorMembership),
     ...(options.fetchPages ? { fetchPages: options.fetchPages } : {}) });
   const pending: Array<() => Promise<void>> = [];
   const service = new AutoCreationService({
+    creatorMembership: options.creatorMembership,
     workspaceId: WS, enabled: options.enabled ?? true, operatorToken: TOKEN, defaultProvider: options.defaultProvider ?? null, providers, store, engine,
     projects: {
       getProject: async (_workspaceId: string, projectId: string) => {
@@ -111,6 +116,46 @@ function asStoredBy(store: InMemoryAutoCreationStore, runId: string, version: "v
 const errorCode = (body: unknown) => (body as { error?: { code?: string } }).error?.code;
 
 describe("automatic creation API", () => {
+  it.each(["duplicate", "different input"])("keeps only the winning task's writing unit after a racing %s", async (kind) => {
+    const member = await oneWritingUnit(WS);
+    const context = member.actor("same-submission");
+    const input = { idea: "末班车" };
+    const { store, service, settle, seen } = setup({ creatorMembership: member.membership });
+
+    const create = store.createRun.bind(store);
+    vi.spyOn(store, "createRun").mockImplementationOnce(async (...args) => {
+      const winner = await service.start(P1, input, TOKEN, context);
+      expect(winner.status).toBe(201);
+      return create(...args);
+    });
+    const loser = await service.start(P1, kind === "different input" ? { idea: "新故事" } : input, TOKEN, context);
+    if (kind === "duplicate") expect(loser.status).toBe(200);
+    else expect(loser).toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_KEY_REUSED" } } });
+    expect(store.runs).toHaveLength(1);
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(0);
+    await settle();
+    expect(seen).toHaveLength(autoCreationNormalCalls(1));
+  });
+
+  it("rechecks a refunded writing unit before resuming an unsent run and charges the replay only once", async () => {
+    const member = await oneWritingUnit(WS);
+    const { store, service, settle, seen } = setup({ creatorMembership: member.membership });
+    const reserve = store.reserveCall.bind(store);
+    vi.spyOn(store, "reserveCall").mockImplementationOnce((call, limits, nowIso, lease) =>
+      reserve(call, { ...limits, maxCallsPerDay: 0 }, nowIso, lease));
+
+    const started = await service.start(P1, {}, TOKEN, member.actor("new"));
+    expect(started.status).toBe(201);
+    const runId = (started.body as { run: { runId: string } }).run.runId;
+    await settle();
+    expect(store.runs.find((run) => run.id === runId)?.errorCode).toBe("AUTO_CREATION_DAILY_CAP");
+    await verifyRefundedWritingResume(member, {
+      runId, seen, settle, resume: () => service.resume(P1, runId, {}, TOKEN, member.actor("retry")),
+    });
+    expect(store.runs.find((run) => run.id === runId)?.state).toBe("completed");
+    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+  });
+
   it("exposes a ranking refusal excerpt only to the signed-in GET reader until resume clears it", async () => {
     const { service, store, settle } = setup({ fixture: { verificationSample: "ranking" } });
     const started = await service.start(P1, { revisionRounds: 0, callBudget: 7 }, TOKEN, CONTEXT("rank-rejection"));

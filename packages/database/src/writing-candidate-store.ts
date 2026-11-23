@@ -17,6 +17,7 @@ import type {
 } from "@ai-drama/contracts";
 import { SERIES_NEVER_SENT_ERROR_CODES, SHORT_SEQUEL_AI_SCHEMA } from "@ai-drama/contracts";
 import { PersistenceError, type DatabasePool } from "./job-service";
+import { settleCreatorQuotaHold } from "./creator-quota-settle";
 import { WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION } from "./migrations";
 import { shortSequelAiStale, shortSequelContextIn } from "./short-sequel";
 
@@ -340,11 +341,15 @@ export class PostgresWritingCandidateStore implements WritingCandidateStore {
   }
 
   async closeUnsent(workspaceId: string, requestId: string, executorId: string, errorCode: string, nowIso: string): Promise<boolean> {
-    const result = await this.query(
-      `UPDATE writing_candidate_request SET state = 'rejected', error_code = $4, executor_id = NULL, lease_until = NULL, finished_at = $5
-        WHERE id = $1 AND workspace_id = $2 AND executor_id = $3 AND state = 'reserved'`,
-      [requestId, workspaceId, executorId, errorCode, nowIso]);
-    return result.rowCount === 1;
+    return this.transaction(async client => {
+      const result = await client.query(
+        `UPDATE writing_candidate_request SET state = 'rejected', error_code = $4, executor_id = NULL, lease_until = NULL, finished_at = $5
+          WHERE id = $1 AND workspace_id = $2 AND executor_id = $3 AND state = 'reserved'`,
+        [requestId, workspaceId, executorId, errorCode, nowIso]);
+      if (result.rowCount !== 1) return false;
+      await settleCreatorQuotaHold(client, requestId, "unsent");
+      return true;
+    });
   }
 
   /** Conditional on the executor and the submitted state: a late executor after recovery changes nothing. */
@@ -359,13 +364,17 @@ export class PostgresWritingCandidateStore implements WritingCandidateStore {
 
   private async finishRecord(workspaceId: string, requestId: string, executorId: string,
     patch: Omit<WritingCandidateFinish, "candidate"> & { candidate: unknown }, nowIso: string): Promise<boolean> {
-    const result = await this.query(
-      `UPDATE writing_candidate_request SET state = $4, error_code = $5, provider_request_id = $6, response_model = $7,
-         usage_json = $8::jsonb, candidate_json = $9::jsonb, executor_id = NULL, lease_until = NULL, finished_at = $10
-        WHERE id = $1 AND workspace_id = $2 AND executor_id = $3 AND state = 'submitted'`,
-      [requestId, workspaceId, executorId, patch.state, patch.errorCode, patch.providerRequestId, patch.responseModel,
-        JSON.stringify(patch.usage), patch.candidate === null ? null : JSON.stringify(patch.candidate), nowIso]);
-    return result.rowCount === 1;
+    return this.transaction(async client => {
+      const result = await client.query(
+        `UPDATE writing_candidate_request SET state = $4, error_code = $5, provider_request_id = $6, response_model = $7,
+           usage_json = $8::jsonb, candidate_json = $9::jsonb, executor_id = NULL, lease_until = NULL, finished_at = $10
+          WHERE id = $1 AND workspace_id = $2 AND executor_id = $3 AND state = 'submitted'`,
+        [requestId, workspaceId, executorId, patch.state, patch.errorCode, patch.providerRequestId, patch.responseModel,
+          JSON.stringify(patch.usage), patch.candidate === null ? null : JSON.stringify(patch.candidate), nowIso]);
+      if (result.rowCount !== 1) return false;
+      await settleCreatorQuotaHold(client, requestId, patch.state === "unknown" ? "unknown" : "sent");
+      return true;
+    });
   }
 
   async createShortSequel(attempt: ShortSequelAiAttempt, options: {
@@ -447,10 +456,11 @@ export class PostgresWritingCandidateStore implements WritingCandidateStore {
         AND archived_at IS NULL AND status = 'ACTIVE' FOR UPDATE`, [projectId, workspaceId]);
       const problem = project.rowCount === 1 ? await sequelTargetProblem(client, attempt) : "source_changed";
       if (problem) {
-        await client.query(`UPDATE writing_candidate_request SET state = 'rejected', error_code = $4,
+        const closed = await client.query(`UPDATE writing_candidate_request SET state = 'rejected', error_code = $4,
             executor_id = NULL, lease_until = NULL, finished_at = $5
           WHERE id = $1 AND workspace_id = $2 AND executor_id = $3 AND state = 'reserved' AND ${SEQUEL_ROW}`,
         [id, workspaceId, executorId, problem, nowIso]);
+        if (closed.rowCount === 1) await settleCreatorQuotaHold(client, id, "unsent");
         return false;
       }
       const result = await client.query(`UPDATE writing_candidate_request SET state = 'submitted', lease_until = $5
@@ -479,14 +489,20 @@ export class PostgresWritingCandidateStore implements WritingCandidateStore {
 
   /** Only expired leases. A request that was never sent is closed; one that may have been sent becomes unknown. */
   async recoverExpired(workspaceId: string, nowIso: string): Promise<number> {
-    const result = await this.query(
-      `UPDATE writing_candidate_request
-          SET state = CASE WHEN state = 'submitted' THEN 'unknown' ELSE 'rejected' END,
-              error_code = CASE WHEN state = 'submitted' THEN 'executor_lost' ELSE 'executor_lost_before_send' END,
-              executor_id = NULL, lease_until = NULL, finished_at = $2
-        WHERE workspace_id = $1 AND state IN ('reserved', 'submitted') AND lease_until <= $2`,
-      [workspaceId, nowIso]);
-    return result.rowCount ?? 0;
+    return this.transaction(async client => {
+      const recovered = await client.query<{ id: string; state: "unknown" | "rejected" }>(
+        `UPDATE writing_candidate_request
+            SET state = CASE WHEN state = 'submitted' THEN 'unknown' ELSE 'rejected' END,
+                error_code = CASE WHEN state = 'submitted' THEN 'executor_lost' ELSE 'executor_lost_before_send' END,
+                executor_id = NULL, lease_until = NULL, finished_at = $2
+          WHERE workspace_id = $1 AND state IN ('reserved', 'submitted') AND lease_until <= $2
+          RETURNING id, state`,
+        [workspaceId, nowIso]);
+      for (const record of recovered.rows) {
+        await settleCreatorQuotaHold(client, record.id, record.state === "unknown" ? "unknown" : "unsent");
+      }
+      return recovered.rows.length;
+    });
   }
 
   private async query(sql: string, values: unknown[]): Promise<QueryResult<Row>> {

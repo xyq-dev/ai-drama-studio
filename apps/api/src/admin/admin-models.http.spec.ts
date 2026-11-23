@@ -67,13 +67,17 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     now = Date.parse("2026-10-10T00:00:00Z");
   });
 
-  async function start(options: { site?: "enabled" | "disabled" | "misconfigured"; backendMissing?: boolean } = {}) {
+  async function start(options: { site?: "enabled" | "disabled" | "misconfigured"; backendMissing?: boolean; staff?: boolean } = {}) {
     await app?.close();
     store = backend();
     const kind = options.site ?? "enabled";
     const state: SiteAuthState = kind === "enabled"
       ? { kind, auth: new SiteAuth({ username: "admin", passwordHash: HASH, publicOrigin: ORIGIN }, { now: () => now }) }
       : { kind };
+    if (state.kind === "enabled" && options.staff) state.auth.setStaffDirectory({
+      findByUsername: async (username) => ({ id: "staff", username, passwordHash: HASH, status: "active", permissions: ["enable_models"], totpEnabled: false }),
+      recordLogin: async () => {}, verifySecondFactor: async () => false,
+    });
     const module = await Test.createTestingModule({
       imports: [AuthModule.register({ NODE_ENV: "test" } as ApiEnv, state)],
       controllers: [AdminModelsController],
@@ -91,6 +95,7 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     app.useGlobalFilters(new SafeExceptionFilter());
     await app.listen(0, "127.0.0.1");
     base = `${await app.getUrl()}/api/v1`;
+    return state.kind === "enabled" ? state.auth : null;
   }
 
   const request = (path: string, init?: RequestInit) => fetch(`${base}${path}`, init);
@@ -104,6 +109,27 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     const view = await response.json() as { csrfToken: string };
     return { cookie, headers: { cookie, origin: ORIGIN, "content-type": "application/json", "x-csrf-token": view.csrfToken } };
   }
+
+  it("checks credential permission on provider and vendor writes independently of enable_models", async () => {
+    const auth = await start({ staff: true });
+    const { headers } = await signedIn();
+    for (const [path, payload, method] of [
+      ["/admin/models/providers/anthropic", { expectedRevision: 0, models: [] }, store.updateProvider],
+      ["/admin/models/vendors/bailian", { expectedRevision: 0, channel: "bailian-cn", model: "qwen-plus" }, store.saveVendor],
+    ] as const) {
+      const put = (credential: object) => request(path, { method: "PUT", headers, body: JSON.stringify({ ...payload, ...credential }) });
+      auth!.syncStaff("staff", { status: "active", permissions: ["enable_models"] });
+      for (const credential of [{ secretAction: "clear" }, { secretAction: "replace", apiKey: SECRET },
+        { secretAction: "keep", workspaceAction: "replace", workspaceId: "test-workspace" }]) {
+        expect((await put(credential)).status).toBe(403);
+      }
+      expect(method).not.toHaveBeenCalled();
+      expect((await put({ secretAction: "keep" })).status).toBe(200);
+      auth!.syncStaff("staff", { status: "active", permissions: ["enable_models", "maintain_model_keys"] });
+      expect((await put({ secretAction: "replace", apiKey: SECRET })).status).toBe(200);
+      expect(method).toHaveBeenCalledTimes(2);
+    }
+  });
 
   it("requires the site session before every console read and write reaches the backend", async () => {
     await start();

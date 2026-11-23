@@ -271,6 +271,8 @@ export * from "./auto-creation-cost-display";
 export * from "./auto-creation-media-capability";
 export * from "./commercial-web-robustness";
 export * from "./creator-account-plan";
+export * from "./staff-access";
+export * from "./creator-membership";
 export * from "./auto-creation-numbers";
 export * from "./auto-creation-references";
 export * from "./auto-creation-sources";

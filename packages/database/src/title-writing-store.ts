@@ -3,6 +3,7 @@ import {
   SCRIPT_BREAKDOWN_INPUT_SCHEMA,
   SCRIPT_BREAKDOWN_STEP_KEY,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  writingMembershipOutcome,
   TITLE_WRITING_RUN_KIND_DISABLED,
   settledSaveOutcome,
   currentUncertainCallIds,
@@ -43,6 +44,7 @@ import { projectEpisodePlanIn } from "./episode-plan";
 import { WRITING_PROVIDER_MIGRATION } from "./migrations";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
+import { settleCreatorQuotaHold } from "./creator-quota-settle";
 import { recentWritingCalls, writingCallLockKey, runningWritingRuns } from "./writing-candidate-store";
 import { readWorkbenchPlan } from "./script-workbench-validation";
 
@@ -534,6 +536,9 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         await client.query("UPDATE title_writing_step SET state = 'canceled', updated_at = $2 WHERE run_id = $1 AND state = 'pending'",
           [runId, nowIso]);
       }
+      const calls = await client.query<{ state: TitleCallRecord["state"]; errorCode: string | null }>(
+        'SELECT state, error_code AS "errorCode" FROM title_writing_call WHERE run_id = $1', [runId]);
+      await settleCreatorQuotaHold(client, runId, writingMembershipOutcome(calls.rows));
       return true;
     });
   }
@@ -596,6 +601,10 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       if (isScriptBreakdownInput(run.input)) {
         if (!await this.breakdownScriptCurrent(client, workspaceId, projectId, run.input)) return { kind: "source_changed" };
         if (!await this.breakdownSceneSetCurrent(client, workspaceId, projectId, run.input)) return { kind: "conflict" };
+      }
+      if (sends && request.reserveForSend) {
+        const denial = await request.reserveForSend(client);
+        if (denial) return { kind: "quota_denied", denial };
       }
       await client.query(
         `INSERT INTO title_writing_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)

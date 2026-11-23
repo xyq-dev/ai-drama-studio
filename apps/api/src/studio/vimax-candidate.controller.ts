@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Param, Post, Query, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { VIMAX_CANDIDATE_SERVICE } from "./tokens";
 import { createTraceId, type StudioContext } from "./studio.service";
 import type { VimaxCandidateResult, VimaxCandidateService } from "./vimax-candidate.service";
@@ -33,7 +33,7 @@ export class VimaxCandidateController {
     @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
     @Query() query: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
-  ) { return this.send(response, this.candidates.list(projectId, episodeId, "server-owner", query)); }
+  ) { return this.send(response, this.candidates.list(projectId, episodeId, storeActorId(), query)); }
 
   @Get(`${BASE}/:candidateId`)
   get(
@@ -41,7 +41,7 @@ export class VimaxCandidateController {
     @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
     @Param("candidateId", UUID_PARAM_PIPE) candidateId: string,
     @Res({ passthrough: true }) response: StatusResponse,
-  ) { return this.send(response, this.candidates.get(projectId, episodeId, candidateId, "server-owner")); }
+  ) { return this.send(response, this.candidates.get(projectId, episodeId, candidateId, storeActorId())); }
 
   @Post(BASE)
   create(
@@ -76,7 +76,7 @@ export class VimaxCandidateController {
   ) { return this.send(response, this.candidates.placeShots(projectId, episodeId, candidateId, body, this.context(key, traceHeader))); }
 
   private context(idempotencyKey?: string, traceHeader?: string): StudioContext {
-    return { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey };
+    return { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey };
   }
 
   private async send(response: StatusResponse, work: Promise<VimaxCandidateResult>): Promise<unknown> {

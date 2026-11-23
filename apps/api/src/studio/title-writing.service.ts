@@ -41,6 +41,8 @@ import {
 } from "@ai-drama/providers";
 import type { StudioContext } from "./studio.service";
 import { platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
+import { installedCreatorMembership, openCreatorHold, writingResumeQuotaCheck } from "../membership/creator-task-guard";
+import type { MembershipStore } from "../membership/membership-store";
 
 export interface TitleWritingDependencies {
   workspaceId: string;
@@ -77,6 +79,8 @@ export interface TitleWritingDependencies {
     apiKey?: string;
     providerAdapter?: "bailian.ai-sdk.v1" | "deepseek.ai-sdk.v1";
   } | null>;
+  /** Present after the membership migration. Creators are checked before a new run is stored or sent. */
+  creatorMembership?: MembershipStore;
   /** Persists the credential reference for a new run before the engine sends. */
   featureWritingCommit?: (input: {
     runId: string;
@@ -122,7 +126,10 @@ const MESSAGES: Record<string, string> = {
 };
 
 function failure(status: number, code: string, details?: Record<string, unknown>): TitleWritingResult {
-  return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
+  const message = typeof details?.message === "string" ? details.message : (MESSAGES[code] ?? "请求失败");
+  const rest = details ? { ...details } : undefined;
+  if (rest && "message" in rest) delete rest.message;
+  return { status, body: { error: { code, message, ...(rest && Object.keys(rest).length > 0 ? { details: rest } : {}) } } };
 }
 
 
@@ -349,7 +356,14 @@ export class TitleWritingService {
     });
     // The store looks the key up first: a replay of an existing run is returned whatever the quota is now. A new v2
     // run needs N+2 calls left in the rolling 24 hours; this reserves nothing. v1 keeps its existing per-call checks.
-    const created = await this.deps.store.createRun(run, {
+    const membership = this.deps.creatorMembership ?? installedCreatorMembership()?.store;
+    const hold = previous
+      ? { denied: null, holdId: null as string | null, keep() {}, async release() {} }
+      : await openCreatorHold(membership, this.deps.workspaceId, context, "writing", projectId, "title-writing");
+    if (hold.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
+    let created;
+    try {
+    created = await this.deps.store.createRun(run, {
       maxActiveRuns: this.deps.maxActiveRuns,
       ...(frozen.version === 2 ? {
         quota: {
@@ -364,6 +378,8 @@ export class TitleWritingService {
         ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
         : failure(429, created.code);
     }
+    // Both contenders reserved the same unit only for the same project and run kind.
+    if (created.kind !== "active" && created.bundle.run.projectId === projectId && !isScriptBreakdownRun(created.bundle.run)) hold.keep();
     // A start stored with prompt v2 or v3 and replayed after an upgrade is the same request, not a reused key.
     if (created.kind === "conflict" && !sameStartBeforeGuidance(created.bundle.run, run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     // One AI task per work. Only a running title run is offered to be opened; a running script breakdown is named as the
@@ -375,6 +391,7 @@ export class TitleWritingService {
     }
     if (created.bundle.run.projectId !== projectId || isScriptBreakdownRun(created.bundle.run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") {
+      if (hold.holdId) await membership?.bindTask(hold.holdId, created.bundle.run.id);
       if (locked?.apiKey && locked.credentialRef && model) {
         await this.deps.featureWritingCommit?.({
           runId: created.bundle.run.id,
@@ -388,6 +405,9 @@ export class TitleWritingService {
       this.schedule(created.bundle.run.id);
     }
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);
+    } finally {
+      await hold.release();
+    }
   }
 
   /**
@@ -457,7 +477,9 @@ export class TitleWritingService {
     const legacy = isLegacyDeepseekRun(existing.run.input);
     const provider = providerConfigFor(this.deps.providers, runProvider);
     const confirmed = parsed.data.confirmUncertainCallIds;
+    const quota = writingResumeQuotaCheck(this.deps.creatorMembership ?? installedCreatorMembership()?.store, existing.run, "title-writing");
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
+      ...(quota ? { reserveForSend: quota } : {}),
       resumeKey: context.idempotencyKey,
       requestHash: hashTitleResume(runId, confirmed),
       confirmedCallIds: confirmed,
@@ -468,6 +490,7 @@ export class TitleWritingService {
         || (provider !== null && provider.ok && provider.models.includes(existing.run.input.model))
       ),
     }, this.now().toISOString());
+    if (prepared.kind === "quota_denied") return failure(402, prepared.denial.code, { message: prepared.denial.message });
     if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
       if (prepared.kind === "not_found") return failure(404, "NOT_FOUND");

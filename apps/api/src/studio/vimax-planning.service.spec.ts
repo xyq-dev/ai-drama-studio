@@ -7,6 +7,7 @@ import {
 } from "@ai-drama/contracts";
 import { hashVimaxPlanningRequest } from "@ai-drama/domain";
 import { titleWritingProviderConfigs } from "@ai-drama/providers";
+import * as creatorTasks from "../membership/creator-task-guard";
 import { VimaxPlanningService, type VimaxPlanningDependencies } from "./vimax-planning.service";
 const WS = "11111111-1111-4111-8111-111111111111", NOW = "2026-11-01T00:00:00.000Z";
 function fixture() {
@@ -75,6 +76,24 @@ describe("ViMax planning API sends only newly reserved authorized work", () => {
   it("GET history and options never execute, maintain or reserve", async () => {
     const h = setup(); await h.service.options(h.i.projectId, h.i.episodeId); await h.service.list(h.i.projectId, h.i.episodeId, "server-owner");
     expect(h.store.create).not.toHaveBeenCalled(); expect(h.executor.execute).not.toHaveBeenCalled(); expect(h.executor.maintain).not.toHaveBeenCalled();
+  });
+  it("binds the new request ID in the store transaction and refuses to schedule when quota is exhausted", async () => {
+    const h = setup();
+    const transaction = { query: vi.fn(async () => ({ rows: [] })) };
+    const context = { actorId: "creator:22222222-2222-4222-8222-222222222222", traceId: "trace", idempotencyKey: "single" };
+    const denial = { code: "QUOTA_EXHAUSTED", message: "没有剩余额度" };
+    const reserve = vi.spyOn(creatorTasks, "openInstalledHold").mockResolvedValue({ denied: denial, holdId: null, keep() {}, async release() {} });
+    vi.mocked(h.store.create).mockImplementationOnce(async (r, _limits, check) => {
+      const denied = await check!(transaction);
+      if (!denied) throw new Error("expected membership check");
+      expect(reserve).toHaveBeenCalledWith(context, "writing", r.projectId, "vimax-planning", { transaction, taskKey: r.id });
+      return { kind: "quota_denied", denial: denied };
+    });
+    try {
+      const response = await h.service.start(h.i.projectId, h.i.episodeId, h.body, { session: true, token: undefined }, context);
+      expect(response).toEqual({ status: 402, body: { error: denial } });
+      expect(h.scheduled).toEqual([]);
+    } finally { reserve.mockRestore(); }
   });
   it("surfaces UNKNOWN confirmation and quota refusals without scheduling work", async () => {
     const h = setup(); vi.mocked(h.store.create).mockResolvedValueOnce({ kind: "needs_confirmation", requestId: "prior" });

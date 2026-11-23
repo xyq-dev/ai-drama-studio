@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { MemoryMembershipStore } from "../membership/membership-store";
 import { PersistenceError } from "@ai-drama/database";
 import {
   ANTHROPIC_MESSAGES_URL,
@@ -54,6 +55,7 @@ function setup(options: {
   deepseekStorageReady?: boolean;
   configurationPending?: () => Promise<boolean>;
   episodeCount?: number;
+  creatorMembership?: MemoryMembershipStore;
 } = {}) {
   const store = new InMemoryWritingCandidateStore();
   store.ready = options.storageReady ?? true;
@@ -85,6 +87,7 @@ function setup(options: {
     defaultProvider: options.defaultProvider ?? null,
     providers,
     store,
+    ...(options.creatorMembership ? { creatorMembership: options.creatorMembership } : {}),
     executor: new WritingCandidateExecutor({ workspaceId: WS, store, providers, transport }),
     projects: {
       getProjectEpisodePlan: async (_workspaceId, projectId) => ({
@@ -236,6 +239,58 @@ describe("asking, reading and replaying", () => {
     await expect(service.start(MISSING, STORY, TOKEN, CONTEXT("e"))).rejects.toThrow("Project not found");
     expect(sent).toHaveLength(0);
     expect(store.records.size).toBe(0);
+  });
+
+  it.each([false, true])("checks a single episode before charging and preserves the winning request's hold (conflicting input: %s)", async (conflict) => {
+    const membership = new MemoryMembershipStore();
+    const accountId = "88888888-8888-4888-8888-888888888888";
+    const actor = (key: string) => ({ ...CONTEXT(key), actorId: `creator:${accountId}` });
+    const { service, store, sent, settle } = setup({ episodeCount: 1, creatorMembership: membership });
+    const reserve = vi.spyOn(membership, "reserve");
+    const episode = { ...EPISODE, request: { ...EPISODE.request, episodeNo: 1 } };
+
+    const outside = await service.start(P1, EPISODE, TOKEN, actor("wrong-episode"));
+    expect(errorOf(outside)).toMatchObject({ code: "WRITING_CANDIDATE_TARGET_INVALID", details: { reason: "episode_plan" } });
+    expect(reserve).not.toHaveBeenCalled();
+
+    const inactive = await service.start(P1, episode, TOKEN, actor("not-a-member"));
+    expect(inactive.status).toBe(402);
+    expect(errorOf(inactive).code).toBe("MEMBERSHIP_REQUIRED");
+    expect(store.records.size).toBe(0);
+    await settle();
+    expect(sent).toHaveLength(0);
+
+    const plan = await membership.savePlan(WS, {
+      code: "single", name: "单集编剧", description: "", active: true, unitPriceAmount: null, unitPriceCurrency: null,
+      features: [{ feature: "writing", enabled: true, includedUnits: 1 }],
+    });
+    const now = Date.now();
+    await membership.grant(WS, {
+      accountId, planId: plan.id, startsAt: new Date(now - 60_000), endsAt: new Date(now + 86_400_000), reason: "测试", grantedBy: null,
+    });
+    const create = store.create.bind(store);
+    let winnerId: unknown;
+    vi.spyOn(store, "create").mockImplementationOnce(async (...args) => {
+      const winner = await service.start(P1, episode, TOKEN, actor("single"));
+      expect(winner.status).toBe(202);
+      winnerId = requestOf(winner).requestId;
+      return create(...args);
+    });
+    const racingInput = conflict ? { ...episode, request: { ...episode.request, mustKeep: "另一个版本" } } : episode;
+    const first = await service.start(P1, racingInput, TOKEN, actor("single"));
+    expect(first.status).toBe(conflict ? 409 : 200);
+    await settle();
+    reserve.mockClear();
+    const replay = await service.start(P1, episode, TOKEN, actor("single"));
+    expect(requestOf(replay)).toMatchObject({ requestId: winnerId, state: "completed", episodeCount: 1, episodeNo: 1 });
+    expect(reserve).not.toHaveBeenCalled();
+    const changed = await service.start(P1, { ...episode, request: { ...episode.request, mustKeep: "新人物" } }, TOKEN, actor("single"));
+    expect(errorOf(changed).code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(errorOf(await service.start(P1, STORY, TOKEN, actor("another"))).code).toBe("QUOTA_EXHAUSTED");
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect(store.records.size).toBe(1);
+    expect((await membership.ledger(WS, accountId)).filter(row => row.kind === "debit")).toHaveLength(1);
   });
 
   it.each([1, 3, 6])("uses the project's %i episodes for the prompt, response and idempotent replay", async (episodeCount) => {

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { oneWritingUnit, verifyRefundedWritingResume } from "../../test/writing-resume-membership";
+import type { MemoryMembershipStore } from "../membership/membership-store";
 import type { ScriptBreakdownRunView, TitleWritingProviderKey } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import {
@@ -27,7 +29,7 @@ type Override = (step: FixtureStep, attempt: number) => { status: number; body: 
 
 const SCRIPT = "第 1 集\n场 1 便利店 夜\n林夏盯着监控。\n林夏：这不是我。\n场 2 天台 夜\n周野推开铁门。\n周野：你来了。";
 
-function setup(options: { enabled?: boolean; nodeEnv?: "development" | "test" | "production"; breakdownReady?: boolean; override?: Override; maxCallsPerDay?: number; approved?: boolean } = {}) {
+function setup(options: { enabled?: boolean; nodeEnv?: "development" | "test" | "production"; breakdownReady?: boolean; override?: Override; maxCallsPerDay?: number; approved?: boolean; creatorMembership?: MemoryMembershipStore } = {}) {
   const store = new InMemoryTitleWritingStore();
   store.breakdownReady = options.breakdownReady ?? true;
   const episode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 1, text: SCRIPT, approved: options.approved ?? true, targetEpisodeSeconds: 60 });
@@ -35,16 +37,17 @@ function setup(options: { enabled?: boolean; nodeEnv?: "development" | "test" | 
   const providers = titleWritingProviderConfigs(ENV);
   const transport = fixtureChatTransport("t", { seen, ...(options.override ? { override: options.override } : {}) });
   const maxCallsPerDay = options.maxCallsPerDay ?? 30;
-  const engine = new TitleWritingEngine({ workspaceId: WS, store, providers, transport, maxCallsPerDay, timeoutMs: 20 });
+  const engine = new TitleWritingEngine({ workspaceId: WS, store, providers, transport, maxCallsPerDay, timeoutMs: 20,
+    onMembershipSignal: options.creatorMembership?.noteRun.bind(options.creatorMembership) });
   const pending: Array<() => Promise<void>> = [];
   const projects = {
     getProject: async (_workspaceId: string, projectId: string) => {
-      if (projectId !== P1) throw new PersistenceError("NOT_FOUND", "Project not found");
+      if (projectId !== P1 && !store.projects.has(projectId)) throw new PersistenceError("NOT_FOUND", "Project not found");
       return { id: projectId } as never;
     },
   };
   const common = { workspaceId: WS, nodeEnv: options.nodeEnv ?? "test", enabled: options.enabled ?? true, operatorToken: TOKEN, defaultProvider: null, providers,
-    store, engine, maxCallsPerDay, maxActiveRuns: 1, schedule: (work: () => Promise<void>) => { pending.push(work); } };
+    store, engine, creatorMembership: options.creatorMembership, maxCallsPerDay, maxActiveRuns: 1, schedule: (work: () => Promise<void>) => { pending.push(work); } };
   const service = new ScriptBreakdownService({ ...common, projects });
   const title = new TitleWritingService({ ...common, projects: { ...projects,
     getProjectEpisodePlan: async () => ({ episodeCount: 3, targetEpisodeSeconds: null }), episodePlanReady: async () => true } });
@@ -58,6 +61,77 @@ function setup(options: { enabled?: boolean; nodeEnv?: "development" | "test" | 
 }
 
 describe("starting a script breakdown", () => {
+  it.each([false, true])("keeps the winning breakdown's quota when concurrent starts differ (%s)", async (changed) => {
+    const member = await oneWritingUnit(WS);
+    const { store, service, episode, settle, seen } = setup({ creatorMembership: member.membership });
+    let reachedCreate!: () => void;
+    let releaseCreate!: () => void;
+    const reached = new Promise<void>(resolve => { reachedCreate = resolve; });
+    const proceed = new Promise<void>(resolve => { releaseCreate = resolve; });
+    const create = store.createRun.bind(store);
+    vi.spyOn(store, "createRun").mockImplementationOnce(async (...args) => {
+      reachedCreate();
+      await proceed;
+      return create(...args);
+    });
+    const actor = member.actor("shared-start");
+    const slower = service.start(P1, episode.episodeId, {}, TOKEN, actor);
+    await reached;
+    const winner = await service.start(P1, episode.episodeId, { replaceExisting: changed }, TOKEN, actor);
+    releaseCreate();
+    expect(winner.status).toBe(201);
+    const follower = await slower;
+    expect(follower.status).toBe(changed ? 409 : 200);
+    if (changed) expect(follower.body).toMatchObject({ error: { code: "IDEMPOTENCY_KEY_REUSED" } });
+    await settle();
+    expect(seen).toHaveLength(1);
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(0);
+    expect((await member.membership.ledger(WS, member.accountId)).filter(row => row.kind === "credit")).toHaveLength(0);
+  });
+
+  it.each(["title", "other project"])("refunds the separate reservation when a %s run wins the same key", async (collision) => {
+    const member = await oneWritingUnit(WS);
+    await member.membership.adjust(WS, { accountId: member.accountId, feature: "writing", delta: 1, reason: "测试", actorId: "admin" });
+    const { service, title, episode, store, settle } = setup({ creatorMembership: member.membership });
+    const actor = member.actor("same-key");
+    if (collision === "title") {
+      store.addProject(WS, P1, 3);
+      expect((await title.start(P1, { title: "t" }, TOKEN, actor)).status).toBe(201);
+    } else {
+      const projectId = randomUUID();
+      store.addProject(WS, projectId, 1);
+      const other = store.addBreakdownEpisode({ workspaceId: WS, projectId, episodeNo: 1, text: SCRIPT, approved: true });
+      expect((await service.start(projectId, other.episodeId, {}, TOKEN, actor)).status).toBe(201);
+    }
+    // The competing run was committed between the fast replay lookup and the locked create.
+    vi.spyOn(store, "findRunByKey").mockResolvedValueOnce(null);
+    const conflict = await service.start(P1, episode.episodeId, {}, TOKEN, actor);
+    expect(conflict).toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_KEY_REUSED" } } });
+    await settle();
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(1);
+    const rows = await member.membership.ledger(WS, member.accountId);
+    expect(rows.filter(row => row.kind === "debit")).toHaveLength(2);
+    expect(rows.filter(row => row.kind === "credit")).toHaveLength(1);
+  });
+
+  it("reserves the refunded writing quota before a breakdown resume can send", async () => {
+    const member = await oneWritingUnit(WS);
+    const { store, service, episode, settle, seen, runOf } = setup({ creatorMembership: member.membership });
+    const reserve = store.reserveCall.bind(store);
+    vi.spyOn(store, "reserveCall").mockImplementationOnce((call, limits, nowIso, lease) =>
+      reserve(call, { ...limits, maxCallsPerDay: 0 }, nowIso, lease));
+    const started = await service.start(P1, episode.episodeId, {}, TOKEN, member.actor("new"));
+    expect(started.status).toBe(201);
+    const { runId } = runOf(started);
+    await settle();
+    expect(store.runs.find(run => run.id === runId)?.errorCode).toBe("TITLE_WRITING_DAILY_CAP");
+    await verifyRefundedWritingResume(member, {
+      runId, seen, settle, resume: () => service.resume(P1, episode.episodeId, runId, {}, TOKEN, member.actor("retry")),
+    });
+    expect(runOf(await service.get(P1, episode.episodeId, runId))).toMatchObject({ state: "completed", save: "saved", callsUsed: 1 });
+    expect(seen).toHaveLength(1);
+  });
+
   it("refuses before anything is created or sent: switch off, wrong token, storage not migrated, missing key", async () => {
     for (const [options, token, key, status, code] of [
       [{ enabled: false }, TOKEN, "k", 404, "TITLE_WRITING_DISABLED"],
@@ -396,10 +470,11 @@ describe("saving an answer that arrived before a cancel", () => {
   }
   const code = (result: { body: unknown }) => (result.body as { error?: { code: string } }).error?.code;
 
-  async function canceledWithAnswer() {
-    const context = cancelWhileOut();
-    const { service, episode, start, settle, runOf } = context;
-    const runId = runOf(await start()).runId;
+  async function canceledWithAnswer(member?: Awaited<ReturnType<typeof oneWritingUnit>>) {
+    const context = cancelWhileOut({ creatorMembership: member?.membership });
+    const { service, episode, settle, runOf } = context;
+    const actor = member?.actor("start") ?? CONTEXT(randomUUID());
+    const runId = runOf(await service.start(P1, episode.episodeId, {}, TOKEN, actor)).runId;
     // The store operation behind the cancel route, applied synchronously while the call is out (no timing involved).
     context.box.cancel = () => context.store.requestCancel(WS, P1, runId, new Date().toISOString());
     await settle();
@@ -410,7 +485,10 @@ describe("saving an answer that arrived before a cancel", () => {
   }
 
   it("saves the stored answer without the provider, a new call or a new reservation, and only once", async () => {
-    const { store, service, episode, settle, runOf, seen, reconfigured, runId } = await canceledWithAnswer();
+    const member = await oneWritingUnit(WS);
+    const { store, service, episode, settle, runOf, seen, reconfigured, runId } = await canceledWithAnswer(member);
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(0);
+    const reserve = vi.spyOn(member.membership, "reserve");
     const disabled = reconfigured({}, null);
     const key = randomUUID();
     const resumed = await disabled.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key));
@@ -425,6 +503,7 @@ describe("saving an answer that arrived before a cancel", () => {
     const again = await disabled.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()));
     expect([again.status, code(again)]).toEqual([409, "TITLE_WRITING_NOT_RESUMABLE"]);
     await settle();
+    expect(reserve).not.toHaveBeenCalled();
     expect([store.scenes.filter((scene) => !scene.archived).length, seen.length, store.calls.length, store.resumes.length]).toEqual([scenes, 1, 1, 1]);
   });
 

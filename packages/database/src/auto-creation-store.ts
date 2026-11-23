@@ -1,6 +1,7 @@
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  writingMembershipOutcome,
   autoRunSettledForGood,
   autoStageKind,
   currentUncertainCallIds,
@@ -12,6 +13,7 @@ import {
   type AutoCreationQuality,
   type AutoCreationStore,
   type AutoResumePreparation,
+  type AutoResumeRequest,
   type AutoUserRevisePreparation,
   type AutoRunBundle,
   type AutoRunCreation,
@@ -28,6 +30,7 @@ import type { DatabasePool } from "./job-service";
 import { projectEpisodePlanIn } from "./episode-plan";
 import { AUTO_CREATION_MIGRATION } from "./migrations";
 import type { TextChainService } from "./text-chain";
+import { settleCreatorQuotaHold } from "./creator-quota-settle";
 import { recentWritingCalls, runningWritingRuns, writingCallLockKey } from "./writing-candidate-store";
 import { shortSequelEpisodesIn } from "./short-sequel";
 
@@ -449,6 +452,9 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       if (state === "canceled") {
         await client.query("UPDATE auto_creation_stage SET state = 'canceled', updated_at = $2 WHERE run_id = $1 AND state = 'pending'", [runId, nowIso]);
       }
+      const calls = await client.query<{ state: AutoCallRecord["state"]; errorCode: string | null }>(
+        'SELECT state, error_code AS "errorCode" FROM auto_creation_call WHERE run_id = $1', [runId]);
+      await settleCreatorQuotaHold(client, runId, writingMembershipOutcome(calls.rows));
       return true;
     });
   }
@@ -578,7 +584,7 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
     });
   }
 
-  async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation> {
+  async prepareResume(workspaceId: string, projectId: string, runId: string, request: AutoResumeRequest, nowIso: string): Promise<AutoResumePreparation> {
     return this.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [runLockKey(workspaceId)]);
       const row = (await client.query<Row>(`SELECT ${RUN_COLUMNS} FROM auto_creation_run WHERE id = $1 AND workspace_id = $2 AND project_id = $3 FOR UPDATE`,
@@ -619,6 +625,10 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
       // The run's frozen call budget is spent: resetting a stage could only stop again before the send.
       if (sends && run.callsUsed >= run.callCap) return { kind: "budget_exhausted" };
+      if (sends && request.reserveForSend) {
+        const denial = await request.reserveForSend(client);
+        if (denial) return { kind: "quota_denied", denial };
+      }
       await client.query(
         `INSERT INTO auto_creation_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6)`, [runId, workspaceId, request.resumeKey, request.requestHash, JSON.stringify(confirmed), nowIso]);

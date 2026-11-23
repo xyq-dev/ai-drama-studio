@@ -1136,6 +1136,21 @@ export class StudioService {
 
   async retryJob(jobId: string, context: StudioContext) {
     const job = await this.store.getJob(this.workspaceId, jobId);
+    const feature = job.kind.includes("VIDEO") ? "video" : job.kind.includes("TTS") || job.kind.includes("AUDIO") ? "voice" : job.kind.includes("IMAGE") ? "image" : null;
+    if (feature && context.actorId.startsWith("creator:")) {
+      const { installedCreatorMembership } = await import("../membership/creator-task-guard");
+      const installed = installedCreatorMembership();
+      if (installed) {
+        const reserved = await installed.store.reserve(installed.workspaceId, {
+          accountId: context.actorId.slice("creator:".length),
+          feature,
+          idempotencyKey: `job:${jobId}`,
+          taskKey: jobId,
+          replayOnly: true,
+        });
+        if (!reserved.ok) throw new PersistenceError(reserved.code, reserved.message);
+      }
+    }
     if (job.kind === "MEDIA_COMPOSE") {
       throw new PersistenceError("JOB_NOT_RETRYABLE", "Compose must be submitted again after a new preflight");
     }

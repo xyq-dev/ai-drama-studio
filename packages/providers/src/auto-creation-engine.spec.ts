@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_PROMPT_VERSION,
@@ -22,7 +22,7 @@ import {
 import { AUTO_DRAFT_BANNER, autoContextFromStages, autoPackageJson, autoPackageMarkdown, AUTO_CREATION_SYSTEM_PROMPTS, validateAutoStageOutput } from "@ai-drama/domain";
 import { titleWritingProviderConfigs, type WritingProviderConfig } from "./text-writing";
 import { encodeUserReviseDepends, planAutoUserRevise } from "@ai-drama/domain";
-import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoCreationInput, hashAutoResume, hashAutoUserRevise, newAutoRun } from "./auto-creation-engine";
+import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoCreationInput, hashAutoResume, hashAutoUserRevise, newAutoRun, type AutoCreationEngineDeps } from "./auto-creation-engine";
 import {
   AUTO_FIXTURE_UNPLACED, autoFixtureBlock, autoFixtureTransport, fixtureAutoBible, fixtureAutoEpisode, fixtureAutoOutline, fixtureAutoResearchV1, fixtureAutoResearchV2,
   fixtureAutoReview, type AutoFixtureExchange, type AutoFixturePlan,
@@ -49,6 +49,7 @@ interface Setup {
   providerKey?: TitleWritingProviderKey;
   versions?: Pick<AutoCreationFrozenInput, "promptVersion" | "checksVersion">;
   maxCallsPerDay?: number;
+  onMembershipSignal?: AutoCreationEngineDeps["onMembershipSignal"];
   override?: Parameters<typeof autoFixtureTransport>[0]["override"];
   leaseMs?: number;
 }
@@ -77,6 +78,7 @@ async function setup(options: Setup = {}) {
   const seen: AutoFixtureExchange[] = [];
   const engine = new AutoCreationEngine({
     workspaceId: WS, store, providers: options.providers ?? providers(), maxCallsPerDay: options.maxCallsPerDay ?? 100, clock,
+    onMembershipSignal: options.onMembershipSignal,
     transport: autoFixtureTransport({ plan: options.plan, seen, override: options.override }), leaseMs: options.leaseMs ?? 240_000,
   });
   const view = async () => autoRunView((await store.getRunById(WS, run.id))!);
@@ -885,6 +887,30 @@ describe("automatic creation engine", () => {
     expect(result.callsUsed).toBeLessThanOrEqual(result.callCap);
   });
 
+  it.each([
+    { name: "daily quota blocks the first reservation", setup: { maxCallsPerDay: 0 }, calls: 0, outcome: "unsent" },
+    { name: "the provider returns fabricated market data", setup: { plan: { fabricatedNumber: true } }, calls: 1, outcome: "sent" },
+    { name: "the research response is lost", setup: { override: () => "throw" as const }, calls: 1, outcome: "unknown" },
+  ])("settles membership from provider calls when $name", async ({ setup: options, calls, outcome }) => {
+    const onMembershipSignal = vi.fn().mockResolvedValue(undefined);
+    const { run, engine, view, seen } = await setup({ ...options, onMembershipSignal });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result.stages.find(({ stageKey }) => stageKey === "sources")?.state).toBe("completed");
+    expect(result.calls).toHaveLength(calls);
+    expect(seen).toHaveLength(calls);
+    expect(onMembershipSignal.mock.calls).toEqual([[{ runId: run.id, outcome }]]);
+  });
+
+  it("leaves the quota hold to the winning executor when finalization loses ownership", async () => {
+    const onMembershipSignal = vi.fn().mockResolvedValue(undefined);
+    const { run, engine, store, seen } = await setup({ maxCallsPerDay: 0, onMembershipSignal });
+    vi.spyOn(store, "finishRun").mockResolvedValue(false);
+    await engine.drive(run.id);
+    expect(seen).toHaveLength(0);
+    expect(onMembershipSignal).not.toHaveBeenCalled();
+  });
+
   it("the workspace daily cap, shared with title writing, stops the run before the next reservation", async () => {
     const { store, run, engine, seen, view } = await setup({ maxCallsPerDay: 10 });
     for (let index = 0; index < 7; index += 1) store.otherCalls.push({ workspaceId: WS, createdAt: new Date(START).toISOString() });
@@ -964,8 +990,9 @@ describe("automatic creation engine", () => {
 
   it("a cancel committed before the send closes the reservation; nothing is sent", async () => {
     const { store, run, view, seen } = await setup();
+    const onMembershipSignal = vi.fn().mockResolvedValue(undefined);
     const engine = new AutoCreationEngine({ workspaceId: WS, store, providers: providers(), maxCallsPerDay: 100,
-      transport: autoFixtureTransport({ seen }),
+      onMembershipSignal, transport: autoFixtureTransport({ seen }),
       send: async () => { throw new Error("must not send"); } });
     const original = store.markCallSubmitted.bind(store);
     store.markCallSubmitted = async (...args) => {
@@ -975,6 +1002,8 @@ describe("automatic creation engine", () => {
     await engine.drive(run.id);
     const result = await view();
     expect(result.state).toBe("canceled");
+    expect(seen).toHaveLength(0);
+    expect(onMembershipSignal.mock.calls).toEqual([[{ runId: run.id, outcome: "unsent" }]]);
     expect(result.calls[0]).toMatchObject({ state: "rejected", errorCode: "canceled_before_send" });
   });
 

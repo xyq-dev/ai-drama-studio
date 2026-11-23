@@ -35,6 +35,7 @@ import {
   type AutoCreationStore,
   type AutoResumeBlock,
   type AutoResumePreparation,
+  type AutoResumeRequest,
   type AutoUserRevisePreparation,
   type AutoReviewOutput,
   type AutoRunBundle,
@@ -77,7 +78,7 @@ import {
   type WritingProviderConfig,
   type WritingTransport,
 } from "./text-writing";
-import { TITLE_WRITING_LOST_AFTER_SEND, TITLE_WRITING_LOST_BEFORE_SEND } from "./title-writing-engine";
+import { TITLE_WRITING_LOST_AFTER_SEND, TITLE_WRITING_LOST_BEFORE_SEND, writingMembershipOutcome } from "./title-writing-engine";
 
 export const AUTO_CREATION_LEASE_MS = TEXT_WRITING_TIMEOUT_MS * 2;
 
@@ -364,6 +365,7 @@ export interface AutoCreationEngineDeps {
   leaseMs?: number;
   timeoutMs?: number;
   send?: typeof sendWriting;
+  onMembershipSignal?: (event: { runId: string; outcome: "unsent" | "unknown" | "sent" }) => Promise<void>;
 }
 
 /**
@@ -411,7 +413,11 @@ export class AutoCreationEngine {
 
   private async finish(runId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null,
     quality?: Exclude<AutoCreationQuality, "pending">): Promise<false> {
-    await this.deps.store.finishRun(this.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString(), quality);
+    const bundle = this.deps.onMembershipSignal ? await this.deps.store.getRunById(this.workspaceId, runId) : null;
+    const finished = await this.deps.store.finishRun(this.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString(), quality);
+    if (finished && bundle && this.deps.onMembershipSignal) {
+      await this.deps.onMembershipSignal({ runId, outcome: writingMembershipOutcome(bundle.calls) }).catch(() => undefined);
+    }
     return false;
   }
 
@@ -934,7 +940,7 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     return "saved";
   }
 
-  async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation> {
+  async prepareResume(workspaceId: string, projectId: string, runId: string, request: AutoResumeRequest, nowIso: string): Promise<AutoResumePreparation> {
     const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
     if (!run) return { kind: "not_found" };
     const previous = this.resumes.find((item) => item.runId === runId && item.key === request.resumeKey);
@@ -955,6 +961,10 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     const sends = redo.some((stage) => stage.stageKey !== "sources") || stages.some((stage) => stage.state === "pending" && stage.stageKey !== "sources");
     if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
     if (sends && run.callsUsed >= run.callCap) return { kind: "budget_exhausted" };
+    if (sends && request.reserveForSend) {
+      const denial = await request.reserveForSend();
+      if (denial) return { kind: "quota_denied", denial };
+    }
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash });
     for (const stage of redo) {
       delete stage.rejectionDiagnostic;

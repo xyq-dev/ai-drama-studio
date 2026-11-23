@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { LEGACY_OWNER_ACCOUNT_ID, type CreatorAccountRole } from "@ai-drama/domain";
+import { LEGACY_OWNER_ACCOUNT_ID, STAFF_PERMISSIONS, type CreatorAccountRole, type StaffPermission } from "@ai-drama/domain";
 import { parsePasswordHash, verifyPassword, type ParsedPasswordHash } from "./password-hash";
 
 /**
@@ -13,12 +13,33 @@ import { parsePasswordHash, verifyPassword, type ParsedPasswordHash } from "./pa
 export interface CreatorLoginDirectory {
   findActiveByUsername(username: string): Promise<{ id: string; username: string; passwordHash: string } | null>;
 }
+
+export interface StaffLoginAccount {
+  id: string;
+  username: string;
+  passwordHash: string | null;
+  status: "pending" | "active" | "disabled";
+  permissions: readonly string[];
+  totpEnabled: boolean;
+}
+
+/** Staff passwords replace the env operator once a row exists for that username. */
+export interface StaffLoginDirectory {
+  findByUsername(username: string): Promise<StaffLoginAccount | null>;
+  recordLogin(staffId: string): Promise<void>;
+  verifySecondFactor(staffId: string, code: string): Promise<boolean>;
+}
+
+export type LoginResult =
+  | { session: SiteSessionView; cookies: string[]; totpRequired: false }
+  | { session: null; cookies: []; totpRequired: true; challenge: string };
 export const SITE_AUTH = "SITE_AUTH";
 export const SESSION_IDLE_MS = 2 * 60 * 60 * 1_000;
 export const SESSION_ABSOLUTE_MS = 12 * 60 * 60 * 1_000;
 const MAX_SESSIONS = 20;
 const LOGIN_WINDOW_MS = 60_000;
 const MAX_LOGIN_ATTEMPTS = 5;
+const MAX_SECOND_FACTOR_ATTEMPTS = 5;
 const OPAQUE_TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 /** The cookie of the earlier token-only model console, cleared on every login and logout. */
 const LEGACY_ADMIN_COOKIE = "ads_admin_session";
@@ -57,6 +78,9 @@ export interface SiteSessionView {
   expiresAt: string;
   /** Echoed for the login page; never enables registration by itself. */
   publicRegistrationEnabled: boolean;
+  /** Null for the legacy env operator and for creators. Bound staff sessions re-read permissions on every request. */
+  staffId: string | null;
+  permissions: readonly StaffPermission[];
 }
 
 interface StoredSession {
@@ -66,6 +90,8 @@ interface StoredSession {
   role: CreatorAccountRole;
   accountId: string;
   username: string;
+  staffId: string | null;
+  publicId: string;
 }
 
 const digest = (value: string): Buffer => createHash("sha256").update(value, "utf8").digest();
@@ -99,6 +125,9 @@ export class SiteAuth {
   private loginAttempts: number[] = [];
   private readonly now: () => number;
   private readonly creators: CreatorLoginDirectory | null;
+  private staff: StaffLoginDirectory | null = null;
+  private readonly staffLive = new Map<string, { status: StaffLoginAccount["status"]; permissions: readonly string[] }>();
+  private readonly challenges = new Map<string, { staffId: string; username: string; expires: number; attemptsLeft: number }>();
   private readonly publicRegistrationEnabled: boolean;
   readonly username: string;
   readonly publicOrigin: string;
@@ -145,11 +174,44 @@ export class SiteAuth {
   }
 
   /**
-   * Username and password from the login form. Operator credentials are always tried first (unchanged SITE_AUTH_*).
-   * Otherwise an ACTIVE creator_account may authenticate. Unknown user and wrong password share one failure, and a
-   * password verification always runs so both take similar time. Attempts are limited per minute.
+   * Username and password from the login form. A staff row for that username is checked first and is not bypassed
+   * by the env operator password. Otherwise the env operator, then an ACTIVE creator. Unknown user and wrong
+   * password share one failure. Attempts are limited per minute.
    */
-  async login(headers: RequestHeaders, body: unknown): Promise<{ session: SiteSessionView; cookies: string[] }> {
+  setStaffDirectory(directory: StaffLoginDirectory | null): void {
+    this.staff = directory;
+  }
+
+  syncStaff(staffId: string, access: { status: StaffLoginAccount["status"]; permissions: readonly string[] }): void {
+    this.staffLive.set(staffId, access);
+    if (access.status !== "active") this.dropStaff(staffId);
+  }
+
+  listStaffSessions(staffId: string): { publicId: string; createdAt: string; lastSeenAt: string }[] {
+    this.prune(this.now());
+    const items: { publicId: string; createdAt: string; lastSeenAt: string }[] = [];
+    for (const value of this.sessions.values()) {
+      if (value.staffId !== staffId || !this.staffAllows(value)) continue;
+      items.push({
+        publicId: value.publicId,
+        createdAt: new Date(value.createdAt).toISOString(),
+        lastSeenAt: new Date(value.lastSeenAt).toISOString(),
+      });
+    }
+    return items;
+  }
+
+  revokeStaffSession(staffId: string, publicId: string): boolean {
+    for (const [key, value] of this.sessions) {
+      if (value.staffId === staffId && value.publicId === publicId) {
+        this.sessions.delete(key);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async login(headers: RequestHeaders, body: unknown): Promise<LoginResult> {
     this.assertOrigin(headers);
     if (header(headers, "content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
       throw new SiteAuthError(415, "AUTH_CONTENT_TYPE_REJECTED");
@@ -169,38 +231,73 @@ export class SiteAuth {
     }
     const operatorUsernameOk = same(username, this.usernameDigest);
     const operatorPasswordOk = await verifyPassword(password, this.hash);
-    let role: CreatorAccountRole = "operator";
-    let accountId = LEGACY_OWNER_ACCOUNT_ID;
-    let sessionUsername = this.username;
-    if (operatorUsernameOk && operatorPasswordOk) {
-      // Operator session: existing SITE_AUTH login; still reaches model-admin. Works list uses legacy ownership unless ops view.
-    } else {
-      const creator = this.creators ? await this.creators.findActiveByUsername(username) : null;
-      const creatorHash = creator ? parsePasswordHash(creator.passwordHash) : null;
-      const creatorOk = creatorHash ? await verifyPassword(password, creatorHash) : await verifyPassword(password, this.hash);
-      if (!creator || !creatorHash || !creatorOk) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
-      role = "creator";
-      accountId = creator.id;
-      sessionUsername = creator.username;
+    const staffAccount = this.staff ? await this.staff.findByUsername(username) : null;
+    const envOperator = !staffAccount && operatorUsernameOk && operatorPasswordOk;
+    const creator = !envOperator && this.creators ? await this.creators.findActiveByUsername(username) : null;
+    const creatorHash = creator ? parsePasswordHash(creator.passwordHash) : null;
+    // Historical duplicate credentials can only select the lower-privilege creator identity.
+    if (creator && creatorHash && await verifyPassword(password, creatorHash)) {
+      return this.issueSession(headers, now, { role: "creator", accountId: creator.id, username: creator.username, staffId: null });
     }
-    // A new login never reuses an earlier session ID from this browser.
-    const previous = this.lookup(headers);
-    if (previous) this.sessions.delete(previous.key);
-    this.prune(now);
-    if (this.sessions.size >= MAX_SESSIONS) throw new SiteAuthError(429, "AUTH_SESSION_LIMIT");
-    const id = randomBytes(32).toString("base64url");
-    const value: StoredSession = {
-      csrfToken: randomBytes(32).toString("base64url"), createdAt: now, lastSeenAt: now,
-      role, accountId, username: sessionUsername,
-    };
-    this.sessions.set(digest(id).toString("hex"), value);
-    return { session: this.view(value), cookies: this.issue(id, value.csrfToken) };
+    let sessionUsername = this.username;
+    let staffId: string | null = null;
+    if (staffAccount) {
+      const staffHash = staffAccount.passwordHash ? parsePasswordHash(staffAccount.passwordHash) : null;
+      const staffOk = staffHash ? await verifyPassword(password, staffHash) : false;
+      if (!staffHash || !staffOk || staffAccount.status !== "active") throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+      if (staffAccount.totpEnabled) {
+        this.prune(now);
+        const challenge = randomBytes(32).toString("base64url");
+        this.challenges.set(challenge, {
+          staffId: staffAccount.id, username: staffAccount.username, expires: now + 5 * 60_000, attemptsLeft: MAX_SECOND_FACTOR_ATTEMPTS,
+        });
+        return { session: null, cookies: [], totpRequired: true, challenge };
+      }
+      sessionUsername = staffAccount.username;
+      staffId = staffAccount.id;
+      if (!this.staffLive.has(staffAccount.id)) this.staffLive.set(staffAccount.id, { status: "active", permissions: staffAccount.permissions });
+      await this.staff?.recordLogin(staffAccount.id);
+      if (this.staffLive.get(staffAccount.id)?.status !== "active") throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    } else if (!envOperator) {
+      if (!creatorHash) await verifyPassword(password, this.hash);
+      throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    }
+    return this.issueSession(headers, now, { role: "operator", accountId: LEGACY_OWNER_ACCOUNT_ID, username: sessionUsername, staffId });
+  }
+
+  async completeTotp(headers: RequestHeaders, body: unknown): Promise<{ session: SiteSessionView; cookies: string[] }> {
+    this.assertOrigin(headers);
+    if (header(headers, "content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+      throw new SiteAuthError(415, "AUTH_CONTENT_TYPE_REJECTED");
+    }
+    const input = typeof body === "object" && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : {};
+    const challenge = typeof input.challenge === "string" ? input.challenge : "";
+    const code = typeof input.code === "string" ? input.code.trim() : "";
+    const pending = this.challenges.get(challenge);
+    // Claim before the asynchronous verifier so concurrent submissions cannot reuse one challenge.
+    this.challenges.delete(challenge);
+    if (!pending || pending.expires <= this.now() || !this.staff) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    const ok = await this.staff.verifySecondFactor(pending.staffId, code);
+    if (pending.expires <= this.now()) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    if (!ok) {
+      pending.attemptsLeft -= 1;
+      if (pending.attemptsLeft > 0) this.challenges.set(challenge, pending);
+      throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    }
+    const account = await this.staff.findByUsername(pending.username);
+    if (!account || account.id !== pending.staffId || account.status !== "active") throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+    this.staffLive.set(account.id, { status: "active", permissions: account.permissions });
+    await this.staff.recordLogin(account.id);
+    const issued = this.issueSession(headers, this.now(), {
+      role: "operator", accountId: LEGACY_OWNER_ACCOUNT_ID, username: account.username, staffId: account.id,
+    });
+    return { session: issued.session, cookies: issued.cookies };
   }
 
   /** A valid session or an error; also refreshes the idle deadline. */
   session(headers: RequestHeaders): SiteSessionView {
     const found = this.lookup(headers);
-    if (!found) throw this.missing(headers);
+    if (!found || !this.staffAllows(found.value)) throw this.missing(headers);
     found.value.lastSeenAt = this.now();
     return this.view(found.value);
   }
@@ -208,7 +305,7 @@ export class SiteAuth {
   /** The same answer as session() without counting as activity: for a page's own expiry check, not for access. */
   peek(headers: RequestHeaders): SiteSessionView {
     const found = this.lookup(headers);
-    if (!found) throw this.missing(headers);
+    if (!found || !this.staffAllows(found.value)) throw this.missing(headers);
     return this.view(found.value);
   }
 
@@ -245,7 +342,7 @@ export class SiteAuth {
   authorizeWrite(headers: RequestHeaders): void {
     this.assertOrigin(headers);
     const found = this.lookup(headers);
-    if (!found) throw this.missing(headers);
+    if (!found || !this.staffAllows(found.value)) throw this.missing(headers);
     const csrf = header(headers, "x-csrf-token");
     if (!csrf || !OPAQUE_TOKEN.test(csrf) || !same(csrf, digest(found.value.csrfToken))) {
       throw new SiteAuthError(403, "AUTH_CSRF_REJECTED");
@@ -320,9 +417,54 @@ export class SiteAuth {
     for (const [key, value] of this.sessions) {
       if (this.expiresAt(value) <= now) this.sessions.delete(key);
     }
+    for (const [key, pending] of this.challenges) {
+      if (pending.expires <= now) this.challenges.delete(key);
+    }
+  }
+
+  private issueSession(headers: RequestHeaders, now: number, input: {
+    role: CreatorAccountRole;
+    accountId: string;
+    username: string;
+    staffId: string | null;
+  }): { session: SiteSessionView; cookies: string[]; totpRequired: false } {
+    const previous = this.lookup(headers);
+    if (previous) this.sessions.delete(previous.key);
+    this.prune(now);
+    if (this.sessions.size >= MAX_SESSIONS) throw new SiteAuthError(429, "AUTH_SESSION_LIMIT");
+    const id = randomBytes(32).toString("base64url");
+    const value: StoredSession = {
+      csrfToken: randomBytes(32).toString("base64url"), createdAt: now, lastSeenAt: now,
+      role: input.role, accountId: input.accountId, username: input.username, staffId: input.staffId,
+      publicId: randomBytes(16).toString("base64url"),
+    };
+    this.sessions.set(digest(id).toString("hex"), value);
+    return { session: this.view(value), cookies: this.issue(id, value.csrfToken), totpRequired: false };
+  }
+
+  private dropStaff(staffId: string): void {
+    for (const [key, value] of this.sessions) {
+      if (value.staffId === staffId) this.sessions.delete(key);
+    }
+  }
+
+  private staffAllows(value: StoredSession): boolean {
+    if (!value.staffId) return true;
+    const live = this.staffLive.get(value.staffId);
+    if (!live || live.status !== "active") {
+      this.dropStaff(value.staffId);
+      return false;
+    }
+    return true;
   }
 
   private view(value: StoredSession): SiteSessionView {
+    const live = value.staffId ? this.staffLive.get(value.staffId) : undefined;
+    const permissions: readonly StaffPermission[] = value.role !== "operator"
+      ? []
+      : value.staffId
+        ? STAFF_PERMISSIONS.filter((permission) => live?.permissions.includes(permission))
+        : STAFF_PERMISSIONS;
     return {
       enabled: true,
       authenticated: true,
@@ -332,6 +474,8 @@ export class SiteAuth {
       csrfToken: value.csrfToken,
       expiresAt: new Date(this.expiresAt(value)).toISOString(),
       publicRegistrationEnabled: this.publicRegistrationEnabled,
+      staffId: value.staffId,
+      permissions,
     };
   }
 

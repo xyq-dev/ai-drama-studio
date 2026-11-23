@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { SCRIPT_BREAKDOWN_SERVICE } from "./tokens";
 import { createTraceId } from "./studio.service";
 import { operatorProof } from "./operator-access";
@@ -46,7 +46,7 @@ export class ScriptBreakdownController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, this.breakdown.start(projectId, episodeId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Get(`${BASE}/latest`)
@@ -100,7 +100,7 @@ export class ScriptBreakdownController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, this.breakdown.resume(projectId, episodeId, runId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Post(`${BASE}/:runId/shots`)
@@ -113,7 +113,7 @@ export class ScriptBreakdownController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, this.breakdown.placeShots(projectId, episodeId, runId, body,
-      { actorId: "server-owner", traceId: createTraceId(traceHeader) }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader) }));
   }
 
   private async send(response: StatusResponse, work: Promise<ScriptBreakdownResult>): Promise<unknown> {

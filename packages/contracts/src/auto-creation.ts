@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { TitleResumeRequest, WritingQuotaDenial } from "./title-writing-store";
 import {
   DEEPSEEK_PROVIDER_ADAPTER,
   TITLE_WRITING_EPISODE_SECONDS_CHOICES,
@@ -1374,7 +1375,13 @@ export function autoRunSettledForGood(run: { errorCode: string | null }, stages:
     && stages.length > 0 && stages.every((stage) => stage.state === "completed");
 }
 
+export interface AutoResumeRequest extends TitleResumeRequest {
+  providerReady: boolean;
+  blocked: boolean;
+}
+
 export type AutoResumePreparation =
+  | { kind: "quota_denied"; denial: WritingQuotaDenial }
   | { kind: "ok" | "replayed"; bundle: AutoRunBundle }
   | { kind: "not_found" | "active" | "active_cap" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "not_resumable"
     | "provider_unconfigured" | "budget_exhausted" | "blocked" };
@@ -1429,7 +1436,7 @@ export interface AutoCreationStore {
   finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string, quality?: Exclude<AutoCreationQuality, "pending">): Promise<boolean>;
   requestCancel(workspaceId: string, projectId: string, runId: string, nowIso: string): Promise<AutoRunBundle | null>;
   /** blocked: the caller found the run cannot be continued as it stands (AutoResumeBlock); refused before any write. */
-  prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation>;
+  prepareResume(workspaceId: string, projectId: string, runId: string, request: AutoResumeRequest, nowIso: string): Promise<AutoResumePreparation>;
   /**
    * Peek at an existing auto_creation_resume row for idempotent replay before eligibility checks.
    * Returns the stored request hash, or null when no row exists for this key.
