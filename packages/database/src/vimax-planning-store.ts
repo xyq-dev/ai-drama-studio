@@ -1,3 +1,4 @@
+import { storeOwnerAccountFilter } from "./creator-access-context";
 import type { PoolClient, QueryResultRow } from "pg";
 import {
   vimaxCandidateCreateSchema, vimaxCandidateTargetSchema, vimaxPlanningFrozenSchema, vimaxPlanningStartSchema, vimaxPlanningViewSchema,
@@ -19,6 +20,10 @@ export const VIMAX_PLANNING_COLUMNS = ["id", "workspace_id", "project_id", "epis
 const fail = (code: string): never => { throw new PersistenceError(code, "Single-scene planning request was refused"); };
 const iso = (value: unknown): string => value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
 const unknownUsage = { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null };
+function visiblePlanningProject(ownerParam: number): string {
+  return `EXISTS (SELECT 1 FROM project p WHERE p.id=vimax_planning_request.project_id AND p.workspace_id=vimax_planning_request.workspace_id
+    AND p.archived_at IS NULL AND p.status='ACTIVE' AND ($${ownerParam}::text IS NULL OR to_jsonb(p)->>'owner_account_id'=$${ownerParam}))`;
+}
 const COLUMNS = VIMAX_PLANNING_COLUMNS.join(", ");
 /** No application startup migration, network request, revision writer or background resend. */
 export class PostgresVimaxPlanningStore implements VimaxPlanningStore {
@@ -75,7 +80,7 @@ export class PostgresVimaxPlanningStore implements VimaxPlanningStore {
     await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [writingCallLockKey(workspaceId)]);
   }
   private async scope(c: PoolClient, workspaceId: string, projectId: string, episodeId: string): Promise<void> {
-    if (!(await c.query("SELECT id FROM project WHERE id=$1 AND workspace_id=$2 FOR UPDATE", [projectId, workspaceId])).rows[0]) fail("NOT_FOUND");
+    if (!(await c.query("SELECT id FROM project WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL AND status='ACTIVE' AND ($3::text IS NULL OR to_jsonb(project)->>'owner_account_id'=$3) FOR UPDATE", [projectId, workspaceId, storeOwnerAccountFilter()])).rows[0]) fail("NOT_FOUND");
     if (!(await c.query("SELECT id FROM episode WHERE id=$1 AND project_id=$2 AND workspace_id=$3 FOR UPDATE", [episodeId, projectId, workspaceId])).rows[0]) fail("NOT_FOUND");
   }
   /** The same authoritative source and target conditions as E2-B, within the caller's ordered transaction. */
@@ -102,7 +107,7 @@ export class PostgresVimaxPlanningStore implements VimaxPlanningStore {
     return freezeVimaxPlanning(source.source, value, r.request, r.providerKey, r.model);
   }
   async findByKey(workspaceId: string, actorId: string, key: string): Promise<VimaxPlanningRecord | null> {
-    return this.transaction(false, async (c) => { const result = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND ${vimaxActorMatch("vimax_planning_request", 2, actorId)} AND idempotency_key=$3 ORDER BY (actor_id=$2) DESC LIMIT 1`, [workspaceId, actorId, key]);
+    return this.transaction(false, async (c) => { const result = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND ${vimaxActorMatch("vimax_planning_request", 2, actorId)} AND idempotency_key=$3 AND ${visiblePlanningProject(4)} ORDER BY (actor_id=$2) DESC LIMIT 1`, [workspaceId, actorId, key, storeOwnerAccountFilter()]);
       return result.rows[0] ? this.record(result.rows[0]) : null; });
   }
   async create(r: VimaxPlanningReservation, limits: { sinceIso: string; maxCallsPerDay: number; maxActiveRuns: number },
@@ -112,7 +117,12 @@ export class PostgresVimaxPlanningStore implements VimaxPlanningStore {
     return this.transaction(true, async (c) => {
       await this.locks(c, r.workspaceId);
       const existing = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND ${vimaxActorMatch("vimax_planning_request", 2, r.actorId)} AND idempotency_key=$3 ORDER BY (actor_id=$2) DESC LIMIT 1 FOR UPDATE`, [r.workspaceId, r.actorId, r.idempotencyKey]);
-      if (existing.rows[0]) { const record = this.record(existing.rows[0]); return record.requestHash === r.requestHash && record.projectId === r.projectId && record.episodeId === r.episodeId ? { kind: "existing", record } : { kind: "conflict" }; }
+      if (existing.rows[0]) {
+        const record = this.record(existing.rows[0]);
+        if (record.requestHash !== r.requestHash || record.projectId !== r.projectId || record.episodeId !== r.episodeId) return { kind: "conflict" };
+        await this.scope(c, r.workspaceId, r.projectId, r.episodeId);
+        return { kind: "existing", record };
+      }
       if (!Number.isInteger(limits.maxActiveRuns) || limits.maxActiveRuns < 1) fail("VALIDATION_ERROR");
       await this.scope(c, r.workspaceId, r.projectId, r.episodeId);
       const frozen = await this.snapshot(c, r);
@@ -141,14 +151,14 @@ export class PostgresVimaxPlanningStore implements VimaxPlanningStore {
     });
   }
   async get(workspaceId: string, projectId: string, episodeId: string, actorId: string, requestId: string) {
-    return this.transaction(false, async (c) => { const r = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND project_id=$2 AND episode_id=$3 AND ${vimaxActorMatch("vimax_planning_request", 4, actorId)} AND id=$5`, [workspaceId, projectId, episodeId, actorId, requestId]); return r.rows[0] ? this.record(r.rows[0]) : null; });
+    return this.transaction(false, async (c) => { const r = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND project_id=$2 AND episode_id=$3 AND ${vimaxActorMatch("vimax_planning_request", 4, actorId)} AND id=$5 AND ${visiblePlanningProject(6)}`, [workspaceId, projectId, episodeId, actorId, requestId, storeOwnerAccountFilter()]); return r.rows[0] ? this.record(r.rows[0]) : null; });
   }
   async getById(workspaceId: string, requestId: string) {
-    return this.transaction(false, async (c) => { const r = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND id=$2`, [workspaceId, requestId]); return r.rows[0] ? this.record(r.rows[0]) : null; });
+    return this.transaction(false, async (c) => { const r = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND id=$2 AND ${visiblePlanningProject(3)}`, [workspaceId, requestId, storeOwnerAccountFilter()]); return r.rows[0] ? this.record(r.rows[0]) : null; });
   }
   async list(workspaceId: string, projectId: string, episodeId: string, actorId: string, limit: number) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 20) fail("VALIDATION_ERROR");
-    return this.transaction(false, async (c) => { const r = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND project_id=$2 AND episode_id=$3 AND ${vimaxActorMatch("vimax_planning_request", 4, actorId)} ORDER BY created_at DESC,id DESC LIMIT $5`, [workspaceId, projectId, episodeId, actorId, limit]); return r.rows.map((row) => this.record(row)); });
+    return this.transaction(false, async (c) => { const r = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND project_id=$2 AND episode_id=$3 AND ${vimaxActorMatch("vimax_planning_request", 4, actorId)} AND ${visiblePlanningProject(6)} ORDER BY created_at DESC,id DESC LIMIT $5`, [workspaceId, projectId, episodeId, actorId, limit, storeOwnerAccountFilter()]); return r.rows.map((row) => this.record(row)); });
   }
   async markSubmitted(workspaceId: string, requestId: string, executorId: string, nowIso: string, leaseUntil: string) {
     return this.transaction(true, async (c) => {
@@ -205,9 +215,9 @@ export class PostgresVimaxPlanningStore implements VimaxPlanningStore {
   async cancel(workspaceId: string, projectId: string, episodeId: string, actorId: string, requestId: string, nowIso: string) {
     return this.transaction(true, async (c) => {
       const canceled = await c.query(`UPDATE vimax_planning_request SET state='rejected',error_code='canceled_before_send',executor_id=NULL,lease_until=NULL,finished_at=$6
-        WHERE workspace_id=$1 AND project_id=$2 AND episode_id=$3 AND ${vimaxActorMatch("vimax_planning_request", 4, actorId)} AND id=$5 AND state='reserved'`, [workspaceId, projectId, episodeId, actorId, requestId, nowIso]);
+        WHERE workspace_id=$1 AND project_id=$2 AND episode_id=$3 AND ${vimaxActorMatch("vimax_planning_request", 4, actorId)} AND id=$5 AND state='reserved' AND ${visiblePlanningProject(7)}`, [workspaceId, projectId, episodeId, actorId, requestId, nowIso, storeOwnerAccountFilter()]);
       if (canceled.rowCount === 1) await settleCreatorQuotaHold(c, requestId, "unsent");
-      const r = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND project_id=$2 AND episode_id=$3 AND ${vimaxActorMatch("vimax_planning_request", 4, actorId)} AND id=$5`, [workspaceId, projectId, episodeId, actorId, requestId]);
+      const r = await c.query<Row>(`SELECT ${COLUMNS} FROM vimax_planning_request WHERE workspace_id=$1 AND project_id=$2 AND episode_id=$3 AND ${vimaxActorMatch("vimax_planning_request", 4, actorId)} AND id=$5 AND ${visiblePlanningProject(6)}`, [workspaceId, projectId, episodeId, actorId, requestId, storeOwnerAccountFilter()]);
       return r.rows[0] ? this.record(r.rows[0]) : null;
     });
   }

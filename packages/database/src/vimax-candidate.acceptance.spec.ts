@@ -16,6 +16,7 @@ import {
   type ScriptBreakdownFrozenInput, type TitleRunRecord, type VimaxCandidateCreate, type VimaxCandidateView,
 } from "@ai-drama/contracts";
 import { canonicalInputHash, hashVimaxCandidateCommand } from "@ai-drama/domain";
+import { AdminOpsStore } from "./admin-ops-store";
 import { runMigrations } from "./migrations";
 import { TextChainService } from "./text-chain";
 import { PostgresTitleWritingStore } from "./title-writing-store";
@@ -304,6 +305,22 @@ describe("ViMax E2-B on an explicitly authorized disposable PostgreSQL database"
       [w.workspaceId, w.projectId, randomUUID(), actor], [w.workspaceId, w.projectId, w.episodeId, "other-actor"]]) {
       await expect(store.get(scope[0]!, scope[1]!, scope[2]!, scope[3]!, candidate.candidateId)).rejects.toMatchObject({ code: "NOT_FOUND" });
     }
+  });
+
+  it("hides an archived project's saved candidate, preview, list and previous command receipts", async () => {
+    const w = await world();
+    const key = randomUUID(), saveKey = randomUUID();
+    const candidate = (await create(w,key)).candidate;
+    await save(w,candidate,saveKey);
+    const admin = new AdminOpsStore(pool);
+    const preview = await admin.previewAdminWorkTrash(w.workspaceId, w.projectId);
+    await admin.adminTrashWork(w.workspaceId, w.projectId, {expectedVersion: preview.version!, actor:"qa-admin", reason:"清理测试"});
+    const scope = [w.workspaceId, w.projectId, w.episodeId] as const;
+    await expect(store.targets(...scope)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(store.list(...scope,actor)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(store.get(...scope,actor,candidate.candidateId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(create(w,key)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(save(w,candidate,saveKey)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("preserves leading and trailing source-dialogue spaces in every saved shot", async () => {

@@ -11,6 +11,7 @@ import {
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockReferenceCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
 import { projectEpisodePlanIn } from "./episode-plan";
+import { ownedProjectBind } from "./creator-access-context";
 
 /**
  * Character reference images. The asset columns `reference_role` / `source_character_revision_id`, the relaxed
@@ -201,6 +202,20 @@ export async function characterReferenceStorageReady(client: Pick<PoolClient, "q
   return approval.rows.length === 1 && String(approval.rows[0]?.definition).includes(CHARACTER_REFERENCE_ROLE);
 }
 
+async function referenceProjectAccess(client: Pick<PoolClient, "query">) {
+  const owner = await ownedProjectBind(client, undefined, 3, "p");
+  return { sql: owner.sql || "AND p.archived_at IS NULL AND p.status = 'ACTIVE'", params: owner.params };
+}
+
+async function lockActiveReferenceProject(client: Pick<PoolClient, "query">, workspaceId: string, projectId: string) {
+  const access = await referenceProjectAccess(client);
+  const project = await client.query(
+    `SELECT id FROM project p WHERE p.id = $1 AND p.workspace_id = $2 ${access.sql} FOR UPDATE`,
+    [projectId, workspaceId, ...access.params],
+  );
+  if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "Reference project not found");
+}
+
 /**
  * Lock order shared with every writer of this project's media: project -> character -> assets. A strict video's
  * completion holds the project lock from its shot gate through the frozen-reference check and the asset, edge,
@@ -220,7 +235,7 @@ async function lockProjectOf(
   if (!projectId) {
     throw new PersistenceError("NOT_FOUND", source.table === "character" ? "Character not found" : "Character reference image not found");
   }
-  await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+  await lockActiveReferenceProject(client, workspaceId, projectId);
   return String(projectId);
 }
 
@@ -258,7 +273,7 @@ export class CharacterReferenceStore {
     const row = revision.rows[0];
     if (!row) throw new PersistenceError("NOT_FOUND", "Character revision not found");
     const projectId = String(row.project_id);
-    await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+    await lockActiveReferenceProject(client, workspaceId, projectId);
     // Series writing delivers text only: a series work is refused here, before its job, attempt, asset or call is written;
     // the completion passes this gate again. Without the series migration every work reads as short.
     if ((await projectEpisodePlanIn(client, workspaceId, projectId)).writingMode === "series") {
@@ -388,14 +403,16 @@ export class CharacterReferenceStore {
     const client = await this.pool.connect();
     try {
       await this.requireStorage(client);
+      const access = await referenceProjectAccess(client);
       const character = await client.query<QueryResultRow>(
         `SELECT character.id, character.project_id, character.current_revision_id, character.approved_revision_id,
                 revision.review_status AS revision_review, revision.freshness_status AS revision_freshness
            FROM character
+           JOIN project p ON p.id = character.project_id AND p.workspace_id = character.workspace_id
            LEFT JOIN character_revision revision ON revision.id = character.current_revision_id
             AND revision.workspace_id = character.workspace_id AND revision.character_id = character.id
-          WHERE character.id = $1 AND character.workspace_id = $2`,
-        [characterId, workspaceId],
+          WHERE character.id = $1 AND character.workspace_id = $2 ${access.sql}`,
+        [characterId, workspaceId, ...access.params],
       );
       const found = character.rows[0];
       if (!found) throw new PersistenceError("NOT_FOUND", "Character not found");

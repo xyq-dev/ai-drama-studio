@@ -109,3 +109,14 @@ BEGIN
 END $$;
 CREATE TRIGGER vimax_planning_request_guard BEFORE INSERT OR UPDATE OR DELETE ON vimax_planning_request FOR EACH ROW EXECUTE FUNCTION guard_vimax_planning_request();
 COMMENT ON TABLE vimax_planning_request IS 'ads.vimax-planning.storage.v1';
+
+-- This optional producer may be installed after the project archive guards.
+DO $$ BEGIN
+  IF to_regprocedure('script_workbench_require_active_project()') IS NOT NULL THEN
+    CREATE OR REPLACE TRIGGER workbench_active_project_insert BEFORE INSERT ON vimax_planning_request
+      FOR EACH ROW EXECUTE FUNCTION script_workbench_require_active_project();
+    CREATE OR REPLACE TRIGGER workbench_active_project_resume BEFORE UPDATE OF state ON vimax_planning_request
+      FOR EACH ROW WHEN (NEW.state IN ('running','reserved','submitted'))
+      EXECUTE FUNCTION script_workbench_require_active_project();
+  END IF;
+END $$;

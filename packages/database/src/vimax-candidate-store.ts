@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { storeOwnerAccountFilter } from "./creator-access-context";
 import type { PoolClient, QueryResultRow } from "pg";
 import {
   VIMAX_CANDIDATE_CREATE_SCHEMA, VIMAX_CANDIDATE_RECEIPT_SCHEMA, VIMAX_CANDIDATE_VIEW_SCHEMA,
@@ -137,7 +138,7 @@ export class VimaxCandidateStore {
   }
 
   private async lockWriteScope(client: PoolClient, workspaceId: string, projectId: string, episodeId: string): Promise<void> {
-    const project = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+    const project = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status='ACTIVE' AND ($3::text IS NULL OR to_jsonb(project)->>'owner_account_id'=$3) FOR UPDATE", [projectId, workspaceId, storeOwnerAccountFilter()]);
     if (!project.rows[0]) fail("NOT_FOUND", "Project not found");
     const episode = await client.query("SELECT id FROM episode WHERE id = $1 AND project_id = $2 AND workspace_id = $3 FOR UPDATE", [episodeId, projectId, workspaceId]);
     if (!episode.rows[0]) fail("NOT_FOUND", "Episode not found");
@@ -201,6 +202,7 @@ export class VimaxCandidateStore {
   private async view(client: PoolClient, row: Row, context?: Context): Promise<VimaxCandidateView> {
     const frozen = this.frozen(row);
     const currentContext = context ?? await this.context(client, String(row.workspace_id), String(row.project_id), String(row.episode_id));
+    if (currentContext.source.kind === "not_found") fail("NOT_FOUND", "Project or episode not found");
     const now = await this.targetIn(client, String(row.workspace_id), String(row.project_id), String(row.episode_id), frozen.target.sceneId);
     const reasons: VimaxCandidateBlocker[] = [];
     if (currentContext.source.kind !== "ok") reasons.push("source_unavailable");
@@ -230,8 +232,10 @@ export class VimaxCandidateStore {
 
   private async row(client: PoolClient, workspaceId: string, projectId: string, episodeId: string, actorId: string, candidateId: string, lock = false): Promise<Row> {
     const result = await client.query<Row>(`SELECT ${SELECT_COLUMNS} FROM ${TABLE} c
-      WHERE c.id = $1 AND c.workspace_id = $2 AND c.project_id = $3 AND c.episode_id = $4 AND ${vimaxActorMatch("c", 5, actorId)}${lock ? " FOR UPDATE OF c" : ""}`,
-    [candidateId, workspaceId, projectId, episodeId, actorId]);
+      WHERE c.id = $1 AND c.workspace_id = $2 AND c.project_id = $3 AND c.episode_id = $4 AND ${vimaxActorMatch("c", 5, actorId)}
+        AND EXISTS (SELECT 1 FROM project p WHERE p.id=c.project_id AND p.workspace_id=c.workspace_id AND p.archived_at IS NULL AND p.status='ACTIVE'
+          AND ($6::text IS NULL OR to_jsonb(p)->>'owner_account_id'=$6))${lock ? " FOR UPDATE OF c" : ""}`,
+    [candidateId, workspaceId, projectId, episodeId, actorId, storeOwnerAccountFilter()]);
     if (!result.rows[0]) fail("NOT_FOUND", "Candidate not found");
     return result.rows[0];
   }

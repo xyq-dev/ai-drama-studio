@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
 import { SCRIPT_BREAKDOWN_LIMITS, type VimaxPlatformSourceSnapshot } from "@ai-drama/contracts";
 import { scriptTextOf } from "@ai-drama/domain";
+import { storeOwnerAccountFilter } from "./creator-access-context";
 import type { DatabasePool } from "./job-service";
 
 type Row = QueryResultRow & Record<string, unknown>;
@@ -33,8 +34,9 @@ export class VimaxPreviewSourceStore {
     // to_jsonb preserves the pre-series schema's short-drama behavior without probing or altering the schema.
     const project = await client.query<Row>(
       `SELECT COALESCE(to_jsonb(project) ->> 'writing_mode', 'short') AS writing_mode
-         FROM project WHERE id = $1 AND workspace_id = $2`,
-      [projectId, workspaceId],
+         FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status='ACTIVE'
+           AND ($3::text IS NULL OR to_jsonb(project)->>'owner_account_id'=$3)`,
+      [projectId, workspaceId, storeOwnerAccountFilter()],
     );
     if (!project.rows[0]) return { kind: "not_found" };
     if (project.rows[0].writing_mode !== "short") return { kind: "series_not_enabled" };

@@ -46,6 +46,7 @@ describe("creator ownership filters on non-project resources", () => {
       { kind: "scoped", ownerAccountId: OWNER, actorId: `creator:${OWNER}` },
       () => runtime.getJob(WORKSPACE, JOB),
     )).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(statements.at(-1)?.sql).toContain("p.archived_at IS NULL");
     expect(statements.at(-1)?.sql).toContain("p.owner_account_id = $3::uuid");
     expect(statements.at(-1)?.values).toEqual([JOB, WORKSPACE, OWNER]);
   });
@@ -59,6 +60,7 @@ describe("creator ownership filters on non-project resources", () => {
       { kind: "scoped", ownerAccountId: OWNER, actorId: `creator:${OWNER}` },
       () => runtime.getWorkflow(WORKSPACE, RUN),
     )).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(statements.at(-1)?.sql).toContain("p.archived_at IS NULL");
     expect(statements.at(-1)?.sql).toContain("p.owner_account_id = $3::uuid");
     expect(statements.at(-1)?.values).toEqual([RUN, WORKSPACE, OWNER]);
   });
@@ -72,6 +74,7 @@ describe("creator ownership filters on non-project resources", () => {
       { kind: "scoped", ownerAccountId: OWNER, actorId: `creator:${OWNER}` },
       () => assets.getWorkspaceAsset(WORKSPACE, ASSET),
     )).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(statements.at(-1)?.sql).toContain("p.archived_at IS NULL");
     expect(statements.at(-1)?.sql).toContain("p.owner_account_id = $3::uuid");
     expect(statements.at(-1)?.values).toEqual([ASSET, WORKSPACE, OWNER]);
   });
@@ -86,6 +89,7 @@ describe("creator ownership filters on non-project resources", () => {
       () => runtime.listEventsAfter(WORKSPACE, "0", 10),
     )).resolves.toEqual([]);
     const list = statements.at(-1);
+    expect(list?.sql).toContain("p.archived_at IS NULL");
     expect(list?.sql).toContain("e.project_id IS NOT NULL");
     expect(list?.sql).toContain("p.owner_account_id = $4::uuid");
     expect(list?.values).toEqual([WORKSPACE, "0", 10, OWNER]);
@@ -122,6 +126,7 @@ describe("creator ownership filters on non-project resources", () => {
       }),
     )).rejects.toMatchObject({ code: "NOT_FOUND" });
     const projectLock = statements.find((statement) => statement.sql.includes("FOR UPDATE") && statement.sql.includes("FROM project"));
+    expect(projectLock?.sql).toContain("archived_at IS NULL");
     expect(projectLock?.sql).toContain("owner_account_id = $3::uuid");
     expect(projectLock?.values).toEqual(["55555555-5555-4555-8555-555555555555", WORKSPACE, OWNER]);
   });
@@ -174,6 +179,7 @@ describe("creator ownership filters on non-project resources", () => {
         "audio.tts",
       ),
     )).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(statements.at(-1)?.sql).toContain("p.archived_at IS NULL");
     expect(statements.at(-1)?.sql).toContain("p.owner_account_id = $3::uuid");
     expect(statements.at(-1)?.values).toEqual(["55555555-5555-4555-8555-555555555555", WORKSPACE, OWNER]);
   });

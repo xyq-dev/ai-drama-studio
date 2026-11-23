@@ -54,7 +54,7 @@ describe("ViMax platform source is a scoped read-only database snapshot", () => 
     } });
     expect(calls[0]!.sql).toBe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     expect(calls.at(-1)!.sql).toBe("ROLLBACK");
-    expect(calls.find(({ sql }) => sql.includes("FROM project"))!.values).toEqual([P, W]);
+    expect(calls.find(({ sql }) => sql.includes("FROM project"))!.values).toEqual([P, W, null]);
     expect(calls.find(({ sql }) => sql.includes("FROM episode"))!.values).toEqual([E, P, W]);
     expect(calls.find(({ sql }) => sql.includes("FROM script_revision"))!.values).toEqual([S, E, P, W]);
     expect(calls.find(({ sql }) => sql.includes("FROM character c"))!.values).toEqual([P, W, 31]);

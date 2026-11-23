@@ -168,7 +168,7 @@ describe("library projects ops view (DEF-01)", () => {
     const get = (path: string) => fetch(base + path, { headers: { cookie } });
     expect(await (await get("/account/ops-access")).json()).toMatchObject({ opsViewAvailable: false });
     expect((await (await get("/library/projects?view=ops")).json()).items).toHaveLength(1);
-    auth.syncStaff(staffId, { status: "active", permissions: ["review_works"] });
+    auth.syncStaff(staffId, { status: "active", permissions: ["review_works", "manage_works"] });
     expect(await (await get("/account/ops-access")).json()).toMatchObject({ opsViewAvailable: true });
     expect((await (await get("/library/projects?view=ops")).json()).items).toHaveLength(3);
     const path = "/projects/" + LEGACY_PROJECT + "/script-workbench";

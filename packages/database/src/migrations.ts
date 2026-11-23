@@ -122,6 +122,8 @@ export const UPLOAD_SESSION_MIGRATION = "20261119000100_upload_session";
  */
 export const STAFF_MEMBERSHIP_MIGRATION = "20261123000100_staff_membership";
 
+export const ADMIN_WORK_ACTIONS_MIGRATION = "20261123000200_admin_work_actions";
+
 /**
  * The only migrations a guarded single run may apply, each with the migrations it requires. Each is applied by its own
  * command; none of them takes the script breakdown (or anything else pending) along.
@@ -135,6 +137,8 @@ export const GUARDED_SINGLE_MIGRATIONS: Readonly<Record<string, readonly string[
   [CREATOR_ACCOUNT_PLAN_MIGRATION]: BASE_MIGRATIONS,
   [UPLOAD_SESSION_MIGRATION]: BASE_MIGRATIONS,
   [STAFF_MEMBERSHIP_MIGRATION]: [...BASE_MIGRATIONS, CREATOR_ACCOUNT_PLAN_MIGRATION],
+  // All standard producer tables must exist when installing archive-vs-task serialization triggers.
+  [ADMIN_WORK_ACTIONS_MIGRATION]: [...BASE_MIGRATIONS, WRITING_CANDIDATE_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, STAFF_MEMBERSHIP_MIGRATION],
 };
 
 export async function runMigrations(

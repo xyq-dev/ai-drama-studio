@@ -37,15 +37,17 @@ afterAll(async () => {
   await pool.end();
 });
 
-/** Polls until a backend is waiting on a row lock for a statement matching the pattern. No fixed sleep. */
-async function waitForLockWaiter(pattern: string): Promise<void> {
+/** Observe the reference writer blocked by this test's own project-row lock. */
+async function waitForProjectLock(holderPid: number): Promise<void> {
   const deadline = Date.now() + 10_000;
   for (;;) {
     const waiting = await pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1`, [pattern]);
+        WHERE datname = current_database() AND wait_event_type = 'Lock'
+          AND $1::integer = ANY(pg_blocking_pids(pid))
+          AND query LIKE 'SELECT id FROM project %FOR UPDATE'`, [holderPid]);
     if ((waiting.rows[0]?.count ?? 0) > 0) return;
-    if (Date.now() > deadline) throw new Error(`no backend waited on a lock for ${pattern}`);
+    if (Date.now() > deadline) throw new Error("No reference writer waited for the held project row");
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
@@ -69,7 +71,9 @@ describe("reference writes take the project lock before reading anything", () =>
     const holder = await pool.connect();
     try {
       await holder.query("BEGIN");
-      await holder.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [seeded.projectId]);
+      const locked = await holder.query<{ holder_pid: number }>(
+        "SELECT pg_backend_pid() AS holder_pid FROM project WHERE id = $1 FOR UPDATE", [seeded.projectId],
+      );
       let settled = false;
       const write = (kind === "selection"
         ? store.transaction((client) => store.selectInTransaction(client, { workspaceId: seeded.workspaceId,
@@ -79,13 +83,13 @@ describe("reference writes take the project lock before reading anything", () =>
           contentHash: hash, note: null })))
         .finally(() => { settled = true; });
       write.catch(() => undefined);
-      await waitForLockWaiter("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE");
+      await waitForProjectLock(locked.rows[0]!.holder_pid);
       expect(settled).toBe(false);
       await holder.query("COMMIT");
       // Only after the project lock does it reach the structure check; these migrations have no reference draft.
       await expect(write).rejects.toMatchObject({ code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE" });
     } finally {
-      holder.release();
+      holder.release(true);
     }
   });
 });

@@ -6,6 +6,7 @@ import {
   type JobSignalRow,
   type WorkSignalRow,
 } from "@ai-drama/database";
+import { z } from "zod";
 import type { StudioContext } from "../studio/studio.service";
 import { runWithCreatorAccess } from "../auth/creator-access";
 import {
@@ -55,6 +56,36 @@ function retryError(reason: string): AdminDirectoryError {
   return new AdminDirectoryError(409, reason, RETRY_MESSAGES[reason] ?? RETRY_MESSAGES.NOT_RETRYABLE!);
 }
 
+const workId = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i).toLowerCase();
+const workVersions = z.array(z.object({
+  id: workId, version: z.number().int().min(1).max(2_147_483_646),
+}).strict()).min(1).max(50).refine((items) => new Set(items.map(({ id }) => id)).size === items.length);
+const previewBody = z.object({
+  ids: z.array(workId).min(1).max(50).refine((ids) => new Set(ids).size === ids.length),
+}).strict();
+const restoreBody = z.object({ confirmed: z.literal(true), items: workVersions }).strict();
+const trashBody = restoreBody.extend({ reason: z.string().trim().min(1).max(300).refine((reason) => !reason.includes("\0")) });
+
+function workChangeError(cause: unknown): { status: "skipped" | "unknown"; message: string } {
+  if (cause instanceof PersistenceError) {
+    if (cause.code === "NOT_FOUND") return { status: "skipped", message: "作品不存在或已移出当前列表。" };
+    if (cause.code === "REVISION_CONFLICT") return { status: "skipped", message: "作品状态已变化或仍有任务在处理，请刷新核对。" };
+    if (cause.code === "WORKBENCH_UNAVAILABLE") return { status: "skipped", message: "回收站尚未就绪。" };
+    if (cause.code === "VALIDATION_ERROR") return { status: "skipped", message: "作品版本无效，请刷新核对。" };
+  }
+  return { status: "unknown", message: "结果未确认，请刷新作品列表与回收站核对。" };
+}
+
+type WorkAuditRow = Awaited<ReturnType<AdminOpsStore["listAdminWorkLogs"]>>[number];
+
+function workAuditRecord(row: WorkAuditRow) {
+  return {
+    id: row.id, at: row.at, actor: row.actor, action: row.action === "trash" ? "作品移入回收站" : "恢复作品",
+    target: row.title, result: "success" as const, source: "管理后台 /admin/works",
+    secretStatus: null, secretMask: null, detail: row.action === "trash" ? row.reason ?? "未记录操作原因。" : "作品已恢复至原创作者名下。",
+  };
+}
+
 export class AdminDirectoryService {
   constructor(private readonly deps: {
     store: AdminOpsStore;
@@ -67,11 +98,12 @@ export class AdminDirectoryService {
     revokeSessions?: (accountId: string) => void;
   }) {}
 
-  async works(query: { q?: string; status?: string; owner?: string; cursor?: string; limit?: number }) {
+  async works(query: { q?: string; status?: string; owner?: string; cursor?: string; limit?: number }, canManageWorks: boolean) {
     const page = await this.deps.store.listWorks(this.deps.workspaceId, query);
     const legacy = page.items.some((item) => ownerPresentation({ username: item.ownerUsername, status: item.ownerStatus }).legacy);
     return {
       items: page.items.map((item) => this.work(item)),
+      canManageWorks: canManageWorks && page.workManagementReady === true,
       total: page.total,
       nextCursor: page.nextCursor,
       owners: [
@@ -79,6 +111,54 @@ export class AdminDirectoryService {
         ...(legacy ? [{ id: "legacy", name: "历史作品", legacy: true }] : []),
       ],
     };
+  }
+
+  trashedWorks(query: { q?: string; cursor?: string; limit?: number }) {
+    return this.deps.store.listTrashedWorks(this.deps.workspaceId, query);
+  }
+
+  async previewWorkTrash(body: unknown) {
+    const parsed = previewBody.safeParse(body);
+    if (!parsed.success) throw new AdminDirectoryError(400, "INVALID_SELECTION", "请选择 1 至 50 部不同的作品。");
+    const items = [];
+    for (const id of parsed.data.ids) {
+      try {
+        items.push(await this.deps.store.previewAdminWorkTrash(this.deps.workspaceId, id));
+      } catch (error) {
+        const result = workChangeError(error);
+        items.push({ id, version: null, eligible: false, message: result.status === "unknown" ? "暂时无法核对这部作品。" : result.message });
+      }
+    }
+    return { items };
+  }
+
+  async changeWorkTrash(session: DirectorySession, action: "trash" | "restore", body: unknown) {
+    if (action === "trash") {
+      const parsed = trashBody.safeParse(body);
+      if (!parsed.success) throw new AdminDirectoryError(400, "INVALID_WORK_CHANGE", "请核对所选作品，填写 1 至 300 字的操作原因并确认移入。");
+      const { items, reason } = parsed.data;
+      return this.applyWorkChanges(items, (id, version) => this.deps.store.adminTrashWork(this.deps.workspaceId, id, {
+        expectedVersion: version, actor: session.username, reason,
+      }));
+    }
+    const parsed = restoreBody.safeParse(body);
+    if (!parsed.success) throw new AdminDirectoryError(400, "INVALID_WORK_CHANGE", "请重新核对所选作品并确认恢复。");
+    return this.applyWorkChanges(parsed.data.items, (id, version) => this.deps.store.adminRestoreWork(this.deps.workspaceId, id, {
+      expectedVersion: version, actor: session.username,
+    }));
+  }
+
+  private async applyWorkChanges(items: z.infer<typeof workVersions>, apply: (id: string, version: number) => Promise<unknown>) {
+    const results = [];
+    for (const { id, version } of items) {
+      try {
+        await apply(id, version);
+        results.push({ id, status: "succeeded" as const, message: null });
+      } catch (cause) {
+        results.push({ id, ...workChangeError(cause) });
+      }
+    }
+    return { items: results };
   }
 
   async workDetail(id: string) {
@@ -258,9 +338,13 @@ export class AdminDirectoryService {
     }
   }
 
-  async logs(query: { q?: string; actor?: string; range?: string }) {
-    if (!this.deps.logs) return { storage: "unconfigured" as const, items: [], total: 0 };
-    const records = await this.deps.logs.list();
+  async logs(query: { q?: string; actor?: string; range?: string }, includeWorkAudit: boolean) {
+    const [fileRecords, workRecords] = await Promise.all([
+      this.deps.logs?.list() ?? [],
+      includeWorkAudit ? this.deps.store.listAdminWorkLogs(this.deps.workspaceId) : [],
+    ]);
+    const records = [...fileRecords, ...workRecords.map(workAuditRecord)].sort((a, b) => b.at.localeCompare(a.at));
+    if (!this.deps.logs && !records.length) return { storage: "unconfigured" as const, items: [], total: 0 };
     const q = (query.q ?? "").trim().toLowerCase();
     const range = query.range === "30d" || query.range === "all" ? query.range : "7d";
     const cutoff = range === "30d" ? Date.now() - 30 * 86_400_000 : range === "7d" ? Date.now() - 7 * 86_400_000 : 0;
@@ -278,11 +362,12 @@ export class AdminDirectoryService {
     };
   }
 
-  async logDetail(id: string) {
-    if (!this.deps.logs) throw new AdminDirectoryError(503, "LOG_UNCONFIGURED", "操作日志存储尚未就绪。");
-    const record = await this.deps.logs.get(id);
-    if (!record) throw new AdminDirectoryError(404, "NOT_FOUND", RETRY_MESSAGES.NOT_FOUND!);
-    return record;
+  async logDetail(id: string, includeWorkAudit: boolean) {
+    const record = await this.deps.logs?.get(id);
+    if (record) return record;
+    const workRecord = includeWorkAudit ? await this.deps.store.getAdminWorkLog(this.deps.workspaceId, id) : null;
+    if (!workRecord) throw new AdminDirectoryError(404, "NOT_FOUND", RETRY_MESSAGES.NOT_FOUND!);
+    return workAuditRecord(workRecord);
   }
 
   private work(row: WorkSignalRow) {

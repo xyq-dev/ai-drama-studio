@@ -25,6 +25,11 @@ function setup(options:{ready?:boolean;probeError?:boolean;existing?:boolean;pen
     if(sql.startsWith("SELECT id, project_id FROM vimax_planning_request"))return {rows:options.planningActive??[]};
     if(sql.startsWith("SELECT id, project_id FROM title_writing_run"))return {rows:options.titleActive??[]};
     if(sql.includes("SELECT id, state, actor_id"))return {rows:options.prior??[]};
+    if(sql.startsWith("INSERT INTO vimax_planning_request"))return {rows:[row],rowCount:1};
+    if(sql.startsWith("UPDATE vimax_planning_request")) {
+      if (sql.includes("RETURNING id,state")) return { rows: options.recovered ?? [], rowCount: options.recovered?.length ?? 0 };
+      return { rows: [], rowCount: options.matched === false ? 0 : 1 };
+    }
     if(sql.includes("FROM vimax_planning_request")) {
       if(sql.includes("count(*)"))return {rows:[{recent:options.recent??0}]};
       if(sql.includes("idempotency_key=$3"))return {rows:options.existing?[row]:[]};
@@ -38,11 +43,6 @@ function setup(options:{ready?:boolean;probeError?:boolean;existing?:boolean;pen
     if(sql.includes("FROM stale_recalculation"))return {rows:options.pending?[{}]:[]};
     if(sql.includes("FROM title_writing_run"))return {rows:options.active?[{}]:[]};
     if(sql.includes("FROM scene s"))return {rows:[{scene_id:target.sceneId,row_version:3,archived_at:null,scene_revision_id:target.sceneRevisionId,source_script_revision_id:source.scriptRevisionId,ordinal:1,heading:target.heading,time_of_day:"夜",summary:"原场景",location_revision_id:null,freshness_status:"CURRENT",active_shot_count:options.shots??0}]};
-    if(sql.startsWith("INSERT INTO vimax_planning_request"))return {rows:[row],rowCount:1};
-    if(sql.startsWith("UPDATE vimax_planning_request")) {
-      if (sql.includes("RETURNING id,state")) return { rows: options.recovered ?? [], rowCount: options.recovered?.length ?? 0 };
-      return { rows: [], rowCount: options.matched === false ? 0 : 1 };
-    }
     return {rows:[]};
   });
   const release=vi.fn();const store=new PostgresVimaxPlanningStore({connect:async()=>({query,release})} as unknown as DatabasePool);
@@ -57,7 +57,7 @@ describe("persistent governed planning transactions",()=>{
   });
   it("does not disguise query failures as missing schema",async()=>{const h=setup({probeError:true});await expect(h.store.storageReady()).rejects.toThrow("probe connection failure");expect(h.release).toHaveBeenCalledOnce();});
   it("replays original keys before checking changed sources, quotas or providers",async()=>{
-    const h=setup({existing:true,sourceChanged:true,recent:999});expect((await h.store.create(h.reservation,limits)).kind).toBe("existing");expect(mutations(h.calls)).toEqual([]);expect(h.calls.some(c=>c.sql.includes("FROM project"))).toBe(false);
+    const h=setup({existing:true,sourceChanged:true,recent:999});expect((await h.store.create(h.reservation,limits)).kind).toBe("existing");expect(mutations(h.calls)).toEqual([]);expect(h.calls.some(c=>c.sql.includes("FROM script_revision"))).toBe(false);
     h.reservation.request.requirements.style+=" ";h.reservation.requestHash=hashVimaxPlanningRequest(h.reservation.projectId,h.reservation.episodeId,h.reservation.request);expect((await h.store.create(h.reservation,limits)).kind).toBe("conflict");
   });
   it.each([{pending:true,code:"SOURCE_STALE"},{active:true,code:"VIMAX_PLANNING_ACTIVE_BREAKDOWN"},{shots:1,code:"VIMAX_PLANNING_HAS_SHOTS"},{sourceChanged:true,code:"VIMAX_PLANNING_SOURCE_CHANGED"},{recent:10,code:"VIMAX_PLANNING_DAILY_CAP"}])("refuses %o with zero reservations",async({code,...options})=>{
@@ -87,7 +87,7 @@ describe("persistent governed planning transactions",()=>{
     const h=setup();expect(await h.store.markSubmitted(W,ID,"other",NOW,LATER)).toBe(false);expect(await h.store.markSubmitted(W,ID,"exec",LATER,LATER)).toBe(false);expect(mutations(h.calls)).toEqual([]);
   });
   it("serves historical reads without consulting live sources and detects hash corruption",async()=>{
-    const h=setup({state:"unknown",sourceChanged:true});expect((await h.store.get(W,h.source.projectId,h.source.episodeId,"a",ID))?.state).toBe("unknown");expect(h.calls.some(c=>c.sql.includes("FROM project"))).toBe(false);expect(mutations(h.calls)).toEqual([]);
+    const h=setup({state:"unknown",sourceChanged:true});expect((await h.store.get(W,h.source.projectId,h.source.episodeId,"a",ID))?.state).toBe("unknown");expect(h.calls.some(c=>c.sql.includes("FROM script_revision"))).toBe(false);expect(mutations(h.calls)).toEqual([]);
     h.row.frozen_hash="0".repeat(64);await expect(h.store.getById(W,ID)).rejects.toMatchObject({code:"VIMAX_PLANNING_CORRUPT"});
   });
   it("cannot finish after recovery and cannot substitute new request requirements into a valid answer",async()=>{

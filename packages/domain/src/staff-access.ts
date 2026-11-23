@@ -5,6 +5,7 @@
 
 export const STAFF_PERMISSIONS = [
   "review_works",
+  "manage_works",
   "manage_creators",
   "view_usage",
   "retry_paid",
@@ -20,6 +21,7 @@ export type StaffPermission = (typeof STAFF_PERMISSIONS)[number];
 
 export const STAFF_PERMISSION_LABELS: Record<StaffPermission, string> = {
   review_works: "审核作品",
+  manage_works: "管理作品回收站",
   manage_creators: "管理创作者",
   view_usage: "查看用量",
   retry_paid: "付费重试",

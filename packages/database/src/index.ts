@@ -14,6 +14,7 @@ export {
   CREATOR_ACCOUNT_PLAN_MIGRATION,
   UPLOAD_SESSION_MIGRATION,
   STAFF_MEMBERSHIP_MIGRATION,
+  ADMIN_WORK_ACTIONS_MIGRATION,
   runMigrations,
   type MigrationClient,
   type MigrationOptions,
@@ -214,7 +215,7 @@ export * from "./speech-batch-store";
 export * from "./real-media-store";
 export * from "./voice-compose-store";
 export * from "./project-library";
-export { AdminOpsStore, type AdminPageQuery, type WorkSignalRow, type AssetSignalRow, type JobSignalRow, type OwnerFacetRow } from "./admin-ops-store";
+export { AdminOpsStore, type AdminPageQuery, type AdminTrashedWork, type AdminWorkLog, type WorkSignalRow, type AssetSignalRow, type JobSignalRow, type OwnerFacetRow } from "./admin-ops-store";
 export * from "./storage-settings-store";
 export * from "./upload-session-store";
 export {

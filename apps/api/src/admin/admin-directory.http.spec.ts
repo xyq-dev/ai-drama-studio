@@ -42,7 +42,11 @@ it("keeps directory APIs operator-only and does not retry without confirmation",
   const retry = vi.fn(async () => ({ id: "queued" }));
   let current = row();
   const store = {
-    listWorks: vi.fn(async () => ({ items: [], total: 0, nextCursor: null, owners: [] })),
+    listWorks: vi.fn(async () => ({ items: [], total: 0, nextCursor: null, owners: [], workManagementReady: true })),
+    listTrashedWorks: vi.fn(async () => ({ items: [], total: 0, nextCursor: null })),
+    previewAdminWorkTrash: vi.fn(async (_ws: string, id: string) => ({ id, version: 1, eligible: true, message: null })),
+    adminTrashWork: vi.fn(), adminRestoreWork: vi.fn(),
+    listAdminWorkLogs: vi.fn(), getAdminWorkLog: vi.fn(),
     getJob: vi.fn(async () => current),
   };
   const directory = new AdminDirectoryService({
@@ -61,6 +65,13 @@ it("keeps directory APIs operator-only and does not retry without confirmation",
     { username: "admin", passwordHash: OPERATOR_HASH, publicOrigin: ORIGIN },
     { creators: { findActiveByUsername: async (username) => username === "creator-a" ? { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", username: "creator-a", passwordHash: CREATOR_HASH } : null } },
   );
+  const staffId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  auth.setStaffDirectory({
+    findByUsername: async username => username === "reviewer" ? {
+      id: staffId, username, passwordHash: OPERATOR_HASH, status: "active", totpEnabled: false, permissions: ["review_works"],
+    } : null,
+    recordLogin: async () => {}, verifySecondFactor: async () => false,
+  });
   const module = await Test.createTestingModule({
     controllers: [AuthController, AdminDirectoryController],
     providers: [
@@ -93,6 +104,51 @@ it("keeps directory APIs operator-only and does not retry without confirmation",
     expect(store.listWorks).not.toHaveBeenCalled();
 
     const operator = await login("admin", OPERATOR_PASSWORD);
+    const workPost = (path: string, who: typeof operator, body: unknown, extra?: Record<string, string>) =>
+      fetch(`${base}/admin/works/${path}`, { method: "POST", headers: {
+        origin: ORIGIN, cookie: who.cookie, "content-type": "application/json", "x-csrf-token": who.csrf, ...extra,
+      }, body: JSON.stringify(body) });
+    const reviewer = await login("reviewer", OPERATOR_PASSWORD);
+    const reviewGet = (path: string) => fetch(base + path, { headers: { cookie: reviewer.cookie } });
+    expect(await (await reviewGet("/admin/works")).json()).toMatchObject({ canManageWorks: false });
+    expect((await reviewGet("/admin/works/trash")).status).toBe(403);
+    expect(await (await reviewGet("/admin/logs")).json()).toMatchObject({ items: [] });
+    expect((await reviewGet("/admin/logs/" + JOB_ID)).status).toBe(404);
+    expect(store.listAdminWorkLogs).not.toHaveBeenCalled();
+    expect(store.getAdminWorkLog).not.toHaveBeenCalled();
+
+    const batch = { confirmed: true, items: [{ id: JOB_ID, version: 1 }] };
+    for (const [path, body] of [
+      ["trash-preview", { ids: [JOB_ID] }], ["trash", { ...batch, reason: "测试" }], ["restore", batch],
+    ] as const) {
+      expect((await workPost(path, creator, body)).status).toBe(401);
+      expect((await workPost(path, reviewer, body)).status).toBe(403);
+      expect((await workPost(path, operator, body, { "x-csrf-token": "invalid" })).status).toBe(403);
+      expect((await workPost(path, operator, body, { origin: "https://wrong.example.test" })).status).toBe(403);
+      expect((await workPost(path, operator, body, { "content-type": "text/plain" })).status).toBe(415);
+    }
+    expect(store.adminTrashWork).not.toHaveBeenCalled();
+    expect(store.adminRestoreWork).not.toHaveBeenCalled();
+    expect(store.previewAdminWorkTrash).not.toHaveBeenCalled();
+    expect((await fetch(`${base}/admin/works/trash`, { headers: { cookie: creator.cookie } })).status).toBe(401);
+    expect(store.listTrashedWorks).not.toHaveBeenCalled();
+    auth.syncStaff(staffId, { status: "active", permissions: ["manage_works"] });
+    expect((await reviewGet("/admin/works")).status).toBe(403);
+    expect((await reviewGet("/admin/works/trash")).status).toBe(403);
+    expect((await workPost("restore", reviewer, batch)).status).toBe(403);
+    auth.syncStaff(staffId, { status: "active", permissions: ["review_works", "manage_works"] });
+    expect(await (await reviewGet("/admin/works")).json()).toMatchObject({ canManageWorks: true });
+    expect((await reviewGet("/admin/works/trash")).status).toBe(200);
+    expect((await workPost("trash-preview", reviewer, { ids: [JOB_ID] })).status).toBe(200);
+    const trashList = await fetch(`${base}/admin/works/trash?q=creator-a`, { headers: { cookie: operator.cookie } });
+    expect(trashList.status).toBe(200);
+    expect(store.listTrashedWorks).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", expect.objectContaining({ q: "creator-a" }));
+    const preview = await workPost("trash-preview", operator, { ids: [JOB_ID] });
+    expect(await preview.json()).toEqual({ items: [{ id: JOB_ID, version: 1, eligible: true, message: null }] });
+    const trashed = await workPost("trash", operator, { ...batch, reason: "清理测试" });
+    expect(await trashed.json()).toEqual({ items: [{ id: JOB_ID, status: "succeeded", message: null }] });
+    expect(store.adminTrashWork).toHaveBeenCalledWith(expect.any(String), JOB_ID, { actor: "admin", expectedVersion: 1, reason: "清理测试" });
+    expect((await workPost("restore", operator, batch)).status).toBe(200);
     const post = (body: unknown, key?: string) => fetch(`${base}/admin/jobs/${JOB_ID}/retry`, {
       method: "POST",
       headers: {
@@ -135,6 +191,7 @@ it("keeps directory APIs operator-only and does not retry without confirmation",
     expect(expired.status).toBe(401);
     const stillOperator = await fetch(`${base}/admin/works`, { headers: { cookie: operator.cookie, accept: "application/json" } });
     expect(stillOperator.status).toBe(200);
+    expect(await stillOperator.json()).toMatchObject({ canManageWorks: true });
   } finally {
     await app.close();
   }
