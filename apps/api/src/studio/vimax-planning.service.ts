@@ -102,15 +102,18 @@ export class VimaxPlanningService {
       const providerKey = this.choice(), provider = providerKey ? this.deps.providers[providerKey] : null;
       if (!providerKey || !provider?.ok || !provider.models[0]) return failure("VIMAX_PLANNING_PROVIDER_UNCONFIGURED");
       const now = this.now();
+      const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
+      const hold = await openInstalledHold(context, "writing", projectId);
+      if (hold.denied) return { status: 402, body: { error: { code: hold.denied.code, message: hold.denied.message } } };
+      try {
       const created = await this.deps.store.create({ id: randomUUID(), workspaceId: this.deps.workspaceId, projectId, episodeId,
         actorId: context.actorId, idempotencyKey: context.idempotencyKey!, requestHash, request: parsed.data,
         providerKey, model: provider.models[0], executorId: this.deps.executor.executorId,
         leaseUntil: new Date(now.getTime() + 240000).toISOString(), createdAt: now.toISOString() },
       { sinceIso: new Date(now.getTime() - 86400000).toISOString(), maxCallsPerDay: this.deps.maxCallsPerDay, maxActiveRuns: this.deps.maxActiveRuns });
       if (created.kind === "created") {
-        const { acceptCreatorTask } = await import("../membership/creator-task-guard");
-        const denied = await acceptCreatorTask(context, "writing", projectId);
-        if (denied) return { status: 402, body: { error: { code: denied.code, message: denied.message } } };
+        hold.keep();
+        if (hold.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.record.id);
         const work = () => this.deps.executor.execute(created.record.id);
         if (this.deps.schedule) this.deps.schedule(work); else setImmediate(() => { void work().catch(() => undefined); });
         return this.found(created.record, projectId, episodeId, 202);
@@ -120,6 +123,9 @@ export class VimaxPlanningService {
       if (created.kind === "active") return failure("VIMAX_PLANNING_ACTIVE", { requestId: created.requestId });
       if (created.kind === "needs_confirmation") return failure("VIMAX_PLANNING_NEEDS_CONFIRMATION", { requestId: created.requestId });
       return failure("code" in created ? created.code : "VIMAX_PLANNING_BLOCKED");
+      } finally {
+        await hold.release();
+      }
     });
   }
   async get(projectId: string, episodeId: string, actorId: string, requestId: string): Promise<VimaxPlanningResult> {

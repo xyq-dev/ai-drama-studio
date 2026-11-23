@@ -364,6 +364,7 @@ export interface AutoCreationEngineDeps {
   leaseMs?: number;
   timeoutMs?: number;
   send?: typeof sendWriting;
+  onMembershipSignal?: (event: { runId: string; outcome: "unsent" | "unknown" | "sent" }) => Promise<void>;
 }
 
 /**
@@ -411,6 +412,16 @@ export class AutoCreationEngine {
 
   private async finish(runId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null,
     quality?: Exclude<AutoCreationQuality, "pending">): Promise<false> {
+    if (this.deps.onMembershipSignal) {
+      const bundle = await this.deps.store.getRunById(this.workspaceId, runId);
+      const states = bundle?.stages.map((stage) => stage.state) ?? [];
+      const outcome = states.includes("unknown")
+        ? "unknown"
+        : states.some((item) => item === "completed" || item === "rejected" || item === "submitted")
+          ? "sent"
+          : "unsent";
+      await this.deps.onMembershipSignal({ runId, outcome }).catch(() => undefined);
+    }
     await this.deps.store.finishRun(this.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString(), quality);
     return false;
   }

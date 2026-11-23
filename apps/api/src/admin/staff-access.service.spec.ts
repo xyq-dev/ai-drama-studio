@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hashPassword } from "../auth/password-hash";
 import { SiteAuth } from "../auth/site-auth";
+import { LEGACY_OWNER_ACCOUNT_ID } from "@ai-drama/domain";
 import { currentTotp } from "../auth/totp";
 import { MemoryStaffRepository } from "./staff-repository";
 import { StaffAccessError, StaffAccessService, assertStaffPermission } from "./staff-access.service";
@@ -58,6 +59,7 @@ describe("staff administration", () => {
   it("invites an operator, lets them review, and rejects model-key and quota changes", async () => {
     const { auth, staff, audits } = await setup();
     const owner = await login(auth, "owner", "operator-pass");
+    expect(owner.session.accountId).toBe(LEGACY_OWNER_ACCOUNT_ID);
     const roles = await staff.list();
     const ops = roles.roles.find((role) => role.code === "ops_admin");
     if (!ops) throw new Error("missing ops role");
@@ -104,5 +106,13 @@ describe("staff administration", () => {
     if (!recovered.totpRequired) throw new Error("second factor missing");
     const withCode = await auth.completeTotp(headers, { challenge: recovered.challenge, code: confirmed.recoveryCodes[0]! });
     expect(withCode.session.staffId).toBe(owner.session.staffId);
+    const replacement = await staff.beginTotp(owner.session.staffId!, "operator-pass");
+    const during = await auth.login(headers, { password: "operator-pass", username: "owner" });
+    if (!during.totpRequired) throw new Error("old authenticator should stay valid");
+    await auth.completeTotp(headers, { challenge: during.challenge, code: currentTotp(started.secret) });
+    await staff.confirmTotp(owner.session.staffId!, currentTotp(replacement.secret));
+    const switched = await auth.login(headers, { password: "operator-pass", username: "owner" });
+    if (!switched.totpRequired) throw new Error("new authenticator missing");
+    await auth.completeTotp(headers, { challenge: switched.challenge, code: currentTotp(replacement.secret) });
   });
 });

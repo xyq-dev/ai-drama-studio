@@ -231,6 +231,7 @@ export {
   type CreatorAccountStatus,
   type CreatorAccountWithHash,
 } from "./creator-account-store";
+export { settleCreatorQuotaHold } from "./creator-quota-settle";
 export {
   CreatorPlanLedgerStore,
   type CreatorLedgerEntry,

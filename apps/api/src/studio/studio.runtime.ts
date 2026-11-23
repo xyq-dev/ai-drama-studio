@@ -410,6 +410,7 @@ export class StudioRuntime implements OnModuleDestroy {
       providers: titleProviders,
       transport: createFetchTransport(),
       maxCallsPerDay,
+      onMembershipSignal: (event) => membership.noteRun(event),
       ...(env.AUTO_CREATION_RESEARCH_FETCH ? { fetchPages: createResearchFetcher({ allowedHosts }), defaultResearchUrls: [...OCEAN_ENGINE_ENTRY_URLS] } : {}),
     });
     // Shared with RealMediaService below: options.media must use the same enabled sunburst config path.

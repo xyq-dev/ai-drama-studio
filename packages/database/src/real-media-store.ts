@@ -4,6 +4,7 @@ import type { RealMediaConfiguration, RealMediaQuote, RealMediaSnapshot } from "
 import { assertRealMediaInput,estimateRealMedia, realMediaAmountUnits, realMediaInputHash } from "@ai-drama/domain";
 import { assertAutoStoryboardSource, assertNoBusyAutoStoryboardShot, requireAutoStoryboardSelection } from "./auto-episode-storyboard-media";
 import { ownedProjectBind } from "./creator-access-context";
+import { settleCreatorQuotaHold } from "./creator-quota-settle";
 import { PersistenceError, type DatabasePool, type CreatedWorkflowJob } from "./job-service";
 
 export type FrozenRealMediaInput = Omit<RealMediaSnapshot, "budget">;
@@ -242,6 +243,7 @@ export class RealMediaStore {
         error_message='Provider delivery or result is unknown; automatic resubmission is blocked',lease_owner=NULL,lease_until=NULL,
         next_run_at=NULL,row_version=row_version+1,updated_at=now() WHERE id=$1 AND workspace_id=$2 AND state IN ('RUNNING','WAITING_EXTERNAL')
           AND ($3::text IS NULL OR lease_owner=$3 OR lease_owner IS NULL)`,[jobId,workspaceId,leaseOwner??null]);
+      await settleCreatorQuotaHold(client, jobId, "unknown");
     });
   }
   async rejectSubmission(workspaceId:string,attemptId:string):Promise<void>{

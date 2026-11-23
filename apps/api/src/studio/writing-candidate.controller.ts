@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Query, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { SITE_AUTH, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import { operatorProof } from "./operator-access";
 import { createTraceId } from "./studio.service";
@@ -43,7 +43,7 @@ export class WritingCandidateController {
     @Headers("x-trace-id") traceHeader?: string,
   ) {
     return this.send(response, (service) => service.start(projectId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Get("projects/:projectId/writing/candidates")

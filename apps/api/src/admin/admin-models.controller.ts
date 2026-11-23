@@ -8,6 +8,8 @@ import {
 import type { AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, ComfyUiAdminCheck, TitleWritingProviderKey } from "@ai-drama/contracts";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
 import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
+import { StaffAccessError, assertStaffPermission } from "./staff-access.service";
+import type { StaffPermission } from "@ai-drama/domain";
 
 export const ADMIN_MODELS_SERVICE = "ADMIN_MODELS_SERVICE";
 export const ADMIN_COMFYUI_CHECK = "ADMIN_COMFYUI_CHECK";
@@ -47,7 +49,7 @@ export class AdminModelsController {
   @Post("models/comfyui/check")
   comfyUiConnection(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      this.authorizedBackend(headers, true);
+      this.authorizedBackend(headers, true, "probe_models");
       if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length > 0) {
         throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       }
@@ -64,7 +66,7 @@ export class AdminModelsController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
-      const backend = this.authorizedBackend(headers, true);
+      const backend = this.authorizedBackend(headers, true, "enable_models");
       const key = adminProviderKeySchema.safeParse(providerKey);
       const input = adminProviderUpdateSchema.safeParse(body);
       if (!key.success || !input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -79,7 +81,7 @@ export class AdminModelsController {
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
-      const backend = this.authorizedBackend(headers, true);
+      const backend = this.authorizedBackend(headers, true, "enable_models");
       const input = adminLimitsUpdateSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       return backend.updateLimits(input.data);
@@ -100,7 +102,7 @@ export class AdminModelsController {
   saveVendor(@Param("vendor") id: string, @Headers() headers: RequestHeaders, @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const backend = this.authorizedBackend(headers, true);
+      const backend = this.authorizedBackend(headers, true, "enable_models");
       const input = adminVendorSaveSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       return backend.saveVendor(vendorKey(id), input.data);
@@ -111,17 +113,20 @@ export class AdminModelsController {
   checkVendor(@Param("vendor") id: string, @Headers() headers: RequestHeaders, @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
-      const backend = this.authorizedBackend(headers, true);
+      const backend = this.authorizedBackend(headers, true, "probe_models");
       const input = adminVendorCheckSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       return backend.checkVendor(vendorKey(id), input.data);
     });
   }
 
-  private authorizedBackend(headers: RequestHeaders, write = false): AdminModelsBackend {
-    if (!this.backend || this.site?.kind !== "enabled") throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
+  private authorizedBackend(headers: RequestHeaders, write = false, permission?: StaffPermission): AdminModelsBackend {
+    if (this.site?.kind !== "enabled") throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
     const auth = this.site.auth;
-    if (auth.session(headers).role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+    const session = auth.session(headers);
+    if (session.role !== "operator") throw new SiteAuthError(401, "AUTH_REQUIRED");
+    if (permission) assertStaffPermission(session, permission);
+    if (!this.backend) throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
     if (write) authorizeJsonWrite(auth, headers);
     return this.backend;
   }
@@ -133,7 +138,7 @@ export class AdminModelsController {
       response.status(status);
       return body;
     } catch (cause) {
-      if (cause instanceof SiteAuthError) {
+      if (cause instanceof SiteAuthError || cause instanceof StaffAccessError) {
         response.status(cause.status);
         return { error: { code: cause.code, message: cause.message } };
       }

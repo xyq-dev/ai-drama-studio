@@ -1,3 +1,6 @@
+import { chmodSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Global, Logger, Module, type DynamicModule, type MiddlewareConsumer, type NestModule } from "@nestjs/common";
 import {
   CreatorAccountStore,
@@ -14,7 +17,7 @@ import { STAFF_ACCESS_SERVICE, StaffAccessService } from "../admin/staff-access.
 import { PostgresStaffRepository } from "../admin/staff-repository";
 import { hashPassword, parsePasswordHash, verifyPassword } from "./password-hash";
 import { MEMBERSHIP_STORE, PostgresMembershipStore } from "../membership/membership-store";
-import { noteOperation } from "../admin/operation-log-store";
+import { noteOperation, operationJournal, setOperationJournal, OperationLogStore } from "../admin/operation-log-store";
 import { AuthController } from "./auth.controller";
 import { AUTH_POOL, AUTH_WORKSPACE_ID, CREATOR_ACCOUNT_STORE, CREATOR_PLAN_LEDGER_STORE } from "./auth.tokens";
 import { SITE_AUTH, type SiteAuthState } from "./site-auth";
@@ -71,6 +74,16 @@ export class AuthModule implements NestModule {
         audit: (entry, forbidden) => noteOperation({ ...entry, source: "管理后台 /admin/users" }, forbidden),
       });
       resolved.auth.setStaffDirectory(staff.loginDirectory());
+      if (!operationJournal()) {
+        const logDirectory = join(tmpdir(), `ads-operation-log-${workspaceId}`);
+        mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
+        try {
+          chmodSync(logDirectory, 0o700);
+        } catch {
+          // Windows has no POSIX mode bits. The store accepts that platform.
+        }
+        setOperationJournal(new OperationLogStore(join(logDirectory, "operation-log.json")));
+      }
       void staff.ensureEnvSuperAdmin().catch((error: unknown) => Logger.warn(String(error), "StaffAccess"));
     }
     return {

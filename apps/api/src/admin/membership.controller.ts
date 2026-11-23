@@ -49,8 +49,14 @@ export class AdminMembershipController {
       if ((amount.length === 0) !== (currency.length === 0)) {
         throw new StaffAccessError(400, "PLAN_INVALID", "单价和币种需要一起填写，或都留空。");
       }
+      const existing = (await this.storeOrThrow().listPlans(this.workspaceId)).find((plan) => plan.code === code);
+      const supplied = record(input.features);
       const features = MEMBERSHIP_FEATURES.map((feature) => {
-        const raw = record(record(input.features)[feature]);
+        if (input.features == null || supplied[feature] == null) {
+          const kept = existing?.features.find((item) => item.feature === feature);
+          return { feature, enabled: kept?.enabled === true, includedUnits: kept?.includedUnits ?? null };
+        }
+        const raw = record(supplied[feature]);
         const units = text(raw.includedUnits).trim();
         return {
           feature,

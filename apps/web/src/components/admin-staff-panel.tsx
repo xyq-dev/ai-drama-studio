@@ -37,6 +37,7 @@ export function AdminStaffPanel() {
   const [password, setPassword] = useState("");
   const [selected, setSelected] = useState<StaffRow | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [sessionStaffId, setSessionStaffId] = useState("");
   const [totp, setTotp] = useState<{ secret: string; uri: string; codes?: string[] } | null>(null);
   const [logs, setLogs] = useState<Array<{ id: string; at: string; actor: string; action: string; target: string; result: string }>>([]);
 
@@ -143,6 +144,10 @@ export function AdminStaffPanel() {
           <span>{row.roleName}</span>
           <span>{row.statusLabel}</span>
           <span>{row.lastLoginAt ? new Date(row.lastLoginAt).toLocaleString("zh-CN") : "尚未登录"}</span>
+          <button type="button" className={styles.secondary} onClick={() => setSelected(row)}>编辑</button>
+          {row.status === "pending" ? <button type="button" className={styles.secondary} onClick={() => void api(`/api/v1/admin/staff/${row.id}/revoke-invite`, { method: "POST" }).then(load)}>撤销邀请</button> : null}
+          {row.status === "active" ? <button type="button" className={styles.secondary} onClick={() => void api(`/api/v1/admin/staff/${row.id}/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "disabled", currentPassword: password || undefined }) }).then(load)}>停用</button> : null}
+          {row.status === "disabled" ? <button type="button" className={styles.secondary} onClick={() => void api(`/api/v1/admin/staff/${row.id}/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "active", currentPassword: password || undefined }) }).then(load)}>重新启用</button> : null}
         </article>)}
       </div>
       {selected ? <form className={styles.dialog} onSubmit={(event) => { event.preventDefault(); void api(`/api/v1/admin/staff/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: selected.displayName, roleId: selected.roleId, currentPassword: password || undefined }) }).then(() => { setSelected(null); return load(); }); }}>
@@ -172,12 +177,12 @@ export function AdminStaffPanel() {
         {totp.codes ? <p>恢复码只显示这一次：{totp.codes.join("、")}</p> : null}
       </form> : null}
       <label className={styles.field}>查看会话的账号
-        <select onChange={(event) => { const id = event.target.value; if (id) void api(`/api/v1/admin/staff/${id}/sessions`).then((body) => setSessions((body as { items: SessionRow[] }).items)); }}>
+        <select value={sessionStaffId} onChange={(event) => { const id = event.target.value; setSessionStaffId(id); setSessions([]); if (id) void api(`/api/v1/admin/staff/${id}/sessions`).then((body) => setSessions((body as { items: SessionRow[] }).items)); }}>
           <option value="">选择管理员</option>
           {staff.map((row) => <option key={row.id} value={row.id}>{row.displayName}</option>)}
         </select>
       </label>
-      <ul>{sessions.map((session) => <li key={session.publicId}>{new Date(session.lastSeenAt).toLocaleString("zh-CN")} <button type="button" className={styles.linkish} onClick={() => void api(`/api/v1/admin/staff/${staff.find((row) => true)?.id}/sessions/${session.publicId}/revoke`, { method: "POST" })}>撤销</button></li>)}</ul>
+      <ul>{sessions.map((session) => <li key={session.publicId}>{new Date(session.lastSeenAt).toLocaleString("zh-CN")} <button type="button" className={styles.linkish} onClick={() => void api(`/api/v1/admin/staff/${sessionStaffId}/sessions/${session.publicId}/revoke`, { method: "POST" }).then(() => api(`/api/v1/admin/staff/${sessionStaffId}/sessions`).then((body) => setSessions((body as { items: SessionRow[] }).items)))}>撤销</button></li>)}</ul>
     </div> : null}
     {section === "logs" ? <div className={styles.panel}>
       <h2>管理日志</h2>
@@ -185,6 +190,7 @@ export function AdminStaffPanel() {
       <table className={styles.table}><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>结果</th></tr></thead>
         <tbody>{logs.map((row) => <tr key={row.id}><td>{row.at}</td><td>{row.actor}</td><td>{row.action}</td><td>{row.target}</td><td>{row.result === "success" ? "成功" : "失败"}</td></tr>)}</tbody>
       </table>
+      <div className={styles.cards}>{logs.map((row) => <article key={row.id} className={styles.card}><strong>{row.action}</strong><span>{row.actor}</span><span>{row.target}</span><span>{row.result === "success" ? "成功" : "失败"}</span><span>{row.at}</span></article>)}</div>
     </div> : null}
   </section>;
 }

@@ -1,4 +1,5 @@
 import type { PoolClient, QueryResultRow } from "pg";
+import { settleCreatorQuotaHold } from "./creator-quota-settle";
 
 export class PersistenceError extends Error {
   readonly code: string;
@@ -1033,6 +1034,7 @@ export class JobPersistenceService {
         state: "SUCCEEDED",
       });
       await refreshWorkflowStatus(client, job.workflow_run_id, input.traceId);
+      await settleCreatorQuotaHold(client, job.id, "sent");
       return artifact;
     });
   }
@@ -1104,6 +1106,7 @@ export class JobPersistenceService {
         retryable: input.retryable,
       });
       await refreshWorkflowStatus(client, job.workflow_run_id, input.traceId);
+      await settleCreatorQuotaHold(client, job.id, attempt.provider_request_id ? "sent" : "unsent");
       return "failed";
     });
   }

@@ -341,27 +341,33 @@ export class AutoCreationService {
       // still takes part in the hash, so changed content under the key stays a conflict.
       ...(replayed ? { versions: { promptVersion: replayed.promptVersion, checksVersion: replayed.checksVersion } } : {}),
     });
-    const created = await this.deps.store.createRun(run, autoCreationInitialStageKeys(plan.episodeCount), {
-      maxActiveRuns: this.deps.maxActiveRuns,
-      sinceIso: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
-      maxCallsPerDay: this.deps.maxCallsPerDay,
-      requiredCalls: normal,
-    });
-    if (created.kind === "blocked") {
-      return created.code === "AUTO_CREATION_DAILY_QUOTA_LOW"
-        ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
-        : failure(429, created.code);
+    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
+    const hold = previous ? null : await openInstalledHold(context, "writing", projectId);
+    if (hold?.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
+    try {
+      const created = await this.deps.store.createRun(run, autoCreationInitialStageKeys(plan.episodeCount), {
+        maxActiveRuns: this.deps.maxActiveRuns,
+        sinceIso: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+        maxCallsPerDay: this.deps.maxCallsPerDay,
+        requiredCalls: normal,
+      });
+      if (created.kind === "blocked") {
+        return created.code === "AUTO_CREATION_DAILY_QUOTA_LOW"
+          ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
+          : failure(429, created.code);
+      }
+      if (created.kind === "project_not_empty") return failure(409, "AUTO_CREATION_PROJECT_NOT_EMPTY");
+      if (created.kind === "active") return failure(409, "AUTO_CREATION_RUN_ACTIVE", created.runKind === "auto" ? { runId: created.runId } : { runKind: created.runKind });
+      if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
+      if (created.kind === "created") {
+        hold?.keep();
+        if (hold?.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.bundle.run.id);
+        this.schedule(created.bundle.run.id);
+      }
+      return this.found(created.bundle, created.kind === "created" ? 201 : 200);
+    } finally {
+      await hold?.release();
     }
-    if (created.kind === "project_not_empty") return failure(409, "AUTO_CREATION_PROJECT_NOT_EMPTY");
-    if (created.kind === "active") return failure(409, "AUTO_CREATION_RUN_ACTIVE", created.runKind === "auto" ? { runId: created.runId } : { runKind: created.runKind });
-    if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
-    if (created.kind === "created") {
-      const { acceptCreatorTask } = await import("../membership/creator-task-guard");
-      const denied = await acceptCreatorTask(context, "writing", projectId);
-      if (denied) return failure(402, denied.code, { message: denied.message });
-      this.schedule(created.bundle.run.id);
-    }
-    return this.found(created.bundle, created.kind === "created" ? 201 : 200);
   }
 
   async latest(projectId: string, includeResearchRejectionDiagnostic = false): Promise<AutoCreationResult> {

@@ -183,14 +183,14 @@ export class SiteAuth {
 
   syncStaff(staffId: string, access: { status: StaffLoginAccount["status"]; permissions: readonly string[] }): void {
     this.staffLive.set(staffId, access);
-    if (access.status !== "active") this.revokeAccount(staffId);
+    if (access.status !== "active") this.dropStaff(staffId);
   }
 
-  listStaffSessions(accountId: string): { publicId: string; createdAt: string; lastSeenAt: string }[] {
+  listStaffSessions(staffId: string): { publicId: string; createdAt: string; lastSeenAt: string }[] {
     this.prune(this.now());
     const items: { publicId: string; createdAt: string; lastSeenAt: string }[] = [];
     for (const value of this.sessions.values()) {
-      if (value.accountId !== accountId || !this.staffAllows(value)) continue;
+      if (value.staffId !== staffId || !this.staffAllows(value)) continue;
       items.push({
         publicId: value.publicId,
         createdAt: new Date(value.createdAt).toISOString(),
@@ -200,9 +200,9 @@ export class SiteAuth {
     return items;
   }
 
-  revokeStaffSession(accountId: string, publicId: string): boolean {
+  revokeStaffSession(staffId: string, publicId: string): boolean {
     for (const [key, value] of this.sessions) {
-      if (value.accountId === accountId && value.publicId === publicId) {
+      if (value.staffId === staffId && value.publicId === publicId) {
         this.sessions.delete(key);
         return true;
       }
@@ -245,7 +245,7 @@ export class SiteAuth {
         return { session: null, cookies: [], totpRequired: true, challenge };
       }
       role = "operator";
-      accountId = staffAccount.id;
+      accountId = LEGACY_OWNER_ACCOUNT_ID;
       sessionUsername = staffAccount.username;
       staffId = staffAccount.id;
       this.staffLive.set(staffAccount.id, { status: "active", permissions: staffAccount.permissions });
@@ -282,7 +282,7 @@ export class SiteAuth {
     this.staffLive.set(account.id, { status: "active", permissions: account.permissions });
     await this.staff.recordLogin(account.id);
     const issued = this.issueSession(headers, this.now(), {
-      role: "operator", accountId: account.id, username: account.username, staffId: account.id,
+      role: "operator", accountId: LEGACY_OWNER_ACCOUNT_ID, username: account.username, staffId: account.id,
     });
     return { session: issued.session, cookies: issued.cookies };
   }
@@ -432,11 +432,17 @@ export class SiteAuth {
     return { session: this.view(value), cookies: this.issue(id, value.csrfToken), totpRequired: false };
   }
 
+  private dropStaff(staffId: string): void {
+    for (const [key, value] of this.sessions) {
+      if (value.staffId === staffId) this.sessions.delete(key);
+    }
+  }
+
   private staffAllows(value: StoredSession): boolean {
     if (!value.staffId) return true;
     const live = this.staffLive.get(value.staffId);
     if (!live || live.status !== "active") {
-      this.revokeAccount(value.accountId);
+      this.dropStaff(value.staffId);
       return false;
     }
     return true;

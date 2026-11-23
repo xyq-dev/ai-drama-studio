@@ -296,6 +296,10 @@ export class SeriesWritingService {
         executor: "series-writing-engine" },
       now: at,
     });
+    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
+    const hold = previous ? null : await openInstalledHold(context, "writing", projectId);
+    if (hold?.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
+    try {
     const created = await this.deps.store.createGrant(grant, this.limits(at), (state) => admitSeriesGrant(state, grant, { jobId: randomUUID(), nowIso: at.toISOString() }));
     if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "refused") {
@@ -306,13 +310,15 @@ export class SeriesWritingService {
     if (created.kind === "blocked") return failure(429, "SERIES_ACTIVE_RUN_CAP");
     if (created.kind === "daily_quota_low") return failure(429, "SERIES_DAILY_QUOTA_LOW", { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls });
     if (created.kind === "created") {
-      const { acceptCreatorTask } = await import("../membership/creator-task-guard");
-      const denied = await acceptCreatorTask(context, "writing", projectId);
-      if (denied) return failure(402, denied.code, { message: denied.message });
+      hold?.keep();
+      if (hold?.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.jobId);
       this.schedule(created.jobId);
     }
     const after = await this.deps.store.snapshot(this.deps.workspaceId, projectId);
     return { status: created.kind === "created" ? 201 : 200, body: { grantId: created.grant.id, series: seriesView(after!) } };
+    } finally {
+      await hold?.release();
+    }
   }
 
   async cancel(projectId: string, grantId: string): Promise<SeriesWritingResult> {

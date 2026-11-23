@@ -64,8 +64,6 @@ export interface StaffActor {
   permissions: readonly string[];
 }
 
-const SOURCE = "管理后台 /admin/users";
-
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -94,6 +92,8 @@ function assertManage(actor: StaffActor): void {
 
 export class StaffAccessService {
   private ensured = false;
+  private readonly pendingTotp = new Map<string, string>();
+  private staffGate: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: {
     workspaceId: string;
@@ -171,6 +171,7 @@ export class StaffAccessService {
     return {
       findByUsername: async (username) => {
         await this.ensureEnvSuperAdmin();
+        if (!await this.deps.repository.ready()) return null;
         const account = await this.deps.repository.findByUsername(this.deps.workspaceId, username);
         if (!account) return null;
         const role = await this.deps.repository.getRole(account.roleId);
@@ -300,12 +301,12 @@ export class StaffAccessService {
       throw new StaffAccessError(400, usability === "expired" ? "INVITE_EXPIRED" : usability === "revoked" ? "INVITE_REVOKED" : "INVITE_USED", inviteUsabilityMessage(usability));
     }
     const account = await this.requireStaff(invite.staffId);
+    const consumed = await this.deps.repository.consumeInvite(invite.id, this.now().toISOString());
+    if (!consumed) throw new StaffAccessError(400, "INVITE_USED", "这份邀请已经使用过。请向管理员索取新的邀请。");
     account.passwordHash = await this.deps.hashPassword(password, process.env.NODE_ENV === "test");
     account.status = "active";
     account.permissionVersion += 1;
     await this.deps.repository.saveStaff(account);
-    invite.usedAt = this.now().toISOString();
-    await this.deps.repository.saveInvite(invite);
     const role = await this.deps.repository.getRole(account.roleId);
     this.deps.sessions.sync(account.id, { status: "active", permissions: role?.permissions ?? [] });
     await this.audit({ id: account.id, username: account.username, permissions: role?.permissions ?? [] }, "激活管理员", account.username, "对方已自行设置密码。", [token, password]);
@@ -318,6 +319,7 @@ export class StaffAccessService {
     currentPassword?: string;
     totpCode?: string;
   }): Promise<void> {
+    return this.exclusive(async () => {
     assertManage(actor);
     const account = await this.requireStaff(staffId);
     const currentRole = await this.requireRole(account.roleId);
@@ -340,9 +342,11 @@ export class StaffAccessService {
     await this.deps.repository.saveStaff(account);
     this.deps.sessions.sync(account.id, { status: account.status, permissions: nextRole.permissions });
     await this.audit(actor, "修改管理员", account.username, `角色 ${nextRole.name}。`);
+    });
   }
 
   async setStatus(actor: StaffActor, staffId: string, status: "active" | "disabled", reauth?: { currentPassword?: string; totpCode?: string }): Promise<void> {
+    return this.exclusive(async () => {
     assertManage(actor);
     const account = await this.requireStaff(staffId);
     const role = await this.requireRole(account.roleId);
@@ -357,8 +361,17 @@ export class StaffAccessService {
     account.permissionVersion += 1;
     await this.deps.repository.saveStaff(account);
     this.deps.sessions.sync(account.id, { status, permissions: role.permissions });
-    if (status === "disabled") this.deps.sessions.revokeAccount(account.id);
+    if (status === "disabled") {
+      const now = this.now().toISOString();
+      for (const invite of await this.deps.repository.listInvites(this.deps.workspaceId, account.id)) {
+        if (invite.usedAt || invite.revokedAt) continue;
+        invite.revokedAt = now;
+        await this.deps.repository.saveInvite(invite);
+      }
+      this.deps.sessions.revokeAccount(account.id);
+    }
     await this.audit(actor, status === "disabled" ? "停用管理员" : "重新启用管理员", account.username, staffStatusLabel(status));
+    });
   }
 
   async saveRole(actor: StaffActor, input: { id?: string; name: string; permissions: readonly string[] }): Promise<StaffRoleRecord> {
@@ -409,18 +422,19 @@ export class StaffAccessService {
       throw new StaffAccessError(403, "REAUTH_FAILED", "当前密码不正确，没有开启验证器。");
     }
     const secret = createTotpSecret();
-    account.totpSecret = secret;
-    account.totpEnabled = false;
-    await this.deps.repository.saveStaff(account);
+    this.pendingTotp.set(staffId, secret);
     return { secret, uri: totpUri(secret, account.username) };
   }
 
   async confirmTotp(staffId: string, code: string): Promise<{ recoveryCodes: string[] }> {
     const account = await this.requireStaff(staffId);
-    if (!account.totpSecret || !verifyTotp(account.totpSecret, code, this.now().getTime())) {
+    const secret = this.pendingTotp.get(staffId);
+    if (!secret || !verifyTotp(secret, code, this.now().getTime())) {
       throw new StaffAccessError(400, "TOTP_INVALID", "验证器动态码不正确，双重验证尚未开启。");
     }
+    account.totpSecret = secret;
     account.totpEnabled = true;
+    this.pendingTotp.delete(staffId);
     await this.deps.repository.saveStaff(account);
     const plain = createRecoveryCodes();
     const records: RecoveryCodeRecord[] = plain.map((value) => ({ id: newId(), staffId, codeHash: sha256(value), usedAt: null }));
@@ -459,6 +473,18 @@ export class StaffAccessService {
     }
     if (account.totpEnabled && (!totpCode || !await this.verifySecondFactor(staffId, totpCode))) {
       throw new StaffAccessError(403, "REAUTH_REQUIRED", "交接最高权限前需要验证器动态码或恢复码。本次没有修改。");
+    }
+  }
+
+  private async exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.staffGate;
+    let release = () => undefined as void;
+    this.staffGate = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
     }
   }
 

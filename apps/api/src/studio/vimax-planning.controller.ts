@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { SITE_AUTH, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import { operatorProof } from "./operator-access";
 import { createTraceId } from "./studio.service";
@@ -21,22 +21,22 @@ export class VimaxPlanningController {
   }
   @Get(`${BASE}/requests`)
   list(@Param("projectId", ID) p: string, @Param("episodeId", ID) e: string, @Res({ passthrough: true }) r: StatusResponse) {
-    return this.send(r, (s) => s.list(p, e, "server-owner"));
+    return this.send(r, (s) => s.list(p, e, storeActorId()));
   }
   @Get(`${BASE}/requests/:requestId`)
   get(@Param("projectId", ID) p: string, @Param("episodeId", ID) e: string, @Param("requestId", ID) id: string,
-    @Res({ passthrough: true }) r: StatusResponse) { return this.send(r, (s) => s.get(p, e, "server-owner", id)); }
+    @Res({ passthrough: true }) r: StatusResponse) { return this.send(r, (s) => s.get(p, e, storeActorId(), id)); }
   @Post(`${BASE}/requests`)
   start(@Param("projectId", ID) p: string, @Param("episodeId", ID) e: string, @Body() body: unknown,
     @Headers() headers: RequestHeaders, @Res({ passthrough: true }) r: StatusResponse,
     @Headers("idempotency-key") key?: string, @Headers("x-trace-id") trace?: string) {
     return this.send(r, (s) => s.start(p, e, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(trace), idempotencyKey: key }));
+      { actorId: storeActorId(), traceId: createTraceId(trace), idempotencyKey: key }));
   }
   @Post(`${BASE}/requests/:requestId/cancel`)
   cancel(@Param("projectId", ID) p: string, @Param("episodeId", ID) e: string, @Param("requestId", ID) id: string,
     @Headers() headers: RequestHeaders, @Res({ passthrough: true }) r: StatusResponse) {
-    return this.send(r, (s) => s.cancel(p, e, "server-owner", id, operatorProof(this.site, headers)));
+    return this.send(r, (s) => s.cancel(p, e, storeActorId(), id, operatorProof(this.site, headers)));
   }
   private async send(r: StatusResponse, work: (s: VimaxPlanningService) => Promise<VimaxPlanningResult>): Promise<unknown> {
     r.setHeader("Cache-Control", "private, no-store");

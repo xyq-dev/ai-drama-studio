@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Query, Res } from "@nestjs/common";
-import { PersistenceError } from "@ai-drama/database";
+import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { SITE_AUTH, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import { operatorProof } from "./operator-access";
 import type { ShortSequelAiService } from "./short-sequel-ai.service";
@@ -43,7 +43,7 @@ export class ShortSequelAiController {
     @Body() body: unknown, @Res({ passthrough: true }) response: StatusResponse, @Headers() headers: RequestHeaders,
     @Headers("idempotency-key") idempotencyKey?: string, @Headers("x-trace-id") traceHeader?: string) {
     return this.send(response, ai => ai.start(projectId, episodeNo, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Post(":taskId/resume")
@@ -51,7 +51,7 @@ export class ShortSequelAiController {
     @Body() body: unknown, @Res({ passthrough: true }) response: StatusResponse, @Headers() headers: RequestHeaders,
     @Headers("idempotency-key") idempotencyKey?: string, @Headers("x-trace-id") traceHeader?: string) {
     return this.send(response, ai => ai.resume(projectId, episodeNo, taskId, body, operatorProof(this.site, headers),
-      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+      { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   private async send(response: StatusResponse, work: (ai: ShortSequelAiService) => Promise<{ status: number; body: unknown }>) {

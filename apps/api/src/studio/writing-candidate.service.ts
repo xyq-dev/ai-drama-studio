@@ -206,15 +206,18 @@ export class WritingCandidateService {
     if (!await this.deps.store.providerStorageReady(providerKey)) {
       return failure(503, "WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [CANDIDATE_PROVIDER_MIGRATION_GAP] });
     }
+    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
+    const hold = await openInstalledHold(context, "writing", projectId);
+    if (hold.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
+    try {
     const created = await this.deps.store.create(build(providerKey, model), {
       sinceIso: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
       maxCallsPerDay: this.deps.maxCallsPerDay,
     });
     switch (created.kind) {
       case "created": {
-        const { acceptCreatorTask } = await import("../membership/creator-task-guard");
-        const denied = await acceptCreatorTask(context, "writing", projectId);
-        if (denied) return failure(402, denied.code, { message: denied.message });
+        hold.keep();
+        if (hold.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.record.id);
         this.schedule(created.record.id);
         return this.found(created.record, projectId, 202);
       }
@@ -230,6 +233,9 @@ export class WritingCandidateService {
         return failure(409, "WRITING_CANDIDATE_TARGET_INVALID", { reason: created.reason });
       default:
         return failure(429, "WRITING_CANDIDATE_DAILY_CAP");
+    }
+    } finally {
+      await hold.release();
     }
   }
 

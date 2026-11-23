@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   MEMBERSHIP_FEATURES,
   decideReserve,
@@ -310,8 +310,11 @@ export class MemoryMembershipStore implements MembershipStore {
   }): Promise<ReserveResult> {
     const now = input.now ?? new Date();
     const units = input.units ?? 1;
+    const scopedKey = scopeHoldKey(input.feature, input.projectId, input.idempotencyKey);
     const existing = this.holds.find((hold) => hold.workspaceId === workspaceId && hold.accountId === input.accountId
-      && (hold.idempotencyKey === input.idempotencyKey || (input.taskKey != null && hold.taskKey === input.taskKey)));
+      && hold.feature === input.feature
+      && (hold.projectId ?? null) === (input.projectId ?? null)
+      && (hold.idempotencyKey === scopedKey || (input.taskKey != null && hold.taskKey === input.taskKey)));
     if (!existing && input.replayOnly) return { ok: true, skipped: true };
     const membership = await this.currentMembership(workspaceId, input.accountId, now);
     const plan = membership ? this.plans.find((item) => item.id === membership.planId) : undefined;
@@ -343,7 +346,7 @@ export class MemoryMembershipStore implements MembershipStore {
       workspaceId,
       accountId: input.accountId,
       feature: input.feature,
-      idempotencyKey: input.idempotencyKey,
+      idempotencyKey: scopedKey,
       taskKey: input.taskKey ?? null,
       units,
       status: "held",
@@ -694,15 +697,17 @@ export class PostgresMembershipStore implements MembershipStore {
     if (!await this.ready()) return { ok: true, skipped: true };
     const now = input.now ?? new Date();
     const units = input.units ?? 1;
+    const scopedKey = scopeHoldKey(input.feature, input.projectId, input.idempotencyKey);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       const existing = await client.query<{ id: string; status: QuotaHoldStatus }>(
         `SELECT id, status FROM creator_quota_hold
-          WHERE workspace_id = $1 AND account_id = $2
+          WHERE workspace_id = $1 AND account_id = $2 AND feature = $5
+            AND project_id IS NOT DISTINCT FROM $6::uuid
             AND (idempotency_key = $3 OR ($4::text IS NOT NULL AND task_key = $4))
           FOR UPDATE`,
-        [workspaceId, input.accountId, input.idempotencyKey, input.taskKey ?? null],
+        [workspaceId, input.accountId, scopedKey, input.taskKey ?? null, input.feature, input.projectId ?? null],
       );
       if (existing.rows.length === 0 && input.replayOnly) {
         await client.query("COMMIT");
@@ -766,7 +771,7 @@ export class PostgresMembershipStore implements MembershipStore {
           `INSERT INTO creator_quota_hold (
              id, workspace_id, account_id, feature, project_id, task_key, idempotency_key, units, status
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'held')`,
-          [holdId, workspaceId, input.accountId, input.feature, input.projectId ?? null, input.taskKey ?? null, input.idempotencyKey, units],
+          [holdId, workspaceId, input.accountId, input.feature, input.projectId ?? null, input.taskKey ?? null, scopedKey, units],
         );
       }
       await insertLedger(client, {
@@ -850,19 +855,23 @@ export class PostgresMembershipStore implements MembershipStore {
         [input.runId],
       );
       const hold = found.rows[0];
-      if (!hold) return;
-      if (input.outcome === "unsent") {
-        releaseId = hold.id;
-        return;
+      if (!hold || hold.status !== "held") return;
+      if (input.outcome === "unsent") releaseId = hold.id;
+      else {
+        const status = input.outcome === "unknown" ? "unknown" : "committed";
+        await client.query(`UPDATE creator_quota_hold SET status = $2, updated_at = now() WHERE id = $1 AND status = 'held'`, [hold.id, status]);
       }
-      if (hold.status !== "held") return;
-      const status = input.outcome === "unknown" ? "unknown" : "committed";
-      await client.query(`UPDATE creator_quota_hold SET status = $2, updated_at = now() WHERE id = $1 AND status = 'held'`, [hold.id, status]);
     } finally {
       client.release();
     }
     if (releaseId) await this.release(releaseId);
   }
+}
+
+/** One hold is one account, feature, project and task. The raw request key stays recoverable after the prefix. */
+function scopeHoldKey(feature: string, projectId: string | null | undefined, key: string): string {
+  const scoped = `${feature}:${projectId ?? "-"}:${key}`;
+  return scoped.length <= 200 ? scoped : createHash("sha256").update(scoped).digest("hex");
 }
 
 function mapMembership(row: {

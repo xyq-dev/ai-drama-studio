@@ -54,6 +54,7 @@ export interface StaffRepository {
   saveStaff(account: StaffAccountRecord): Promise<void>;
   listInvites(workspaceId: string, staffId?: string): Promise<StaffInviteRecord[]>;
   saveInvite(invite: StaffInviteRecord): Promise<void>;
+  consumeInvite(id: string, at: string): Promise<boolean>;
   findInviteByHash(tokenHash: string): Promise<StaffInviteRecord | null>;
   recoveryCodes(staffId: string): Promise<RecoveryCodeRecord[]>;
   replaceRecoveryCodes(staffId: string, codes: RecoveryCodeRecord[]): Promise<void>;
@@ -115,6 +116,13 @@ export class MemoryStaffRepository implements StaffRepository {
     else this.invites.push({ ...invite });
   }
 
+  async consumeInvite(id: string, at: string): Promise<boolean> {
+    const invite = this.invites.find((item) => item.id === id);
+    if (!invite || invite.usedAt || invite.revokedAt || Date.parse(invite.expiresAt) <= Date.parse(at)) return false;
+    invite.usedAt = at;
+    return true;
+  }
+
   async findInviteByHash(tokenHash: string): Promise<StaffInviteRecord | null> {
     return this.invites.find((invite) => invite.tokenHash === tokenHash) ?? null;
   }
@@ -145,12 +153,17 @@ export class PostgresStaffRepository implements StaffRepository {
   constructor(private readonly pool: DatabasePool) {}
 
   async ready(): Promise<boolean> {
-    const client = await this.pool.connect();
     try {
-      const result = await client.query<{ present: boolean }>(`SELECT to_regclass('staff_account') IS NOT NULL AS present`);
-      return result.rows[0]?.present === true;
-    } finally {
-      client.release();
+      const client = await this.pool.connect();
+      try {
+        const result = await client.query<{ present: boolean }>(`SELECT to_regclass('staff_account') IS NOT NULL AS present`);
+        return result.rows[0]?.present === true;
+      } finally {
+        client.release();
+      }
+    } catch {
+      // The env operator still signs in when this database cannot be reached.
+      return false;
     }
   }
 
@@ -250,6 +263,21 @@ export class PostgresStaffRepository implements StaffRepository {
          ON CONFLICT (id) DO UPDATE SET used_at = EXCLUDED.used_at, revoked_at = EXCLUDED.revoked_at`,
         [invite.id, invite.workspaceId, invite.staffId, invite.tokenHash, invite.expiresAt, invite.usedAt, invite.revokedAt],
       );
+    } finally {
+      client.release();
+    }
+  }
+
+  async consumeInvite(id: string, at: string): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      const updated = await client.query(
+        `UPDATE staff_invite SET used_at = $2
+          WHERE id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $2::timestamptz
+          RETURNING id`,
+        [id, at],
+      );
+      return updated.rows.length > 0;
     } finally {
       client.release();
     }

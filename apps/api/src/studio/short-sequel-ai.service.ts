@@ -183,6 +183,10 @@ export class ShortSequelAiService {
   private async reserve(projectId: string, input: ShortSequelAiInput, context: Context, actor: StudioContext,
     requestHash: string, expectedAttemptId: string | null, confirmUncertainAttemptId: string | null): Promise<Result> {
     const now = this.now();
+    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
+    const hold = await openInstalledHold(actor, "writing", projectId);
+    if (hold.denied) return { status: 402, body: { error: { code: hold.denied.code, message: hold.denied.message } } };
+    try {
     const created = await this.deps.store.createShortSequel({ id: randomUUID(), workspaceId: this.deps.workspaceId, projectId,
       actorId: actor.actorId, idempotencyKey: actor.idempotencyKey!, requestHash, input, state: "reserved", errorCode: null,
       executorId: this.executorId, leaseUntil: new Date(now.getTime() + WRITING_CANDIDATE_LEASE_MS).toISOString(),
@@ -191,14 +195,16 @@ export class ShortSequelAiService {
     maxActiveRuns: this.deps.maxActiveRuns, expectedAttemptId, confirmUncertainAttemptId });
     if (!("attempt" in created)) return failure(created.kind);
     if (created.kind === "created") {
-      const { acceptCreatorTask } = await import("../membership/creator-task-guard");
-      const denied = await acceptCreatorTask(actor, "writing", projectId);
-      if (denied) return { status: 402, body: { error: { code: denied.code, message: denied.message } } };
+      hold.keep();
+      if (hold.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.attempt.id);
       const run = () => this.execute(created.attempt);
       if (this.deps.schedule) this.deps.schedule(run);
       else setImmediate(() => { void run().catch(() => undefined); });
     }
     return { status: created.kind === "created" ? 202 : 200, body: this.view(context, [created.attempt], true) };
+    } finally {
+      await hold.release();
+    }
   }
 
   private async execute(attempt: ShortSequelAiAttempt) {

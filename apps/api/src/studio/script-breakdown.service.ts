@@ -277,6 +277,10 @@ export class ScriptBreakdownService {
         model,
       },
     });
+    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
+    const hold = await openInstalledHold(context, "writing", projectId);
+    if (hold.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
+    try {
     const created = await this.deps.store.createRun(run, {
       maxActiveRuns: this.deps.maxActiveRuns,
       quota: {
@@ -295,12 +299,14 @@ export class ScriptBreakdownService {
     const mine = this.ofEpisode(created.bundle, projectId, episodeId);
     if (created.kind === "conflict" || !mine || mine.run.inputHash !== requestHash) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") {
-      const { acceptCreatorTask } = await import("../membership/creator-task-guard");
-      const denied = await acceptCreatorTask(context, "writing", projectId);
-      if (denied) return failure(402, denied.code, { message: denied.message });
+      hold.keep();
+      if (hold.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, mine.run.id);
       this.schedule(mine.run.id);
     }
     return this.view(mine, created.kind === "created" ? 201 : 200);
+    } finally {
+      await hold.release();
+    }
   }
 
   async latest(projectId: string, episodeId: string): Promise<ScriptBreakdownResult> {
