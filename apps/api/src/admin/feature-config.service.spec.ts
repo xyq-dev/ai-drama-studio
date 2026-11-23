@@ -1,7 +1,7 @@
 import { mkdtemp, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FeatureConfigView, FeatureKey, FeatureVendor } from "@ai-drama/contracts";
 import { FeatureConfigVault } from "./feature-config-vault";
@@ -415,6 +415,41 @@ describe("feature configuration", () => {
     expect(seen).toHaveLength(2);
     expect(seen.some((call) => call.apiKey === plan)).toBe(false);
     expect(JSON.stringify(await service.view())).not.toContain(plan);
+  });
+
+  it("records and enables fresh Bailian probes after 100 legacy admin test receipts", async () => {
+    const { service, seen, usage } = await open();
+    const saved = await service.saveDraft("writing", {
+      vendor: "bailian", model: "qwen-plus", expectedRevision: 0, secretAction: "replace", apiKey: KEYS.writing,
+    });
+    const confirm = (expectedRevision: number) => service.testDraft("writing", { vendor: "bailian", expectedRevision, confirmCost: true });
+    const initial = await confirm(saved.revision);
+    const [receipt] = (await usage.read()).records;
+    const history = Array.from({ length: 100 }, (_, index) => ({
+      ...receipt!, id: randomUUID(), vendorRequestId: `legacy-probe-${index}`,
+      taskId: "admin-test:writing:bailian", attempt: index + 1,
+    }));
+    await usage.update((doc) => { doc.records = history; });
+
+    const [next, duplicate] = await Promise.all([confirm(initial.view.revision), confirm(initial.view.revision)]);
+    expect(duplicate).toEqual(next);
+    expect(slot(next.view, "writing", "bailian").draftStatus).toBe("passed");
+    expect(seen).toHaveLength(2);
+    const last = await confirm(next.view.revision);
+    const testedSlot = slot(last.view, "writing", "bailian");
+    expect(testedSlot.draftStatus).toBe("passed");
+    await service.enable("writing", { vendor: "bailian", expectedRevision: last.view.revision, testToken: testedSlot.testToken! });
+    expect(await service.readBinding("writing")).toMatchObject({ vendor: "bailian", model: "qwen-plus" });
+    expect(seen).toHaveLength(3);
+
+    const { records } = await usage.read();
+    expect(records.slice(0, 100)).toEqual(history);
+    const freshReceipts = records.slice(100);
+    expect(freshReceipts).toMatchObject(seen.slice(1).map(({ vendorRequestId }) => ({
+      kind: "admin_test", vendorRequestId, model: "qwen-plus", result: "succeeded", attempt: 1,
+      usage: { amount: 12, unit: "token" }, cost: { amount: "0.10", currency: "CNY" },
+    })));
+    expect(new Set(freshReceipts.map((row) => row.taskId)).size).toBe(2);
   });
 
   it("keeps the cost receipt for a late draft probe without verifying the replacement key", async () => {

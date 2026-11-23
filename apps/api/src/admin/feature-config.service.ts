@@ -511,7 +511,7 @@ export class FeatureConfigService {
       projectLabel: "管理员测试",
       episodeId: null,
       episodeLabel: "不计入分集",
-      taskId: `admin-test:${feature}:${body.vendor}`,
+      taskId: vendorRequestId,
       actorId: "operator",
       feature,
       vendor: body.vendor,
