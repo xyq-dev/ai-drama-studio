@@ -130,7 +130,7 @@ export class AuthController {
       if (!/^[A-Za-z0-9._-]{1,64}$/u.test(username) || password.length < 8 || password.length > 1_024) {
         throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
       }
-      if (username === auth.username) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
+      if (username.toLowerCase() === auth.username.toLowerCase()) throw new SiteAuthError(401, "AUTH_LOGIN_FAILED");
       const passwordHash = process.env.NODE_ENV === "test"
         ? await hashPassword(password, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 })
         : await hashPassword(password);

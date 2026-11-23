@@ -362,9 +362,9 @@ export class AutoCreationService {
       }
       if (created.kind === "project_not_empty") return failure(409, "AUTO_CREATION_PROJECT_NOT_EMPTY");
       if (created.kind === "active") return failure(409, "AUTO_CREATION_RUN_ACTIVE", created.runKind === "auto" ? { runId: created.runId } : { runKind: created.runKind });
+      if (created.bundle.run.projectId === projectId) hold?.keep();
       if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
       if (created.kind === "created") {
-        hold?.keep();
         if (hold?.holdId) await membership?.bindTask(hold.holdId, created.bundle.run.id);
         this.schedule(created.bundle.run.id);
       }

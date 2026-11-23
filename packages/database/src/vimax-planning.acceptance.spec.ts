@@ -59,6 +59,23 @@ const limits=(maxCallsPerDay=100)=>({sinceIso:new Date(Date.now()-86400000).toIS
 async function create(w:World,r=reservation(w),cap=100):Promise<VimaxPlanningRecord>{const result=await store.create(r,limits(cap));if(result.kind!=="created")throw new Error(`Expected created, got ${result.kind}`);return result.record;}
 async function count(w:World){return Number((await pool.query("SELECT count(*)::int AS n FROM vimax_planning_request WHERE workspace_id=$1",[w.workspaceId])).rows[0]!.n);}
 describe("ViMax planning reviewed drafts on a new empty PostgreSQL database",()=>{
+  it("reads, replays and cancels a legacy request only as the current project owner", async () => {
+    const w = await world();
+    const original = reservation(w);
+    await create(w, original);
+    const row = await pool.query<{ owner_account_id: string }>("SELECT owner_account_id FROM project WHERE id = $1", [w.projectId]);
+    const owner = "creator:" + row.rows[0]!.owner_account_id;
+    const other = "creator:" + randomUUID();
+    const args = [w.workspaceId, w.projectId, w.episodeId] as const;
+    expect((await store.list(...args, owner, 10)).map(request => request.id)).toEqual([original.id]);
+    expect((await store.get(...args, owner, original.id))?.id).toBe(original.id);
+    expect(await store.get(...args, other, original.id)).toBeNull();
+    expect(await store.findByKey(w.workspaceId, other, original.idempotencyKey)).toBeNull();
+    expect(await store.create({ ...original, actorId: owner }, limits())).toMatchObject({ kind: "existing" });
+    expect(await store.cancel(...args, other, original.id, new Date().toISOString())).toBeNull();
+    expect(await store.cancel(...args, owner, original.id, new Date().toISOString())).toMatchObject({ state: "rejected" });
+  });
+
   it("applies drafts only explicitly and confirms full readiness without an ordinary migration entry",async()=>{
     expect(beforeDraft).toBe(false);expect(await store.storageReady()).toBe(true);expect(await candidates.storageReady()).toBe(true);
     expect(discovered.some(s=>s.includes("vimax"))).toBe(false);

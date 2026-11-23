@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { hashPassword } from "../auth/password-hash";
 import { SiteAuth } from "../auth/site-auth";
 import { LEGACY_OWNER_ACCOUNT_ID } from "@ai-drama/domain";
@@ -106,7 +106,7 @@ describe("staff administration", () => {
     if (!recovered.totpRequired) throw new Error("second factor missing");
     const withCode = await auth.completeTotp(headers, { challenge: recovered.challenge, code: confirmed.recoveryCodes[0]! });
     expect(withCode.session.staffId).toBe(owner.session.staffId);
-    const replacement = await staff.beginTotp(owner.session.staffId!, "operator-pass");
+    const replacement = await staff.beginTotp(owner.session.staffId!, "operator-pass", currentTotp(started.secret));
     const during = await auth.login(headers, { password: "operator-pass", username: "owner" });
     if (!during.totpRequired) throw new Error("old authenticator should stay valid");
     await auth.completeTotp(headers, { challenge: during.challenge, code: currentTotp(started.secret) });
@@ -114,5 +114,82 @@ describe("staff administration", () => {
     const switched = await auth.login(headers, { password: "operator-pass", username: "owner" });
     if (!switched.totpRequired) throw new Error("new authenticator missing");
     await auth.completeTotp(headers, { challenge: switched.challenge, code: currentTotp(replacement.secret) });
+  });
+
+  it("bounds second-factor failures and grants a single session for a concurrently completed challenge", async () => {
+    const passwordHash = await hashPassword("staff-password", cheap);
+    const auth = new SiteAuth({ username: "owner", passwordHash, publicOrigin: headers.origin });
+    const verify = vi.fn(async (_id: string, _code: string) => false);
+    const recordLogin = vi.fn(async () => {});
+    auth.setStaffDirectory({
+      findByUsername: async (username) => ({ id: "staff", username, passwordHash, status: "active", permissions: [], totpEnabled: true }),
+      verifySecondFactor: verify, recordLogin,
+    });
+    const challenge = async () => {
+      const result = await auth.login(headers, { username: "staff", password: "staff-password" });
+      if (!result.totpRequired) throw new Error("Expected second factor");
+      return result.challenge;
+    };
+    const first = await challenge();
+    for (let n = 0; n < 5; n++) {
+      await expect(auth.completeTotp(headers, { challenge: first, code: "test-code" })).rejects.toMatchObject({ status: 401 });
+    }
+    verify.mockResolvedValue(true);
+    await expect(auth.completeTotp(headers, { challenge: first, code: "test-code" })).rejects.toMatchObject({ status: 401 });
+    expect(verify).toHaveBeenCalledTimes(5);
+    const next = await challenge();
+    verify.mockResolvedValueOnce(false);
+    await expect(auth.completeTotp(headers, { challenge: next, code: "test-code" })).rejects.toMatchObject({ status: 401 });
+    const complete = () => auth.completeTotp(headers, { challenge: next, code: "test-code" });
+    const results = await Promise.allSettled([complete(), complete()]);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
+    await expect(complete()).rejects.toMatchObject({ status: 401 });
+    expect(verify).toHaveBeenCalledTimes(7);
+    expect(recordLogin).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("staff and creator login compatibility", () => {
+  it.each(["pending", "disabled", "active"] as const)("keeps the creator login when historical staff is %s", async status => {
+    const creatorHash = await hashPassword("creator-secret", cheap);
+    const staffHash = await hashPassword("staff-secret", cheap);
+    const auth = new SiteAuth({ username: "shared", passwordHash: staffHash, publicOrigin: headers.origin }, {
+      creators: { findActiveByUsername: async () => ({ id: "creator-id", username: "shared", passwordHash: creatorHash }) },
+    });
+    auth.setStaffDirectory({
+      findByUsername: async () => ({ id: "staff-id", username: "shared", status, passwordHash: status === "pending" ? null : staffHash,
+        permissions: ["manage_staff"], totpEnabled: true }),
+      recordLogin: async () => {}, verifySecondFactor: async () => false,
+    });
+    expect((await login(auth, "shared", "creator-secret")).session).toMatchObject({ role: "creator", staffId: null, permissions: [] });
+    const staffLogin = auth.login(headers, { username: "shared", password: "staff-secret" });
+    if (status === "active") expect(await staffLogin).toMatchObject({ totpRequired: true, cookies: [] });
+    else await expect(staffLogin).rejects.toMatchObject({ status: 401 });
+    await expect(auth.login(headers, { username: "shared", password: "invalid" })).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("uses only the creator identity if the two historical passwords are identical", async () => {
+    const hash = await hashPassword("same-password", cheap);
+    const auth = new SiteAuth({ username: "env", passwordHash: hash, publicOrigin: headers.origin }, {
+      creators: { findActiveByUsername: async () => ({ id: "creator-id", username: "shared", passwordHash: hash }) },
+    });
+    auth.setStaffDirectory({
+      findByUsername: async () => ({ id: "staff-id", username: "shared", status: "active", passwordHash: hash,
+        permissions: ["manage_staff"], totpEnabled: false }),
+      recordLogin: async () => {}, verifySecondFactor: async () => false,
+    });
+    expect((await login(auth, "shared", "same-password")).session).toMatchObject({ role: "creator", accountId: "creator-id", staffId: null });
+  });
+
+  it("rejects a password beyond the login limit and protects an established authenticator", async () => {
+    const { auth, staff } = await setup();
+    const owner = await login(auth, "owner", "operator-pass");
+    const id = owner.session.staffId!;
+    await expect(staff.changePassword(id, "operator-pass", "x".repeat(1025))).rejects.toMatchObject({ code: "PASSWORD_INVALID" });
+    const { secret } = await staff.beginTotp(id, "operator-pass");
+    const { recoveryCodes } = await staff.confirmTotp(id, currentTotp(secret));
+    await expect(staff.beginTotp(id, "operator-pass")).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
+    const verify = () => staff.loginDirectory().verifySecondFactor(id, recoveryCodes[0]!);
+    expect((await Promise.all([verify(), verify()])).sort()).toEqual([false, true]);
   });
 });

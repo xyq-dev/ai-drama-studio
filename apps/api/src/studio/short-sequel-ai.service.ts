@@ -193,9 +193,13 @@ export class ShortSequelAiService {
       script: null, usage: unknownUsage, createdAt: now.toISOString(), finishedAt: null },
     { nowIso: now.toISOString(), sinceIso: new Date(now.getTime() - 86_400_000).toISOString(), maxCallsPerDay: this.deps.maxCallsPerDay,
     maxActiveRuns: this.deps.maxActiveRuns, expectedAttemptId, confirmUncertainAttemptId });
-    if (!("attempt" in created)) return failure(created.kind);
+    if (!("attempt" in created)) {
+      if (created.kind === "conflict" && hold.holdId
+        && (await this.deps.store.findShortSequelByKey(this.deps.workspaceId, actor.actorId, actor.idempotencyKey!))?.projectId === projectId) hold.keep();
+      return failure(created.kind);
+    }
+    if (created.kind !== "advanced") hold.keep();
     if (created.kind === "created") {
-      hold.keep();
       if (hold.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.attempt.id);
       const run = () => this.execute(created.attempt);
       if (this.deps.schedule) this.deps.schedule(run);

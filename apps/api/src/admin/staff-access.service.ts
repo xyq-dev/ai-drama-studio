@@ -92,7 +92,7 @@ function assertManage(actor: StaffActor): void {
 
 export class StaffAccessService {
   private ensured = false;
-  private readonly pendingTotp = new Map<string, string>();
+  private readonly pendingTotp = new Map<string, { previousSecret: string | null; secret: string }>();
   private staffGate: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: {
@@ -185,12 +185,7 @@ export class StaffAccessService {
           totpEnabled: account.totpEnabled,
         };
       },
-      recordLogin: async (staffId) => {
-        const account = await this.deps.repository.getStaff(staffId);
-        if (!account) return;
-        account.lastLoginAt = this.now().toISOString();
-        await this.deps.repository.saveStaff(account);
-      },
+      recordLogin: (staffId) => this.deps.repository.recordLogin(staffId, this.now().toISOString()),
       verifySecondFactor: (staffId, code) => this.verifySecondFactor(staffId, code),
     };
   }
@@ -254,7 +249,9 @@ export class StaffAccessService {
       lastLoginAt: null,
       authSource: "invite",
     };
-    await this.deps.repository.saveStaff(account);
+    if (!await this.deps.repository.createInvitedStaff(account)) {
+      throw new StaffAccessError(409, "STAFF_USERNAME_TAKEN", "这个账号已经存在。");
+    }
     const issued = await this.issueInvite(account.id);
     await this.audit(actor, "邀请管理员", username, `角色 ${role.name}。邀请 24 小时内有效，只能使用一次。`, [issued.token, issued.inviteUrl]);
     return { staffId: account.id, inviteUrl: issued.inviteUrl, expiresAt: issued.expiresAt };
@@ -285,7 +282,7 @@ export class StaffAccessService {
 
   async acceptInvite(token: string, password: string): Promise<{ username: string }> {
     if (password.length < 8 || password.length > 1024) {
-      throw new StaffAccessError(400, "PASSWORD_INVALID", "密码至少 8 位。请重新设置。");
+      throw new StaffAccessError(400, "PASSWORD_INVALID", "密码需为 8–1024 位。");
     }
     const invite = await this.deps.repository.findInviteByHash(sha256(token));
     if (!invite || invite.workspaceId !== this.deps.workspaceId) {
@@ -300,13 +297,9 @@ export class StaffAccessService {
     if (usability !== "open") {
       throw new StaffAccessError(400, usability === "expired" ? "INVITE_EXPIRED" : usability === "revoked" ? "INVITE_REVOKED" : "INVITE_USED", inviteUsabilityMessage(usability));
     }
-    const account = await this.requireStaff(invite.staffId);
-    const consumed = await this.deps.repository.consumeInvite(invite.id, this.now().toISOString());
-    if (!consumed) throw new StaffAccessError(400, "INVITE_USED", "这份邀请已经使用过。请向管理员索取新的邀请。");
-    account.passwordHash = await this.deps.hashPassword(password, process.env.NODE_ENV === "test");
-    account.status = "active";
-    account.permissionVersion += 1;
-    await this.deps.repository.saveStaff(account);
+    const passwordHash = await this.deps.hashPassword(password, process.env.NODE_ENV === "test");
+    const account = await this.deps.repository.activateInvite(invite.id, invite.staffId, passwordHash, this.now().toISOString());
+    if (!account) throw new StaffAccessError(400, "INVITE_USED", "邀请已失效，请向管理员索取新的邀请。");
     const role = await this.deps.repository.getRole(account.roleId);
     this.deps.sessions.sync(account.id, { status: "active", permissions: role?.permissions ?? [] });
     await this.audit({ id: account.id, username: account.username, permissions: role?.permissions ?? [] }, "激活管理员", account.username, "对方已自行设置密码。", [token, password]);
@@ -405,7 +398,7 @@ export class StaffAccessService {
   }
 
   async changePassword(staffId: string, currentPassword: string, nextPassword: string): Promise<void> {
-    if (nextPassword.length < 8) throw new StaffAccessError(400, "PASSWORD_INVALID", "新密码至少 8 位。");
+    if (nextPassword.length < 8 || nextPassword.length > 1024) throw new StaffAccessError(400, "PASSWORD_INVALID", "新密码需为 8–1024 位。");
     const account = await this.requireStaff(staffId);
     if (!account.passwordHash || !await this.deps.verifyPassword(currentPassword, account.passwordHash)) {
       throw new StaffAccessError(403, "REAUTH_FAILED", "当前密码不正确，没有修改密码。");
@@ -416,30 +409,32 @@ export class StaffAccessService {
     await this.audit({ id: staffId, username: account.username, permissions: [] }, "修改密码", account.username, "已修改自己的密码。", [currentPassword, nextPassword]);
   }
 
-  async beginTotp(staffId: string, currentPassword: string): Promise<{ secret: string; uri: string }> {
+  async beginTotp(staffId: string, currentPassword: string, totpCode?: string): Promise<{ secret: string; uri: string }> {
     const account = await this.requireStaff(staffId);
     if (!account.passwordHash || !await this.deps.verifyPassword(currentPassword, account.passwordHash)) {
       throw new StaffAccessError(403, "REAUTH_FAILED", "当前密码不正确，没有开启验证器。");
     }
+    if (account.totpEnabled && (!totpCode || !await this.verifySecondFactor(staffId, totpCode))) {
+      throw new StaffAccessError(403, "REAUTH_REQUIRED", "请填写当前验证器动态码或恢复码。");
+    }
     const secret = createTotpSecret();
-    this.pendingTotp.set(staffId, secret);
+    this.pendingTotp.set(staffId, { previousSecret: account.totpSecret, secret });
     return { secret, uri: totpUri(secret, account.username) };
   }
 
   async confirmTotp(staffId: string, code: string): Promise<{ recoveryCodes: string[] }> {
     const account = await this.requireStaff(staffId);
-    const secret = this.pendingTotp.get(staffId);
-    if (!secret || !verifyTotp(secret, code, this.now().getTime())) {
-      throw new StaffAccessError(400, "TOTP_INVALID", "验证器动态码不正确，双重验证尚未开启。");
+    const pending = this.pendingTotp.get(staffId);
+    if (!pending || !verifyTotp(pending.secret, code, this.now().getTime())) {
+      throw new StaffAccessError(400, "TOTP_INVALID", "验证器动态码不正确。");
     }
-    account.totpSecret = secret;
-    account.totpEnabled = true;
     this.pendingTotp.delete(staffId);
-    await this.deps.repository.saveStaff(account);
     const plain = createRecoveryCodes();
     const records: RecoveryCodeRecord[] = plain.map((value) => ({ id: newId(), staffId, codeHash: sha256(value), usedAt: null }));
-    await this.deps.repository.replaceRecoveryCodes(staffId, records);
-    await this.audit({ id: staffId, username: account.username, permissions: [] }, "开启双重验证", account.username, "已开启验证器。恢复码只显示这一次。", [account.totpSecret, ...plain]);
+    if (!await this.deps.repository.setAuthenticator(staffId, pending.previousSecret, pending.secret, records)) {
+      throw new StaffAccessError(409, "TOTP_CHANGED", "验证器设置已变更，请重新操作。");
+    }
+    await this.audit({ id: staffId, username: account.username, permissions: [] }, "开启双重验证", account.username, "已开启验证器。恢复码只显示这一次。", [pending.secret, ...plain]);
     return { recoveryCodes: plain };
   }
 
@@ -462,8 +457,7 @@ export class StaffAccessService {
     const codes = await this.deps.repository.recoveryCodes(staffId);
     const match = codes.find((item) => item.usedAt == null && item.codeHash === sha256(code.trim()));
     if (!match) return false;
-    await this.deps.repository.markRecoveryUsed(match.id, this.now().toISOString());
-    return true;
+    return this.deps.repository.consumeRecoveryCode(match.id, this.now().toISOString());
   }
 
   private async reauthenticate(staffId: string, password: string | undefined, totpCode: string | undefined): Promise<void> {

@@ -1,4 +1,5 @@
-import { assert, expect } from "vitest";
+import { assert, expect, vi } from "vitest";
+import * as guard from "../src/membership/creator-task-guard";
 import { MemoryMembershipStore } from "../src/membership/membership-store";
 
 export async function oneWritingUnit(workspaceId: string) {
@@ -14,6 +15,19 @@ export async function oneWritingUnit(workspaceId: string) {
     accountId, planId: plan.id, startsAt: new Date(now - 60_000), endsAt: new Date(now + 86_400_000), reason: "测试", grantedBy: null,
   });
   return { workspaceId, membership, accountId, actor };
+}
+
+export async function withInstalledWritingUnit(workspaceId: string, test: (member: Awaited<ReturnType<typeof oneWritingUnit>>) => Promise<void>) {
+  const member = await oneWritingUnit(workspaceId);
+  const open = vi.spyOn(guard, "openInstalledHold").mockImplementation((context, feature, projectId, operation) =>
+    guard.openCreatorHold(member.membership, workspaceId, context, feature, projectId, operation));
+  const installed = vi.spyOn(guard, "installedCreatorMembership").mockReturnValue({ workspaceId, store: member.membership });
+  try {
+    await test(member);
+  } finally {
+    open.mockRestore();
+    installed.mockRestore();
+  }
 }
 
 export async function verifyRefundedWritingResume(member: Awaited<ReturnType<typeof oneWritingUnit>>, fixture: {

@@ -220,6 +220,29 @@ describe("who may start a paid run", () => {
 });
 
 describe("starting a run", () => {
+  it.each(["duplicate", "different input", "another project"])("keeps only the winning task's writing unit after a racing %s", async (kind) => {
+    const member = await oneWritingUnit(WS);
+    const context = member.actor("same-submission");
+    const input = { title: "夜班证词" };
+    const { store, service, settle, seen } = setup({ creatorMembership: member.membership });
+    if (kind === "another project") {
+      await member.membership.adjust(WS, { accountId: member.accountId, feature: "writing", delta: 1, reason: "第二部作品", actorId: "admin" });
+    }
+    const create = store.createRun.bind(store);
+    vi.spyOn(store, "createRun").mockImplementationOnce(async (...args) => {
+      const winner = await service.start(P1, input, TOKEN, context);
+      expect(winner.status).toBe(201);
+      return create(...args);
+    });
+    const loser = await service.start(kind === "another project" ? P2 : P1, kind === "different input" ? { title: "新故事" } : input, TOKEN, context);
+    if (kind === "duplicate") expect(loser.status).toBe(200);
+    else expect(loser).toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_KEY_REUSED" } } });
+    expect(store.runs).toHaveLength(1);
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(kind === "another project" ? 1 : 0);
+    await settle();
+    expect(seen).toHaveLength(5);
+  });
+
   it("starts from the title alone and the run completes on the server", async () => {
     const { service, settle, seen, store } = setup();
     const result = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k1"));

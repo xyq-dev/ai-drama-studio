@@ -203,6 +203,21 @@ describe("ViMax E2-B on an explicitly authorized disposable PostgreSQL database"
     expect(rerun.alreadyApplied).not.toContain(VIMAX_CANDIDATE_SQL_DRAFT);
   });
 
+  it("opens and adopts an old candidate only for its project's creator", async () => {
+    const w = await world();
+    const candidate = (await create(w)).candidate;
+    const owner = "creator:" + await scalar("SELECT owner_account_id AS id FROM project WHERE id = $1", [w.projectId]);
+    const other = "creator:" + randomUUID();
+    const args = [w.workspaceId, w.projectId, w.episodeId] as const;
+    expect((await store.list(...args, owner)).items.map(item => item.candidateId)).toEqual([candidate.candidateId]);
+    expect((await store.get(...args, owner, candidate.candidateId)).candidateId).toBe(candidate.candidateId);
+    expect((await store.list(...args, other)).items).toEqual([]);
+    const body = { schema: VIMAX_CANDIDATE_SAVE_SCENE_SCHEMA, expectedVersion: candidate.rowVersion, confirmedReview: true } as const;
+    await expect(store.saveScene(...args, other, candidate.candidateId, randomUUID(), body, trace)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await store.saveScene(...args, owner, candidate.candidateId, randomUUID(), body, trace)).replayed).toBe(false);
+    expect((await store.get(...args, owner, candidate.candidateId)).state).toBe("scene_saved");
+  });
+
   it("preserves the unrelated scene and its existing media provenance while saving only one new draft revision", async () => {
     const w = await world(); const before = await siblingSnapshot(w); const candidate = (await create(w)).candidate;
     const saved = await save(w, candidate);

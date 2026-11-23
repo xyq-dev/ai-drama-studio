@@ -116,6 +116,27 @@ function asStoredBy(store: InMemoryAutoCreationStore, runId: string, version: "v
 const errorCode = (body: unknown) => (body as { error?: { code?: string } }).error?.code;
 
 describe("automatic creation API", () => {
+  it.each(["duplicate", "different input"])("keeps only the winning task's writing unit after a racing %s", async (kind) => {
+    const member = await oneWritingUnit(WS);
+    const context = member.actor("same-submission");
+    const input = { idea: "末班车" };
+    const { store, service, settle, seen } = setup({ creatorMembership: member.membership });
+
+    const create = store.createRun.bind(store);
+    vi.spyOn(store, "createRun").mockImplementationOnce(async (...args) => {
+      const winner = await service.start(P1, input, TOKEN, context);
+      expect(winner.status).toBe(201);
+      return create(...args);
+    });
+    const loser = await service.start(P1, kind === "different input" ? { idea: "新故事" } : input, TOKEN, context);
+    if (kind === "duplicate") expect(loser.status).toBe(200);
+    else expect(loser).toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_KEY_REUSED" } } });
+    expect(store.runs).toHaveLength(1);
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(0);
+    await settle();
+    expect(seen).toHaveLength(autoCreationNormalCalls(1));
+  });
+
   it("rechecks a refunded writing unit before resuming an unsent run and charges the replay only once", async () => {
     const member = await oneWritingUnit(WS);
     const { store, service, settle, seen } = setup({ creatorMembership: member.membership });

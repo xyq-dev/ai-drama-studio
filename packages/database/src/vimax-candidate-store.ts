@@ -16,6 +16,7 @@ import {
   hashVimaxCandidateRequest, sameVimaxCandidateSource, vimaxCandidateShotPlans,
 } from "@ai-drama/domain";
 import { PersistenceError, type DatabasePool } from "./job-service";
+import { vimaxActorMatch } from "./vimax-actor";
 import { TextChainService } from "./text-chain";
 import { VimaxPreviewSourceStore, type VimaxPreviewSourceRead } from "./vimax-preview-source";
 
@@ -231,7 +232,7 @@ export class VimaxCandidateStore {
 
   private async row(client: PoolClient, workspaceId: string, projectId: string, episodeId: string, actorId: string, candidateId: string, lock = false): Promise<Row> {
     const result = await client.query<Row>(`SELECT ${SELECT_COLUMNS} FROM ${TABLE} c
-      WHERE c.id = $1 AND c.workspace_id = $2 AND c.project_id = $3 AND c.episode_id = $4 AND c.actor_id = $5
+      WHERE c.id = $1 AND c.workspace_id = $2 AND c.project_id = $3 AND c.episode_id = $4 AND ${vimaxActorMatch("c", 5, actorId)}
         AND EXISTS (SELECT 1 FROM project p WHERE p.id=c.project_id AND p.workspace_id=c.workspace_id AND p.archived_at IS NULL AND p.status='ACTIVE'
           AND ($6::text IS NULL OR to_jsonb(p)->>'owner_account_id'=$6))${lock ? " FOR UPDATE OF c" : ""}`,
     [candidateId, workspaceId, projectId, episodeId, actorId, storeOwnerAccountFilter()]);
@@ -264,7 +265,7 @@ export class VimaxCandidateStore {
       const context = await this.context(client, workspaceId, projectId, episodeId);
       if (context.source.kind === "not_found") fail("NOT_FOUND", "Episode not found");
       const result = await client.query<Row>(`SELECT ${SELECT_COLUMNS} FROM ${TABLE} c
-        WHERE c.workspace_id = $1 AND c.project_id = $2 AND c.episode_id = $3 AND c.actor_id = $4
+        WHERE c.workspace_id = $1 AND c.project_id = $2 AND c.episode_id = $3 AND ${vimaxActorMatch("c", 4, actorId)}
           ${cursor ? "AND (c.created_at, c.id) < ($5::timestamptz, $6::uuid)" : ""}
         ORDER BY c.created_at DESC, c.id DESC LIMIT $${cursor ? 7 : 5}`, cursor
       ? [workspaceId, projectId, episodeId, actorId, cursor.createdAt, cursor.id, limit + 1]
@@ -287,7 +288,7 @@ export class VimaxCandidateStore {
     return this.transaction(true, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_run:${workspaceId}`]);
       const previous = await client.query<Row>(`SELECT ${SELECT_COLUMNS} FROM ${TABLE} c
-        WHERE c.workspace_id = $1 AND c.actor_id = $2 AND c.idempotency_key = $3 FOR UPDATE OF c`, [workspaceId, actorId, key]);
+        WHERE c.workspace_id = $1 AND ${vimaxActorMatch("c", 2, actorId)} AND c.idempotency_key = $3 ORDER BY (c.actor_id = $2) DESC LIMIT 1 FOR UPDATE OF c`, [workspaceId, actorId, key]);
       if (previous.rows[0]) {
         const row = previous.rows[0];
         if (row.project_id !== projectId || row.episode_id !== episodeId || row.request_hash !== requestHash) fail("IDEMPOTENCY_KEY_REUSED", "Candidate request identity changed");

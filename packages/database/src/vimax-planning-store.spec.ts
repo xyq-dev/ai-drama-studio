@@ -8,7 +8,7 @@ import { recentWritingCalls } from "./writing-candidate-store";
 import type { DatabasePool } from "./job-service";
 const W="11111111-1111-4111-8111-111111111111", ID="99999999-9999-4999-8999-999999999994", NOW="2026-11-01T01:00:00.000Z", LATER="2026-11-01T01:04:00.000Z";
 type Row=Record<string,unknown>;
-function setup(options:{ready?:boolean;probeError?:boolean;existing?:boolean;pending?:boolean;active?:boolean;shots?:number;sourceChanged?:boolean;prior?:Row[];recent?:number;planningActive?:Row[];titleActive?:Row[];state?:VimaxPlanningRecord["state"]}={}) {
+function setup(options:{ready?:boolean;probeError?:boolean;existing?:boolean;pending?:boolean;matched?:boolean;recovered?:Row[];active?:boolean;shots?:number;sourceChanged?:boolean;prior?:Row[];recent?:number;planningActive?:Row[];titleActive?:Row[];state?:VimaxPlanningRecord["state"]}={}) {
   const raw=JSON.parse(readFileSync(resolve(__dirname,"../../../scripts/vimax-evaluation/fixtures/single-scene.json"),"utf8")), i=raw.input;
   const source=vimaxPlatformSourceSnapshotSchema.parse({schema:"ads.vimax-platform-source.v1",scriptRevisionNo:1,projectId:i.projectId,episodeId:i.episodeId,episodeNo:i.episodeNo,scriptRevisionId:i.scriptRevisionId,scriptContentHash:i.scriptContentHash,scriptText:i.scriptText,characters:i.characters});
   const request=vimaxPlanningStartSchema.parse({schema:"ads.vimax-planning.start.v1",target:{sceneId:"99999999-9999-4999-8999-999999999991",sceneRevisionId:"99999999-9999-4999-8999-999999999992",rowVersion:3},source:{scriptRevisionId:i.scriptRevisionId,scriptContentHash:i.scriptContentHash,characters:i.characters},sceneSpans:i.sceneSpans,selectedSceneKeys:i.selectedSceneKeys,sourceDialogue:i.sourceDialogue,requirements:i.requirements,confirmedTextSend:true});
@@ -39,13 +39,17 @@ function setup(options:{ready?:boolean;probeError?:boolean;existing?:boolean;pen
     if(sql.includes("FROM title_writing_run"))return {rows:options.active?[{}]:[]};
     if(sql.includes("FROM scene s"))return {rows:[{scene_id:target.sceneId,row_version:3,archived_at:null,scene_revision_id:target.sceneRevisionId,source_script_revision_id:source.scriptRevisionId,ordinal:1,heading:target.heading,time_of_day:"夜",summary:"原场景",location_revision_id:null,freshness_status:"CURRENT",active_shot_count:options.shots??0}]};
     if(sql.startsWith("INSERT INTO vimax_planning_request"))return {rows:[row],rowCount:1};
-    if(sql.startsWith("UPDATE vimax_planning_request"))return {rows:[],rowCount:1};
+    if(sql.startsWith("UPDATE vimax_planning_request")) {
+      if (sql.includes("RETURNING id,state")) return { rows: options.recovered ?? [], rowCount: options.recovered?.length ?? 0 };
+      return { rows: [], rowCount: options.matched === false ? 0 : 1 };
+    }
     return {rows:[]};
   });
   const release=vi.fn();const store=new PostgresVimaxPlanningStore({connect:async()=>({query,release})} as unknown as DatabasePool);
   return {store,query,calls,row,reservation,source,raw,release};
 }
 const mutations=(calls:{sql:string}[])=>calls.filter(c=>/^\s*(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\b/.test(c.sql));
+const holds = (calls: { sql: string; values: unknown[] }[]) => calls.filter(call => call.sql.startsWith("UPDATE creator_quota_hold"));
 const limits={sinceIso:"2026-10-31T01:00:00.000Z",maxCallsPerDay:10,maxActiveRuns:10};
 describe("persistent governed planning transactions",()=>{
   it("fails closed without draft storage and never runs DDL",async()=>{
@@ -76,7 +80,7 @@ describe("persistent governed planning transactions",()=>{
     unknown.reservation.request.confirmUncertainRequestId=ID;unknown.reservation.requestHash=hashVimaxPlanningRequest(unknown.reservation.projectId,unknown.reservation.episodeId,unknown.reservation.request);expect((await unknown.store.create(unknown.reservation,limits)).kind).toBe("created");
   });
   it("rechecks sources before submitted CAS and closes changed inputs without a send",async()=>{
-    const h=setup({sourceChanged:true});expect(await h.store.markSubmitted(W,ID,"exec",NOW,LATER)).toBe(false);expect(mutations(h.calls)).toEqual([expect.objectContaining({sql:expect.stringContaining("source_changed_before_send")})]);
+    const h=setup({sourceChanged:true});expect(await h.store.markSubmitted(W,ID,"exec",NOW,LATER)).toBe(false);expect(mutations(h.calls)[0]?.sql).toContain("source_changed_before_send");expect(holds(h.calls)).toEqual([expect.objectContaining({sql:expect.stringContaining("status = 'released'"),values:[ID]})]);
     const live=setup();expect(await live.store.markSubmitted(W,ID,"exec",NOW,LATER)).toBe(true);expect(mutations(live.calls)[0]!.sql).toContain("lease_until>$4 AND lease_until>clock_timestamp()");
   });
   it("rejects expired and foreign executors without changing the row",async()=>{
@@ -91,9 +95,54 @@ describe("persistent governed planning transactions",()=>{
     const live=setup({state:"submitted"});const r=live.reservation.request;const output={schema:"ads.vimax-candidate.create.v1" as const,target:r.target,request:{schema:"ads.vimax-platform-preview.request.v1" as const,source:r.source,sceneSpans:r.sceneSpans,selectedSceneKeys:r.selectedSceneKeys,sourceDialogue:r.sourceDialogue,requirements:{...r.requirements,style:r.requirements.style+" changed"},candidate:live.raw.candidate,supplements:live.raw.supplements}};
     await expect(live.store.finish(W,ID,"exec",{...patch,state:"completed",errorCode:null,output},NOW)).rejects.toMatchObject({code:"VALIDATION_ERROR"});
   });
-  it("recovery and cancel are scoped CAS bookkeeping without network or new reservation",async()=>{
-    const h=setup({state:"submitted"});await h.store.recoverExpired(W,LATER);expect(mutations(h.calls)[0]!.sql).toContain("THEN 'unknown'");expect(mutations(h.calls)[0]!.sql).toContain("lease_until<=$2");
-    await h.store.cancel(W,h.source.projectId,h.source.episodeId,"a",ID,NOW);expect(mutations(h.calls).at(-1)!.sql).toContain("state='reserved'");expect(mutations(h.calls).every(c=>c.sql.startsWith("UPDATE"))).toBe(true);
+  it("settles canceled and pre-send rejected reservations only after the guarded update succeeds", async () => {
+    for (const matched of [true, false]) {
+      const h = setup({ matched });
+      await h.store.cancel(W, h.source.projectId, h.source.episodeId, "a", ID, NOW);
+      expect(mutations(h.calls)[0]!.sql).toContain("state='reserved'");
+      expect(await h.store.closeUnsent(W, ID, "exec", "invalid_input_before_send", NOW)).toBe(matched);
+      expect(holds(h.calls)).toHaveLength(matched ? 2 : 0);
+      for (const hold of holds(h.calls)) {
+        expect(hold.sql).toContain("status = 'released'");
+        expect(hold.values).toEqual([ID]);
+      }
+    }
+  });
+  it("settles expired leases using the state of each updated request", async () => {
+    const h = setup({ recovered: [{ id: "before-send", state: "rejected" }, { id: "after-send", state: "unknown" }] });
+    expect(await h.store.recoverExpired(W, LATER)).toBe(2);
+    expect(mutations(h.calls)[0]!.sql).toContain("lease_until<=$2 RETURNING id,state");
+    expect(holds(h.calls).map(c => c.values)).toEqual([["before-send"], ["after-send", "unknown"]]);
+    expect(holds(h.calls)[0]!.sql).toContain("status = 'released'");
+  });
+  it.each(["rejected", "unknown"] as const)("keeps quota charged for submitted %s responses", async state => {
+    const h = setup({ state: "submitted" });
+    const patch = { state, errorCode: "invalid_output", providerRequestId: null, responseModel: null,
+      output: null, usage: { status: "unknown" as const, inputTokens: null, outputTokens: null, totalTokens: null } };
+    expect(await h.store.finish(W, ID, "exec", patch, NOW)).toBe(true);
+    expect(holds(h.calls).map(c => c.values)).toEqual([[ID, state === "unknown" ? "unknown" : "committed"]]);
+  });
+  it("commits the quota for a completed planning response", async () => {
+    const h = setup({ state: "submitted" });
+    const r = h.reservation.request;
+    const output = { schema: "ads.vimax-candidate.create.v1" as const, target: r.target,
+      request: { schema: "ads.vimax-platform-preview.request.v1" as const, source: r.source, sceneSpans: r.sceneSpans,
+        selectedSceneKeys: r.selectedSceneKeys, sourceDialogue: r.sourceDialogue, requirements: r.requirements,
+        candidate: h.raw.candidate, supplements: h.raw.supplements } };
+    expect(await h.store.finish(W, ID, "exec", { state: "completed", errorCode: null, output, providerRequestId: "receipt",
+      responseModel: null, usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null } }, NOW)).toBe(true);
+    expect(holds(h.calls).map(c => c.values)).toEqual([[ID, "committed"]]);
+  });
+  it("admits quota within the new-request transaction and skips it on replay", async () => {
+    const h = setup();
+    const denial = { code: "QUOTA_EXHAUSTED", message: "没有剩余额度" };
+    const reserve = vi.fn(async () => denial);
+    expect(await h.store.create(h.reservation, limits, reserve)).toEqual({ kind: "quota_denied", denial });
+    expect(reserve).toHaveBeenCalledWith(expect.objectContaining({ query: h.query }));
+    expect(mutations(h.calls)).toEqual([]);
+    const replay = setup({ existing: true });
+    expect((await replay.store.create(replay.reservation, limits, reserve)).kind).toBe("existing");
+    expect(reserve).toHaveBeenCalledOnce();
   });
   it("all legacy callers of the shared quota count planning reservations conservatively",async()=>{
     const query=vi.fn(async(sql:string)=>({rows:sql.includes("to_regclass")?[{title:true,candidate:true,auto:true,series:true,vimax:true}]:[{recent:1}]}));

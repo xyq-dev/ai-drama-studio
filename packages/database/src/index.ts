@@ -228,6 +228,7 @@ export {
 } from "./creator-access-context";
 export {
   CreatorAccountStore,
+  withAvailableLoginName,
   type CreatorAccountRecord,
   type CreatorAccountStatus,
   type CreatorAccountWithHash,

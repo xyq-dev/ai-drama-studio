@@ -1,3 +1,4 @@
+import { withInstalledWritingUnit } from "../../test/writing-resume-membership";
 import { describe, expect, it, vi } from "vitest";
 import type { ShortSequelAiAttempt, ShortSequelAiView } from "@ai-drama/contracts";
 import type { ShortSequelContext } from "@ai-drama/database";
@@ -78,10 +79,25 @@ function setup(responses: Array<typeof ANSWER | "timeout"> = [ANSWER]) {
   const start = (key: string) => service.start(PROJECT, 2, { direction: "用编号引出新线索" }, proof, actor(key));
   const latest = async () => ((await service.latest(PROJECT, 2)).body as ShortSequelAiView).task!;
   const run = async () => queued.shift()?.();
-  return { service, context, attempts, transport, start, latest, run };
+  return { service, store, context, attempts, transport, start, latest, run };
 }
 
 describe("short sequel AI task", () => {
+  it.each([false, true])("keeps the winning attempt's quota for a racing key (different input: %s)", async (different) => {
+    await withInstalledWritingUnit(WORKSPACE, async member => {
+      const { service, store, attempts } = setup();
+      const start = (direction: string) => service.start(PROJECT, 2, { direction }, proof, member.actor("racing"));
+      vi.spyOn(store, "createShortSequel").mockImplementationOnce(async attempt => {
+        expect((await start("找出新的线索")).status).toBe(202);
+        const winner = attempts[0]!;
+        return attempt.requestHash === winner.requestHash ? { kind: "existing", attempt: winner } : { kind: "conflict" };
+      });
+      expect((await start(different ? "找出其他线索" : "找出新的线索")).status).toBe(different ? 409 : 200);
+      expect(attempts).toHaveLength(1);
+      expect((await member.membership.balances(WORKSPACE, member.accountId)).writing).toBe(0);
+    });
+  });
+
   it("sends only the sequel, freezes previous context, and keeps the candidate out of saved episode content", async () => {
     const { context, attempts, transport, start, latest, run } = setup();
     expect((await start("a")).status).toBe(202);

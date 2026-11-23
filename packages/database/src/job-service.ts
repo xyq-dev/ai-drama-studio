@@ -466,6 +466,11 @@ async function cancelJobTx(
       state: "CANCELED",
     });
     await refreshWorkflowStatus(client, job.workflow_run_id, input.traceId);
+    if ((job.input_snapshot as { schema?: string } | null)?.schema === "real-media.v1") {
+      // A QUEUED job can be a retry. Only an unclaimed job has proved that no attempt could have sent it.
+      const attempt = await client.query("SELECT 1 FROM job_attempt WHERE generation_job_id = $1 LIMIT 1", [job.id]);
+      if (!attempt.rows.length) await settleCreatorQuotaHold(client, job.id, "unsent");
+    }
     return "CANCELED";
   }
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { StaffAccountStatus, StaffPermission } from "@ai-drama/domain";
-import type { DatabasePool } from "@ai-drama/database";
+import { PersistenceError, withAvailableLoginName, type DatabasePool } from "@ai-drama/database";
 
 export interface StaffRoleRecord {
   id: string;
@@ -52,13 +52,15 @@ export interface StaffRepository {
   getStaff(id: string): Promise<StaffAccountRecord | null>;
   findByUsername(workspaceId: string, username: string): Promise<StaffAccountRecord | null>;
   saveStaff(account: StaffAccountRecord): Promise<void>;
+  createInvitedStaff(account: StaffAccountRecord): Promise<boolean>;
+  recordLogin(id: string, at: string): Promise<void>;
   listInvites(workspaceId: string, staffId?: string): Promise<StaffInviteRecord[]>;
   saveInvite(invite: StaffInviteRecord): Promise<void>;
-  consumeInvite(id: string, at: string): Promise<boolean>;
+  activateInvite(id: string, staffId: string, passwordHash: string, at: string): Promise<StaffAccountRecord | null>;
   findInviteByHash(tokenHash: string): Promise<StaffInviteRecord | null>;
   recoveryCodes(staffId: string): Promise<RecoveryCodeRecord[]>;
-  replaceRecoveryCodes(staffId: string, codes: RecoveryCodeRecord[]): Promise<void>;
-  markRecoveryUsed(id: string, at: string): Promise<void>;
+  setAuthenticator(staffId: string, previousSecret: string | null, secret: string, codes: RecoveryCodeRecord[]): Promise<boolean>;
+  consumeRecoveryCode(id: string, at: string): Promise<boolean>;
 }
 
 export class MemoryStaffRepository implements StaffRepository {
@@ -106,21 +108,36 @@ export class MemoryStaffRepository implements StaffRepository {
     else this.staff.push(cloneAccount(account));
   }
 
+  async createInvitedStaff(account: StaffAccountRecord): Promise<boolean> {
+    if (this.staff.some(row => row.workspaceId === account.workspaceId && row.username.toLowerCase() === account.username.toLowerCase())) return false;
+    this.staff.push(cloneAccount(account));
+    return true;
+  }
+
+  async recordLogin(id: string, at: string): Promise<void> {
+    const account = this.staff.find(row => row.id === id);
+    if (account) account.lastLoginAt = at;
+  }
+
   async listInvites(workspaceId: string, staffId?: string): Promise<StaffInviteRecord[]> {
     return this.invites.filter((invite) => invite.workspaceId === workspaceId && (staffId === undefined || invite.staffId === staffId)).map((invite) => ({ ...invite }));
   }
 
   async saveInvite(invite: StaffInviteRecord): Promise<void> {
     const index = this.invites.findIndex((item) => item.id === invite.id);
-    if (index >= 0) this.invites[index] = { ...invite };
+    if (index >= 0) this.invites[index] = { ...invite, usedAt: this.invites[index]!.usedAt ?? invite.usedAt, revokedAt: this.invites[index]!.revokedAt ?? invite.revokedAt };
     else this.invites.push({ ...invite });
   }
 
-  async consumeInvite(id: string, at: string): Promise<boolean> {
-    const invite = this.invites.find((item) => item.id === id);
-    if (!invite || invite.usedAt || invite.revokedAt || Date.parse(invite.expiresAt) <= Date.parse(at)) return false;
+  async activateInvite(id: string, staffId: string, passwordHash: string, at: string): Promise<StaffAccountRecord | null> {
+    const invite = this.invites.find(item => item.id === id && item.staffId === staffId);
+    const account = this.staff.find(item => item.id === staffId);
+    if (!account || account.status !== "pending" || !invite || invite.usedAt || invite.revokedAt || Date.parse(invite.expiresAt) <= Date.parse(at)) return null;
     invite.usedAt = at;
-    return true;
+    account.status = "active";
+    account.passwordHash = passwordHash;
+    account.permissionVersion++;
+    return cloneAccount(account);
   }
 
   async findInviteByHash(tokenHash: string): Promise<StaffInviteRecord | null> {
@@ -131,13 +148,20 @@ export class MemoryStaffRepository implements StaffRepository {
     return this.codes.filter((code) => code.staffId === staffId).map((code) => ({ ...code }));
   }
 
-  async replaceRecoveryCodes(staffId: string, codes: RecoveryCodeRecord[]): Promise<void> {
+  async setAuthenticator(staffId: string, previousSecret: string | null, secret: string, codes: RecoveryCodeRecord[]): Promise<boolean> {
+    const account = this.staff.find(row => row.id === staffId && row.status === "active" && row.totpSecret === previousSecret);
+    if (!account) return false;
+    account.totpSecret = secret;
+    account.totpEnabled = true;
     this.codes = this.codes.filter((code) => code.staffId !== staffId).concat(codes.map((code) => ({ ...code })));
+    return true;
   }
 
-  async markRecoveryUsed(id: string, at: string): Promise<void> {
+  async consumeRecoveryCode(id: string, at: string): Promise<boolean> {
     const code = this.codes.find((item) => item.id === id);
-    if (code) code.usedAt = at;
+    if (!code || code.usedAt) return false;
+    code.usedAt = at;
+    return true;
   }
 }
 
@@ -232,7 +256,6 @@ export class PostgresStaffRepository implements StaffRepository {
            permission_version = EXCLUDED.permission_version,
            totp_secret = EXCLUDED.totp_secret,
            totp_enabled = EXCLUDED.totp_enabled,
-           last_login_at = EXCLUDED.last_login_at,
            updated_at = now()`,
         [
           account.id, account.workspaceId, account.username, account.displayName, account.passwordHash, account.status,
@@ -240,6 +263,29 @@ export class PostgresStaffRepository implements StaffRepository {
           account.lastLoginAt, account.authSource,
         ],
       );
+    } finally {
+      client.release();
+    }
+  }
+
+  async createInvitedStaff(account: StaffAccountRecord): Promise<boolean> {
+    try {
+      await withAvailableLoginName(this.pool, account.workspaceId, account.username, client => client.query(
+        `INSERT INTO staff_account(id,workspace_id,username,display_name,role_id,status,auth_source)
+         VALUES ($1,$2,$3,$4,$5,'pending','invite')`,
+        [account.id, account.workspaceId, account.username, account.displayName, account.roleId],
+      ));
+      return true;
+    } catch (error) {
+      if (error instanceof PersistenceError && error.code === "VALIDATION_ERROR") return false;
+      throw error;
+    }
+  }
+
+  async recordLogin(id: string, at: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("UPDATE staff_account SET last_login_at = GREATEST(last_login_at, $2::timestamptz) WHERE id = $1", [id, at]);
     } finally {
       client.release();
     }
@@ -260,7 +306,7 @@ export class PostgresStaffRepository implements StaffRepository {
       await client.query(
         `INSERT INTO staff_invite (id, workspace_id, staff_id, token_hash, expires_at, used_at, revoked_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (id) DO UPDATE SET used_at = EXCLUDED.used_at, revoked_at = EXCLUDED.revoked_at`,
+         ON CONFLICT (id) DO UPDATE SET used_at = COALESCE(staff_invite.used_at, EXCLUDED.used_at), revoked_at = COALESCE(staff_invite.revoked_at, EXCLUDED.revoked_at)`,
         [invite.id, invite.workspaceId, invite.staffId, invite.tokenHash, invite.expiresAt, invite.usedAt, invite.revokedAt],
       );
     } finally {
@@ -268,16 +314,22 @@ export class PostgresStaffRepository implements StaffRepository {
     }
   }
 
-  async consumeInvite(id: string, at: string): Promise<boolean> {
+  async activateInvite(id: string, staffId: string, passwordHash: string, at: string): Promise<StaffAccountRecord | null> {
     const client = await this.pool.connect();
     try {
       const updated = await client.query(
-        `UPDATE staff_invite SET used_at = $2
-          WHERE id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $2::timestamptz
-          RETURNING id`,
-        [id, at],
+        `WITH target AS (
+           SELECT id FROM staff_account WHERE id=$2 AND status='pending' FOR UPDATE
+         ), claimed AS (
+           UPDATE staff_invite SET used_at=$4
+           WHERE id=$1 AND staff_id IN (SELECT id FROM target) AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $4::timestamptz
+           RETURNING staff_id
+         )
+         UPDATE staff_account SET status='active', password_hash=$3, permission_version=permission_version+1, updated_at=now()
+         WHERE id IN (SELECT staff_id FROM claimed) RETURNING ${STAFF_COLUMNS}`,
+        [id, staffId, passwordHash, at],
       );
-      return updated.rows.length > 0;
+      return updated.rows[0] ? mapStaff(updated.rows[0]) : null;
     } finally {
       client.release();
     }
@@ -300,10 +352,18 @@ export class PostgresStaffRepository implements StaffRepository {
     );
   }
 
-  async replaceRecoveryCodes(staffId: string, codes: RecoveryCodeRecord[]): Promise<void> {
+  async setAuthenticator(staffId: string, previousSecret: string | null, secret: string, codes: RecoveryCodeRecord[]): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const changed = await client.query(
+        "UPDATE staff_account SET totp_enabled=true,totp_secret=$3,updated_at=now() WHERE id=$1 AND status='active' AND totp_secret IS NOT DISTINCT FROM $2",
+        [staffId, previousSecret, secret],
+      );
+      if (!changed.rowCount) {
+        await client.query("ROLLBACK");
+        return false;
+      }
       await client.query(`DELETE FROM staff_recovery_code WHERE staff_id = $1`, [staffId]);
       for (const code of codes) {
         await client.query(
@@ -312,6 +372,7 @@ export class PostgresStaffRepository implements StaffRepository {
         );
       }
       await client.query("COMMIT");
+      return true;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -320,10 +381,11 @@ export class PostgresStaffRepository implements StaffRepository {
     }
   }
 
-  async markRecoveryUsed(id: string, at: string): Promise<void> {
+  async consumeRecoveryCode(id: string, at: string): Promise<boolean> {
     const client = await this.pool.connect();
     try {
-      await client.query(`UPDATE staff_recovery_code SET used_at = $2 WHERE id = $1 AND used_at IS NULL`, [id, at]);
+      const consumed = await client.query(`UPDATE staff_recovery_code SET used_at = $2 WHERE id = $1 AND used_at IS NULL`, [id, at]);
+      return consumed.rowCount === 1;
     } finally {
       client.release();
     }
@@ -343,6 +405,10 @@ export class PostgresStaffRepository implements StaffRepository {
 
 const STAFF_COLUMNS = `id, workspace_id, username, display_name, password_hash, status, role_id, permission_version,
   totp_secret, totp_enabled, last_login_at, auth_source`;
+
+function iso(value: unknown): string {
+  return (value instanceof Date ? value : new Date(String(value))).toISOString();
+}
 
 function mapRole(row: Record<string, unknown>): StaffRoleRecord {
   return {
@@ -367,7 +433,7 @@ function mapStaff(row: Record<string, unknown>): StaffAccountRecord {
     permissionVersion: Number(row.permission_version),
     totpSecret: row.totp_secret == null ? null : String(row.totp_secret),
     totpEnabled: row.totp_enabled === true,
-    lastLoginAt: row.last_login_at == null ? null : new Date(String(row.last_login_at)).toISOString(),
+    lastLoginAt: row.last_login_at == null ? null : iso(row.last_login_at),
     authSource: String(row.auth_source) as "env" | "invite",
   };
 }
@@ -378,9 +444,9 @@ function mapInvite(row: Record<string, unknown>): StaffInviteRecord {
     workspaceId: String(row.workspace_id),
     staffId: String(row.staff_id),
     tokenHash: String(row.token_hash),
-    expiresAt: new Date(String(row.expires_at)).toISOString(),
-    usedAt: row.used_at == null ? null : new Date(String(row.used_at)).toISOString(),
-    revokedAt: row.revoked_at == null ? null : new Date(String(row.revoked_at)).toISOString(),
+    expiresAt: iso(row.expires_at),
+    usedAt: row.used_at == null ? null : iso(row.used_at),
+    revokedAt: row.revoked_at == null ? null : iso(row.revoked_at),
   };
 }
 

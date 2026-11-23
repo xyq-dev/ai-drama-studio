@@ -19,9 +19,11 @@ export class AdminStaffController {
   @Get()
   list(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, async () => {
-      const { service } = this.ready(headers, "manage_staff");
+      const { service, actor } = this.ready(headers, "manage_staff");
       const body = await service.list();
       return {
+        currentStaffId: actor.id,
+        requiresSecondFactor: body.staff.some(account => account.id === actor.id && account.totpEnabled),
         roles: body.roles.map((role) => ({ id: role.id, code: role.code, name: role.name, builtIn: role.builtIn, permissions: role.permissions })),
         staff: body.staff.map((account) => ({
           id: account.id,
@@ -90,7 +92,8 @@ export class AdminStaffController {
     return this.send(response, async () => {
       const { service, session } = this.ready(headers);
       this.write(headers);
-      return service.beginTotp(session.staffId ?? session.accountId, text(record(body).currentPassword));
+      const input = record(body);
+      return service.beginTotp(session.staffId ?? session.accountId, text(input.currentPassword), optional(input.totpCode));
     });
   }
 

@@ -29,6 +29,8 @@ import {
   type TitleWritingEngine,
   type WritingProviderConfig,
 } from "@ai-drama/providers";
+import { installedCreatorMembership, openCreatorHold, writingResumeQuotaCheck } from "../membership/creator-task-guard";
+import type { MembershipStore } from "../membership/membership-store";
 import type { StudioContext } from "./studio.service";
 import { platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import { PROVIDER_MIGRATION_GAP } from "./title-writing.service";
@@ -44,6 +46,7 @@ export interface ScriptBreakdownDependencies {
   defaultProvider: TitleWritingProviderKey | null;
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: TitleWritingStore;
+  creatorMembership?: MembershipStore;
   /** The title writing engine of this workspace: it drives runs of both kinds. */
   engine: Pick<TitleWritingEngine, "workspaceId" | "drive">;
   projects: Pick<RuntimeStore, "getProject">;
@@ -277,33 +280,34 @@ export class ScriptBreakdownService {
         model,
       },
     });
-    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
-    const hold = await openInstalledHold(context, "writing", projectId, "script-breakdown");
+    const membership = this.deps.creatorMembership ?? installedCreatorMembership()?.store;
+    const hold = await openCreatorHold(membership, this.deps.workspaceId, context, "writing", projectId, "script-breakdown");
     if (hold.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
     try {
-    const created = await this.deps.store.createRun(run, {
-      maxActiveRuns: this.deps.maxActiveRuns,
-      quota: {
-        sinceIso: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
-        maxCallsPerDay: this.deps.maxCallsPerDay,
-        requiredCalls: SCRIPT_BREAKDOWN_REQUIRED_CALLS,
-      },
-    });
-    if (created.kind === "blocked") {
-      return created.code === "TITLE_WRITING_DAILY_QUOTA_LOW"
-        ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
-        : failure(429, created.code);
-    }
-    // One AI task per work: name the kind of the running task, never offer its run here.
-    if (created.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE", { taskKind: isScriptBreakdownRun(created.bundle.run) ? "script_breakdown" : "title" });
-    const mine = this.ofEpisode(created.bundle, projectId, episodeId);
-    if (created.kind === "conflict" || !mine || mine.run.inputHash !== requestHash) return failure(409, "IDEMPOTENCY_KEY_REUSED");
-    if (created.kind === "created") {
-      hold.keep();
-      if (hold.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, mine.run.id);
-      this.schedule(mine.run.id);
-    }
-    return this.view(mine, created.kind === "created" ? 201 : 200);
+      const created = await this.deps.store.createRun(run, {
+        maxActiveRuns: this.deps.maxActiveRuns,
+        quota: {
+          sinceIso: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+          maxCallsPerDay: this.deps.maxCallsPerDay,
+          requiredCalls: SCRIPT_BREAKDOWN_REQUIRED_CALLS,
+        },
+      });
+      if (created.kind === "blocked") {
+        return created.code === "TITLE_WRITING_DAILY_QUOTA_LOW"
+          ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
+          : failure(429, created.code);
+      }
+      // One AI task per work: name the kind of the running task, never offer its run here.
+      if (created.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE", { taskKind: isScriptBreakdownRun(created.bundle.run) ? "script_breakdown" : "title" });
+      // Concurrent starts share a hold for the same operation, project and idempotency key, even when their inputs differ.
+      if (created.bundle.run.projectId === projectId && isScriptBreakdownRun(created.bundle.run)) hold.keep();
+      const mine = this.ofEpisode(created.bundle, projectId, episodeId);
+      if (created.kind === "conflict" || !mine || mine.run.inputHash !== requestHash) return failure(409, "IDEMPOTENCY_KEY_REUSED");
+      if (created.kind === "created") {
+        if (hold.holdId) await membership?.bindTask(hold.holdId, mine.run.id);
+        this.schedule(mine.run.id);
+      }
+      return this.view(mine, created.kind === "created" ? 201 : 200);
     } finally {
       await hold.release();
     }
@@ -372,7 +376,9 @@ export class ScriptBreakdownService {
     const legacy = isLegacyDeepseekRun(existing.run.input);
     // A retired provider has no configuration, so it is never ready and its run is never sent for again.
     const provider = providerConfigFor(this.deps.providers, runProvider);
+    const quota = writingResumeQuotaCheck(this.deps.creatorMembership ?? installedCreatorMembership()?.store, existing.run, "script-breakdown");
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
+      ...(quota ? { reserveForSend: quota } : {}),
       resumeKey: context.idempotencyKey,
       requestHash,
       confirmedCallIds: confirmed,
@@ -380,6 +386,7 @@ export class ScriptBreakdownService {
       // A DeepSeek run from before the retirement is never sent for again (only an answer already stored may be saved).
       providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(existing.run.input.model),
     }, this.now().toISOString());
+    if (prepared.kind === "quota_denied") return failure(402, prepared.denial.code, { message: prepared.denial.message });
     if (prepared.kind === "replayed") return this.view(prepared.bundle);
     if (prepared.kind !== "ok") {
       if (prepared.kind === "not_found") return failure(404, "NOT_FOUND");
