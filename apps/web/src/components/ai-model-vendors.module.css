@@ -147,6 +147,13 @@
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+.facts [data-outcome="listed"] {
+  color: #096549;
+}
+.facts [data-outcome="failed"],
+.facts [data-outcome="unavailable"] {
+  color: #bb3439;
+}
 .models ul {
   list-style: none;
   margin: 12px 0 0;

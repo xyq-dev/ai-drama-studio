@@ -199,6 +199,7 @@ it("does not issue duplicate checks or let a late receipt override a changed dra
   fireEvent.click(check);
   fireEvent.click(check);
   expect(probes).toBe(1);
+  expect(screen.getByText("正在读取模型列表…").hasAttribute("data-outcome")).toBe(false);
   const dialog = await edit();
   fireEvent.click(dialog.getByRole("combobox", { name: "模型" }));
   fireEvent.click(
@@ -208,10 +209,13 @@ it("does not issue duplicate checks or let a late receipt override a changed dra
     finish(Response.json(evidence));
   });
   expect(screen.queryByText("已读取模型列表")).toBeNull();
+  expect(screen.getByText("密钥已保存 · 连接待测试").hasAttribute("data-outcome")).toBe(false);
 });
 
 it.each([
   ["listed", "已读取模型列表"],
+  ["unavailable", "已读取模型列表，当前凭证未列出所选模型。"],
+  ["failed", "无法读取模型列表，请检查密钥及访问权限。"],
   ["unknown", "结果未知"],
 ])("labels the actual %s evidence and does not retry", async (status, expected) => {
   const saved = view("openai", { keyConfigured: true, model: "gpt-6-luna" });
@@ -228,10 +232,34 @@ it.each([
   );
   render(<AiModelVendorSettings vendorId="openai" />);
   fireEvent.click(await screen.findByRole("button", { name: "检测连接" }));
-  expect(await screen.findByText(expected)).toBeTruthy();
+  expect((await screen.findByText(expected)).dataset.outcome).toBe(status);
   expect(screen.queryByText("检测通过")).toBeNull();
   expect(fetch).toHaveBeenCalledTimes(3);
 });
+
+it.each([
+  [403, "请使用有配置权限的账号重新登录。", "failed"],
+  [504, "结果未知", "unknown"],
+] as const)(
+  "clears previous success when a check returns HTTP %i",
+  async (code, message, outcome) => {
+    const saved = view("openai", { keyConfigured: true, model: "gpt-6-luna" });
+    let checks = 0;
+    install((url) => {
+      if (!url.endsWith("/check")) return Response.json(saved);
+      if (++checks === 1)
+        return Response.json({ ...saved, status: "listed", message: "已读取模型列表" });
+      return Response.json({}, { status: code });
+    });
+    render(<AiModelVendorSettings vendorId="openai" />);
+    const check = await screen.findByRole("button", { name: "检测连接" });
+    fireEvent.click(check);
+    expect((await screen.findByText("已读取模型列表")).dataset.outcome).toBe("listed");
+    fireEvent.click(check);
+    expect((await screen.findByText(message)).dataset.outcome).toBe(outcome);
+    expect(checks).toBe(2);
+  },
+);
 
 it("explains the empty project allowlist at the picker", async () => {
   install(() => Response.json(view("openai", { models: [] })));

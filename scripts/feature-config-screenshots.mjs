@@ -186,6 +186,7 @@ async function capture(browser, shot) {
   });
   await page.goto(`http://127.0.0.1:${WEB_PORT}${shot.path}`, { waitUntil: "domcontentloaded", timeout: 120_000 });
   await page.getByRole("heading", { name: shot.heading }).waitFor({ timeout: 60_000 });
+  if (shot.openDraft) await page.getByRole("button", { name: "修改配置" }).click();
   if (shot.ready) await page.getByText(shot.ready).first().waitFor({ timeout: 60_000 });
   if (shot.action) await shot.action(page);
   const hideDev = () => document.querySelectorAll("nextjs-portal, [data-nextjs-dev-tools-button], button[aria-label='Open Next.js Dev Tools']").forEach((node) => node.remove());
@@ -210,8 +211,8 @@ async function main() {
   web.stdout.on("data", (chunk) => { webLog += chunk.toString(); });
   web.stderr.on("data", (chunk) => { webLog += chunk.toString(); });
   const shots = [
-    { name: "desktop-storyboard-saved.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", ready: "草稿未启用" },
-    { name: "mobile-storyboard-saved.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 390, height: 844, heading: "模型与密钥", ready: "草稿未启用" },
+    { name: "desktop-storyboard-saved.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", openDraft: true, ready: "草稿未启用" },
+    { name: "mobile-storyboard-saved.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 390, height: 844, heading: "模型与密钥", openDraft: true, ready: "草稿未启用" },
     { name: "desktop-writing-first.png", path: "/admin/features?feature=writing", width: 1440, height: 900, heading: "当前生效配置", ready: "尚未配置", features: "empty" },
     { name: "desktop-storyboard-first.png", path: "/admin/features?feature=storyboard", width: 1440, height: 900, heading: "当前生效配置", ready: "尚未配置", features: "empty" },
     { name: "desktop-voice-first.png", path: "/admin/features?feature=voice", width: 1440, height: 900, heading: "当前生效配置", ready: "尚未配置", features: "empty" },
@@ -227,9 +228,9 @@ async function main() {
     { name: "desktop-usage.png", path: "/admin/usage", width: 1440, height: 900, heading: "本集调用" },
     { name: "mobile-usage.png", path: "/admin/usage", width: 390, height: 844, heading: "本集调用" },
     { name: "desktop-task-detail.png", path: "/admin/usage", width: 1440, height: 900, heading: "本集调用", action: async (page) => { await page.getByRole("button", { name: /分镜生图/ }).click(); await page.getByRole("dialog", { name: "任务详情" }).waitFor(); } },
-    { name: "desktop-test-confirm.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", action: async (page) => { await page.getByRole("button", { name: "检测连接" }).click(); await page.getByRole("dialog", { name: "确认测试费用" }).waitFor(); } },
-    { name: "desktop-test-failed.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", action: async (page) => { await page.getByRole("button", { name: "检测连接" }).click(); await page.getByRole("button", { name: "确认测试" }).click(); await page.getByText("检测未通过", { exact: true }).waitFor(); } },
-    { name: "desktop-enable-confirm.png", path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", features: "passed", action: async (page) => { await page.getByRole("button", { name: "确认启用" }).click(); await page.getByRole("dialog", { name: "确认启用" }).waitFor(); } },
+    { name: "desktop-test-confirm.png", openDraft: true, path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", action: async (page) => { await page.getByRole("button", { name: "验证草稿" }).click(); await page.getByRole("dialog", { name: "确认测试费用" }).waitFor(); } },
+    { name: "desktop-test-failed.png", openDraft: true, path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", action: async (page) => { await page.getByRole("button", { name: "验证草稿" }).click(); await page.getByRole("button", { name: "确认测试" }).click(); await page.getByText("检测未通过", { exact: true }).waitFor(); } },
+    { name: "desktop-enable-confirm.png", openDraft: true, path: "/admin/features?feature=storyboard&vendor=bailian", width: 1440, height: 900, heading: "模型与密钥", features: "passed", action: async (page) => { await page.getByRole("button", { name: "确认启用" }).click(); await page.getByRole("dialog", { name: "确认启用" }).waitFor(); } },
     { name: "mobile-menu.png", path: "/admin/features", width: 390, height: 844, heading: "模型与密钥", action: async (page) => { await page.getByRole("button", { name: "打开功能配置目录" }).click(); await page.getByRole("dialog", { name: "管理导航" }).waitFor(); } },
   ];
   try {
