@@ -395,16 +395,14 @@
   margin-top: 12px;
 }
 
-.current,
-.change {
+.current {
   margin-top: 16px;
   padding: 20px 24px 24px;
   border: 1px solid var(--admin-line, #dce2ea);
   border-radius: 12px;
   background: #fff;
 }
-.current h2,
-.change h2 {
+.current h2 {
   margin: 0;
   font-size: 20px;
   line-height: 28px;
@@ -448,9 +446,7 @@
   background: #eaf8f0;
   color: #096549;
 }
-.badgeOk::before,
-.okLine .dotOk,
-.dotOk {
+.badgeOk::before {
   content: "";
   width: 6px;
   height: 6px;
@@ -469,95 +465,21 @@
   border-radius: 50%;
   background: #98a2b3;
 }
-.steps {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  margin: 16px 0 0;
-  padding: 0;
-  list-style: none;
-  color: #98a2b3;
-  font-size: 14px;
+.modal[hidden] {
+  display: none;
 }
-.steps li {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-.steps li span {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #f1f4f8;
-  color: #53637b;
-  font-size: 12px;
-  font-weight: 700;
-}
-.stepOn {
-  color: #3448bc;
-  font-weight: 700;
-}
-.stepOn span {
-  background: #465fff;
-  color: #fff;
-}
-.stepDone {
-  color: #096549;
-}
-.stepDone span {
-  background: #eaf8f0;
-  color: #096549;
-}
-.changeBody {
+.draftStatus {
   margin-top: 16px;
-}
-.changeBody p {
-  margin: 8px 0 0;
   color: var(--admin-muted, #53637b);
-  font-size: 14px;
-  line-height: 22px;
 }
-.mutedLine,
-.okLine,
-.failLine {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  color: #344054 !important;
+.draftStatus p {
+  margin: 4px 0 0;
 }
-.dotMuted,
-.dotWarn,
-.dotFail {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
+.draftStatus[data-outcome="passed"] {
+  color: #096549;
 }
-.dotMuted {
-  background: #98a2b3;
-}
-.dotWarn {
-  background: #f79009;
-}
-.dotFail {
-  background: #bb3439;
-}
-.draftMeta {
-  display: flex;
-  flex-wrap: wrap;
-  overflow-wrap: anywhere;
-  gap: 24px;
-  color: #101828 !important;
-  font-size: 16px !important;
-}
-.changeBody .primary,
-.changeBody .secondary {
-  margin-top: 16px;
+.draftStatus[data-outcome="failed"] {
+  color: #bb3439;
 }
 .drawer {
   width: min(520px, calc(100vw - 24px));
@@ -596,11 +518,6 @@
   .facts div:last-child {
     border-bottom: 0;
     padding-bottom: 0;
-  }
-  .steps {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
   }
 }
 @media (max-width: 1023px) {

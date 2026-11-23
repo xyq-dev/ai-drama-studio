@@ -81,7 +81,9 @@ describe("beginner step states come from server facts", () => {
   });
 
   it("starts a new project at 定故事 and walks forward only as the server confirms", () => {
-    expect(currentStep(stepStates(facts()))).toBe("story");
+    const initial = stepStates(facts());
+    expect(initial.story).toBe("needs_input");
+    expect(currentStep(initial)).toBe("story");
     const approved = stepStates(facts({ story: story("APPROVED"), episodes: [episode(1, null), episode(2, null), episode(3, null)] }));
     expect(approved).toMatchObject({ story: "done", script: "needs_input", cast: "not_started" });
   });

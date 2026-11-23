@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TITLE_WRITING_DEFAULT_EPISODE_SECONDS, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import { ANTHROPIC_MESSAGES_URL, titleWritingProviderConfigs, type WritingProviderConfig, type WritingTransport } from "./text-writing";
 import {
@@ -10,6 +10,7 @@ import {
   newTitleRun,
   titleRunView,
   uncertainCallIdsOf,
+  type TitleWritingEngineDeps,
 } from "./title-writing-engine";
 import { messagesAnswer, fixtureChatTransport, fixtureConcept, fixtureOutline, type FixtureExchange, type FixtureStep } from "./title-writing-fixtures";
 
@@ -31,6 +32,7 @@ function setup(options: {
   seen?: FixtureExchange[];
   override?: (step: FixtureStep, attempt: number) => { status: number; body: unknown } | "hang" | "throw" | undefined;
   maxCallsPerDay?: number;
+  onMembershipSignal?: TitleWritingEngineDeps["onMembershipSignal"];
   providerKey?: TitleWritingProviderKey;
   model?: string;
 } = {}) {
@@ -39,7 +41,8 @@ function setup(options: {
   store.addProject(WS, P2);
   const seen = options.seen ?? [];
   const transport = options.transport ?? fixtureChatTransport(TITLE, { seen, ...(options.override ? { override: options.override } : {}) });
-  const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport, maxCallsPerDay: options.maxCallsPerDay ?? 30, timeoutMs: 20 });
+  const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport, maxCallsPerDay: options.maxCallsPerDay ?? 30,
+    ...(options.onMembershipSignal ? { onMembershipSignal: options.onMembershipSignal } : {}), timeoutMs: 20 });
   const run = (projectId = P1, key = "key-1", title = TITLE) => newTitleRun({
     workspaceId: WS, projectId, actorId: "server-owner", idempotencyKey: key, title,
     settings: { episodeCount: 3, episodeSeconds: TITLE_WRITING_DEFAULT_EPISODE_SECONDS, style: "" },
@@ -57,6 +60,22 @@ async function resume(store: InMemoryTitleWritingStore, projectId: string, runId
 }
 
 describe("title-driven writing run", () => {
+  it.each([true, false])("only settles a pre-send cancellation when this executor finishes the run (owns: %s)", async (owns) => {
+    const signal = vi.fn(async () => {});
+    const { store, engine, run, seen } = setup({ onMembershipSignal: signal });
+    const record = run();
+    await store.createRun(record, { maxActiveRuns: 1 });
+    const submit = store.markCallSubmitted.bind(store);
+    vi.spyOn(store, "markCallSubmitted").mockImplementationOnce(async (...args) => {
+      await store.requestCancel(WS, P1, record.id, new Date().toISOString());
+      return submit(...args);
+    });
+    if (!owns) vi.spyOn(store, "finishRun").mockResolvedValue(false);
+    await engine.drive(record.id);
+    expect(seen).toHaveLength(0);
+    expect(signal.mock.calls).toEqual(owns ? [[{ runId: record.id, outcome: "unsent" }]] : []);
+  });
+
   it("generates concept, outline and every episode in order and saves the story as a DRAFT", async () => {
     const { store, engine, seen, run } = setup();
     const created = await store.createRun(run(), { maxActiveRuns: 1 });

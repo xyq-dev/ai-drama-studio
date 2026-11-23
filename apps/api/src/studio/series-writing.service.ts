@@ -297,7 +297,7 @@ export class SeriesWritingService {
       now: at,
     });
     const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
-    const hold = previous ? null : await openInstalledHold(context, "writing", projectId);
+    const hold = previous ? null : await openInstalledHold(context, "writing", projectId, "series-writing");
     if (hold?.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
     try {
     const created = await this.deps.store.createGrant(grant, this.limits(at), (state) => admitSeriesGrant(state, grant, { jobId: randomUUID(), nowIso: at.toISOString() }));

@@ -1,7 +1,6 @@
 // Isolated admin fixture for T-ENG-ADMIN-AI-MODELS-AND-WRITING.
 // Real site login + admin HTTP + encrypted temporary vaults. No application DB.
-// Connection tests stay in-process: DeepSeek writing uses the official probe against a stub
-// fetch; other vendors keep the mock probe. globalThis.fetch remains forbidden.
+// DeepSeek and Bailian use the writing probe with an in-process transport.
 import { createRequire } from "node:module";
 import { chmod, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -38,8 +37,8 @@ const { SiteAuth } = require(join(root, "apps/api/dist/auth/site-auth.js"));
 const { hashPassword } = require(join(root, "apps/api/dist/auth/password-hash.js"));
 const { featureWritingProbe } = require(join(root, "apps/api/dist/admin/feature-writing-probe.js"));
 const { legacyLiveFor, legacySecretFor } = require(join(root, "apps/api/dist/admin/feature-config.legacy.js"));
-const { WRITING_MODEL_CHANNELS } = require("@ai-drama/contracts");
-const { DEEPSEEK_CHAT_COMPLETIONS_URL } = require("@ai-drama/providers");
+const { BAILIAN_COMPATIBLE_BASE_URL, WRITING_MODEL_CHANNELS } = require("@ai-drama/contracts");
+const { DEEPSEEK_CHAT_COMPLETIONS_URL, InMemoryTitleWritingStore } = require("@ai-drama/providers");
 
 const password = process.env.ADMIN_MODELS_TEST_PASSWORD;
 if (!password || password.length < 16) {
@@ -73,10 +72,11 @@ function isolatedMockProbe() {
   };
 }
 
-/** Official DeepSeek writing probe, with a loopback stub that never leaves the process. */
+/** Both writing probes exercise the production parser against synthetic responses. */
 function isolatedFeatureProbe() {
   const writing = featureWritingProbe(async (url, init) => {
-    if (String(url) !== DEEPSEEK_CHAT_COMPLETIONS_URL) {
+    const bailian = String(url) === `${BAILIAN_COMPATIBLE_BASE_URL}/chat/completions`;
+    if (!bailian && String(url) !== DEEPSEEK_CHAT_COMPLETIONS_URL) {
       throw new Error("Isolated fixture forbids unexpected outbound URLs.");
     }
     const auth = new Headers(init?.headers).get("authorization") ?? "";
@@ -90,7 +90,7 @@ function isolatedFeatureProbe() {
         choices: [
           {
             index: 0,
-            message: { role: "assistant", content: '{"ok":true}' },
+            message: { role: "assistant", content: bailian ? '{"title":"雨夜重逢"}' : '{"ok":true}' },
             finish_reason: "stop",
           },
         ],
@@ -101,7 +101,7 @@ function isolatedFeatureProbe() {
   });
   const fallback = isolatedMockProbe();
   return async (input) => {
-    if (input.feature === "writing" && input.vendor === "deepseek") return writing(input);
+    if (input.feature === "writing" && (input.vendor === "deepseek" || input.vendor === "bailian")) return writing(input);
     return fallback(input);
   };
 }
@@ -143,7 +143,10 @@ async function isolatedModelList(input, init) {
   const url = new URL(input);
   const endpoint = url.origin + url.pathname;
   if ((init?.method ?? "GET") !== "GET") throw new Error("Unexpected directory request.");
-  if (endpoint === "https://dashscope.aliyuncs.com/api/v1/models/permissions") {
+  if (endpoint === "https://llm-isolated.cn-beijing.maas.aliyuncs.com/api/v1/models/permissions") {
+    if (url.searchParams.get("authorization_scope") !== "AUTHORIZED" || url.searchParams.get("action") !== "INFERENCE") {
+      throw new Error("Expected an inference authorization lookup.");
+    }
     const permissions = WRITING_MODEL_CHANNELS.bailian.models
       .filter(({ id }) => id === url.searchParams.get("model"))
       .map(({ id }) => ({ model: id, permissions: { inference: true } }));
@@ -158,6 +161,8 @@ const featureVault = await FeatureConfigVault.open({
   path: featureVaultPath(bootstrap.path),
   masterKey: bootstrap.masterKey,
 });
+const writingStore = new InMemoryTitleWritingStore();
+writingStore.bailianReady = true; // Simulate a schema that accepts Bailian runs and calls.
 const featureConfig = await FeatureConfigService.open({
   vault: featureVault,
   usage: new FeatureUsageStore(join(directory, "feature-usage.json")),
@@ -178,6 +183,7 @@ const featureConfig = await FeatureConfigService.open({
       feature === "writing" && Object.hasOwn(WRITING_MODEL_CHANNELS, vendor) ? backend.vendorSecret(vendor) : null,
   },
   policy: {
+    bailianWritingStorageReady: async () => writingStore.bailianStorageReady(),
     writingAllowlist: async (vendor) => vendor === "openai" ? backend.runtimeSettings().providers.openai.models : null,
   },
 });

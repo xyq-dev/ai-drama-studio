@@ -5,7 +5,7 @@ type Queryable = {
 };
 
 /**
- * Close the membership hold for one media job. Missing membership tables are ignored so older
+ * Close the membership hold for one task. Missing membership tables are ignored so older
  * databases keep completing jobs. A second receipt does not debit or credit again.
  */
 export async function settleCreatorQuotaHold(
@@ -24,6 +24,7 @@ export async function settleCreatorQuotaHold(
       );
       const hold = updated.rows[0];
       if (hold) {
+        const creditId = randomUUID();
         await client.query(
           `UPDATE creator_feature_balance SET remaining_units = remaining_units + $4, updated_at = now()
             WHERE workspace_id = $1 AND account_id = $2 AND feature = $3`,
@@ -36,12 +37,12 @@ export async function settleCreatorQuotaHold(
            ) VALUES ($1, $2, $3, NULL, $4, 'credit', 'pending_price', $5::jsonb, NULL, NULL, $6)
            ON CONFLICT (workspace_id, account_id, idempotency_key) DO NOTHING`,
           [
-            randomUUID(),
+            creditId,
             hold.workspace_id,
             hold.account_id,
             taskKey,
-            JSON.stringify({ feature: hold.feature, units: hold.units, reason: "未发出的请求已释放额度", holdStatus: "released" }),
-            `hold:${String(hold.id)}:release`,
+            JSON.stringify({ feature: hold.feature, units: hold.units, taskKey, reason: "未发出的请求已释放额度", holdStatus: "released" }),
+            `hold:${String(hold.id)}:release:${creditId}`,
           ],
         );
       }

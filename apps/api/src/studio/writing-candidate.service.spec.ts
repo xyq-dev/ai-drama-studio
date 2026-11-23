@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { MemoryMembershipStore } from "../membership/membership-store";
 import { PersistenceError } from "@ai-drama/database";
 import {
   ANTHROPIC_MESSAGES_URL,
   DEEPSEEK_CHAT_COMPLETIONS_URL,
   InMemoryWritingCandidateStore,
+  hashWritingCandidate,
   WritingCandidateExecutor,
   titleWritingProviderConfigs,
   type TitleWritingProviderEnv,
@@ -52,12 +54,14 @@ function setup(options: {
   maxCallsPerDay?: number;
   deepseekStorageReady?: boolean;
   configurationPending?: () => Promise<boolean>;
+  episodeCount?: number;
+  creatorMembership?: MemoryMembershipStore;
 } = {}) {
   const store = new InMemoryWritingCandidateStore();
   store.ready = options.storageReady ?? true;
   store.deepseekReady = options.deepseekStorageReady ?? true;
-  store.targets.set(`${P1}:story`, { episodeId: null, episodeNo: null, revisions: [STORY_REV], episodeCount: 3 });
-  store.targets.set(`${P1}:${E2}`, { episodeId: E2, episodeNo: 2, revisions: [], episodeCount: 3 });
+  store.targets.set(`${P1}:story`, { episodeId: null, episodeNo: null, revisions: [STORY_REV], episodeCount: options.episodeCount ?? 3 });
+  store.targets.set(`${P1}:${E2}`, { episodeId: E2, episodeNo: Math.min(2, options.episodeCount ?? 3), revisions: [], episodeCount: options.episodeCount ?? 3 });
   store.targets.set(`${P2}:story`, { episodeId: null, episodeNo: null, revisions: [], episodeCount: 6 });
   const providers = titleWritingProviderConfigs(options.env ?? CONFIGURED);
   const sent: Array<{ url: string; headers: Record<string, string> }> = [];
@@ -83,8 +87,12 @@ function setup(options: {
     defaultProvider: options.defaultProvider ?? null,
     providers,
     store,
+    ...(options.creatorMembership ? { creatorMembership: options.creatorMembership } : {}),
     executor: new WritingCandidateExecutor({ workspaceId: WS, store, providers, transport }),
     projects: {
+      getProjectEpisodePlan: async (_workspaceId, projectId) => ({
+        episodeCount: projectId === P2 ? 6 : options.episodeCount ?? 3, targetEpisodeSeconds: 60, writingMode: "short",
+      }),
       getProject: async (_workspaceId: string, projectId: string) => {
         if (projectId !== P1 && projectId !== P2) throw new PersistenceError("NOT_FOUND", "Project not found");
         return {} as never;
@@ -221,15 +229,114 @@ describe("asking, reading and replaying", () => {
     expect(sent).toHaveLength(2);
   });
 
-  it("refuses a target of another work, an episode with another number, a foreign base revision and a six-episode story", async () => {
+  it("refuses a target of another work, an episode with another number, a foreign base revision and a target whose stored project count changed", async () => {
     const { service, sent, store } = setup();
     expect(errorOf(await service.start(P1, { ...EPISODE, episodeId: MISSING }, TOKEN, CONTEXT("a"))).details?.reason).toBe("episode");
     expect(errorOf(await service.start(P1, { ...EPISODE, request: { ...EPISODE.request, episodeNo: 3 } }, TOKEN, CONTEXT("b"))).details?.reason).toBe("episode");
     expect(errorOf(await service.start(P1, { ...STORY, base: { sourceRevisionId: MISSING, ifMatch: 4 } }, TOKEN, CONTEXT("c"))).details?.reason).toBe("base_revision");
+    store.targets.get(`${P2}:story`)!.episodeCount = 5;
     expect(errorOf(await service.start(P2, STORY, TOKEN, CONTEXT("d"))).details?.reason).toBe("episode_plan");
     await expect(service.start(MISSING, STORY, TOKEN, CONTEXT("e"))).rejects.toThrow("Project not found");
     expect(sent).toHaveLength(0);
     expect(store.records.size).toBe(0);
+  });
+
+  it.each([false, true])("checks a single episode before charging and preserves the winning request's hold (conflicting input: %s)", async (conflict) => {
+    const membership = new MemoryMembershipStore();
+    const accountId = "88888888-8888-4888-8888-888888888888";
+    const actor = (key: string) => ({ ...CONTEXT(key), actorId: `creator:${accountId}` });
+    const { service, store, sent, settle } = setup({ episodeCount: 1, creatorMembership: membership });
+    const reserve = vi.spyOn(membership, "reserve");
+    const episode = { ...EPISODE, request: { ...EPISODE.request, episodeNo: 1 } };
+
+    const outside = await service.start(P1, EPISODE, TOKEN, actor("wrong-episode"));
+    expect(errorOf(outside)).toMatchObject({ code: "WRITING_CANDIDATE_TARGET_INVALID", details: { reason: "episode_plan" } });
+    expect(reserve).not.toHaveBeenCalled();
+
+    const inactive = await service.start(P1, episode, TOKEN, actor("not-a-member"));
+    expect(inactive.status).toBe(402);
+    expect(errorOf(inactive).code).toBe("MEMBERSHIP_REQUIRED");
+    expect(store.records.size).toBe(0);
+    await settle();
+    expect(sent).toHaveLength(0);
+
+    const plan = await membership.savePlan(WS, {
+      code: "single", name: "单集编剧", description: "", active: true, unitPriceAmount: null, unitPriceCurrency: null,
+      features: [{ feature: "writing", enabled: true, includedUnits: 1 }],
+    });
+    const now = Date.now();
+    await membership.grant(WS, {
+      accountId, planId: plan.id, startsAt: new Date(now - 60_000), endsAt: new Date(now + 86_400_000), reason: "测试", grantedBy: null,
+    });
+    const create = store.create.bind(store);
+    let winnerId: unknown;
+    vi.spyOn(store, "create").mockImplementationOnce(async (...args) => {
+      const winner = await service.start(P1, episode, TOKEN, actor("single"));
+      expect(winner.status).toBe(202);
+      winnerId = requestOf(winner).requestId;
+      return create(...args);
+    });
+    const racingInput = conflict ? { ...episode, request: { ...episode.request, mustKeep: "另一个版本" } } : episode;
+    const first = await service.start(P1, racingInput, TOKEN, actor("single"));
+    expect(first.status).toBe(conflict ? 409 : 200);
+    await settle();
+    reserve.mockClear();
+    const replay = await service.start(P1, episode, TOKEN, actor("single"));
+    expect(requestOf(replay)).toMatchObject({ requestId: winnerId, state: "completed", episodeCount: 1, episodeNo: 1 });
+    expect(reserve).not.toHaveBeenCalled();
+    const changed = await service.start(P1, { ...episode, request: { ...episode.request, mustKeep: "新人物" } }, TOKEN, actor("single"));
+    expect(errorOf(changed).code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(errorOf(await service.start(P1, STORY, TOKEN, actor("another"))).code).toBe("QUOTA_EXHAUSTED");
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect(store.records.size).toBe(1);
+    expect((await membership.ledger(WS, accountId)).filter(row => row.kind === "debit")).toHaveLength(1);
+  });
+
+  it.each([1, 3, 6])("uses the project's %i episodes for the prompt, response and idempotent replay", async (episodeCount) => {
+    const { service, sent, settle } = setup({ episodeCount });
+    const story = await service.start(P1, STORY, TOKEN, CONTEXT("story"));
+    expect(story.status).toBe(202);
+    await settle();
+    const { candidate } = requestOf(await service.get(P1, String(requestOf(story).requestId))) as {
+      candidate: { mode: string; plan: { episodes: { episodeNo: number }[] } };
+    };
+    expect(candidate.mode).toBe("story");
+    expect(candidate.plan.episodes.map(episode => episode.episodeNo)).toEqual(Array.from({ length: episodeCount }, (_, i) => i + 1));
+    const episodeNo = Math.min(2, episodeCount);
+    const oneEpisode = { ...EPISODE, request: { ...EPISODE.request, episodeNo } };
+    const started = await service.start(P1, oneEpisode, TOKEN, CONTEXT("episode"));
+    expect(started.status).toBe(202);
+    await settle();
+    expect(requestOf(await service.start(P1, oneEpisode, TOKEN, CONTEXT("episode")))).toMatchObject({
+      episodeCount, episodeNo, state: "completed", candidate: { mode: "episode", draft: { episodeNo, screenplay: expect.stringContaining("林夏") } },
+    });
+    expect(sent).toHaveLength(2);
+  });
+
+  it("replays a historical request whose frozen input predates episodeCount without sending again", async () => {
+    const { service, store, sent, settle } = setup();
+    const first = await service.start(P1, STORY, TOKEN, CONTEXT("legacy-story"));
+    await settle();
+    const record = store.records.get(String(requestOf(first).requestId))!;
+    delete record.input.episodeCount;
+    record.requestHash = hashWritingCandidate(record.input, record.confirmedRequestId);
+    const replay = await service.start(P1, STORY, TOKEN, CONTEXT("legacy-story"));
+    expect(replay.status).toBe(200);
+    expect(requestOf(replay)).toMatchObject({ requestId: record.id, episodeCount: 3, state: "completed" });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("rejects a three-episode response for a single episode without sending a second request", async () => {
+    const { service, sent, settle } = setup({ episodeCount: 1, answer: () => ({
+      status: 200, body: messagesAnswer(fixtureCandidateFromPrompt("模式：故事策划，episodes 共 3 项")),
+    }) });
+    const started = await service.start(P1, STORY, TOKEN, CONTEXT("wrong-count"));
+    await settle();
+    expect(requestOf(await service.get(P1, String(requestOf(started).requestId)))).toMatchObject({
+      state: "rejected", errorCode: "episode_mismatch", candidate: null,
+    });
+    expect(sent).toHaveLength(1);
   });
 
   it("validates the body, the key, the provider and the model before writing; a retired provider cannot be named", async () => {

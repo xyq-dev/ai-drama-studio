@@ -24,6 +24,7 @@ const KEYS = {
   openai: "sk-test-isolated-openai-key-not-real",
   deepseek: "fake-deepseek-isolated-key-not-real",
   bailianFail: "FAILPROBE-bailian-isolated-key-not-real",
+  bailianPlan: "sk-sp-test-only-not-a-real-key",
   bailianPass: "fake-bailian-isolated-key-not-real",
   deepseekFail: "FAILPROBE-deepseek-isolated-key-not-real",
 };
@@ -57,6 +58,16 @@ async function chooseModel(drawer, vendor, modelId) {
   assert.ok(model, `Missing fixture model: ${vendor}/${modelId}`);
   await drawer.getByRole("combobox", { name: "模型", exact: true }).click();
   await drawer.getByRole("option").filter({ hasText: model.label }).click();
+}
+
+async function checkDraftColor(page, passed) {
+  const label = passed ? "检测通过" : "检测未通过";
+  const status = page.getByRole("dialog", { name: "修改配置" }).getByText(label, { exact: true });
+  await status.waitFor();
+  const color = await status.evaluate((node) => getComputedStyle(node).color);
+  const [red, green, blue] = color.match(/\d+/g).map(Number);
+  assert.ok(passed ? green > Math.max(red, blue) : red > Math.max(green, blue), label + " " + color);
+  checks.push({ label, color, viewport: page.viewportSize() });
 }
 
 async function revealPrimary(page, locator, label) {
@@ -124,14 +135,13 @@ async function shot(page, name) {
 }
 
 async function signIn(page) {
-  await page.goto(`${origin}/admin/ai-models`, { waitUntil: "networkidle" });
-  if (new URL(page.url()).pathname === "/login") {
-    await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
-    await page.locator('input[name="username"]').fill(username);
-    await page.getByLabel("密码", { exact: true }).fill(password);
-    await page.getByRole("button", { name: "登录", exact: true }).click();
-  }
-  await page.getByRole("heading", { name: "模型供应商", exact: true }).waitFor({ timeout: 60_000 });
+  await page.goto(`${origin}/login`);
+  await page.locator('input[name="username"]').fill(username);
+  await page.getByLabel("密码", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.waitForURL((url) => url.pathname !== "/login");
+  await page.goto(`${origin}/admin/ai-models`);
+  await page.getByRole("heading", { name: "模型供应商", exact: true }).waitFor();
 }
 
 async function gotoReady(page, path, heading) {
@@ -193,7 +203,8 @@ async function walkDesktop(page) {
   await shot(page, "desktop-vendor-catalog-openai-saved");
 
   await gotoReady(page, "/admin/features?feature=writing", "模型与密钥");
-  await page.getByText("暂无草稿").waitFor();
+  await page.getByRole("button", { name: "修改配置" }).waitFor();
+  assert.equal(await page.getByRole("region", { name: "配置变更" }).count(), 0);
   await shot(page, "desktop-writing-current-empty");
 
   await page.getByRole("button", { name: "修改配置" }).click();
@@ -206,11 +217,11 @@ async function walkDesktop(page) {
   await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor();
   await shot(page, "desktop-writing-draft-unenabled-first");
 
-  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByRole("button", { name: "验证草稿", exact: true }).click();
   await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await shot(page, "desktop-writing-test-confirm");
   await page.getByRole("button", { name: "确认测试", exact: true }).click();
-  await page.getByText("检测通过").waitFor();
+  await checkDraftColor(page, true);
   await page.getByText("未设置").first().waitFor(); // live config unchanged
   await shot(page, "desktop-writing-test-passed-first");
 
@@ -221,7 +232,7 @@ async function walkDesktop(page) {
     .getByRole("dialog", { name: "确认启用" })
     .getByRole("button", { name: "确认启用", exact: true })
     .click();
-  await page.getByRole("region", { name: "配置变更" }).getByText("已生效", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "当前生效配置" }).getByText("已生效", { exact: true }).waitFor();
   await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor();
   await shot(page, "desktop-writing-enabled-deepseek");
 
@@ -235,24 +246,22 @@ async function walkDesktop(page) {
   await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor(); // live still DeepSeek
   await shot(page, "desktop-writing-draft-unenabled");
 
-  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByRole("button", { name: "验证草稿", exact: true }).click();
   await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await page.getByRole("button", { name: "确认测试", exact: true }).click();
-  await page.getByText("检测未通过").waitFor();
+  await checkDraftColor(page, false);
   await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor();
   await shot(page, "desktop-writing-test-failed");
 
-  await page.getByRole("button", { name: "修改配置" }).click();
-  await page.getByRole("dialog", { name: "修改配置" }).waitFor();
   await page.getByRole("button", { name: "更换" }).click();
   await page.getByLabel("API Key").fill(KEYS.bailianPass);
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
   await page.getByText("草稿未启用").waitFor();
 
-  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByRole("button", { name: "验证草稿", exact: true }).click();
   await page.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await page.getByRole("button", { name: "确认测试", exact: true }).click();
-  await page.getByText("检测通过").waitFor();
+  await checkDraftColor(page, true);
   await page.getByText(WRITING_MODEL_CHANNELS.deepseek.models[0].label).first().waitFor(); // live still DeepSeek
   await shot(page, "desktop-writing-test-passed");
   assert.equal(
@@ -269,8 +278,24 @@ async function walkDesktop(page) {
     .getByRole("dialog", { name: "确认启用" })
     .getByRole("button", { name: "确认启用", exact: true })
     .click();
-  await page.getByRole("region", { name: "配置变更" }).getByText("已生效", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "当前生效配置" }).getByText("已生效", { exact: true }).waitFor();
   await shot(page, "desktop-writing-enabled");
+
+  await gotoReady(page, "/admin/ai-models/bailian", "阿里云百炼");
+  await page.getByRole("button", { name: "编辑设置" }).click();
+  const settings = page.getByRole("dialog", { name: "编辑设置" });
+  await chooseModel(settings, "bailian", "qwen-plus");
+  const key = settings.getByLabel("API Key");
+  await key.fill(KEYS.bailianPlan);
+  await settings.getByText("这是套餐密钥，请使用百炼按量付费 API Key", { exact: true }).waitFor();
+  assert.equal(await settings.getByRole("button", { name: "保存设置" }).isDisabled(), true);
+  await key.fill(KEYS.bailianPass);
+  await settings.getByLabel("业务空间 ID").fill("llm-isolated");
+  await settings.getByRole("button", { name: "保存设置" }).click();
+  await settings.waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "检测连接", exact: true }).click();
+  await page.getByText("已读取模型列表", { exact: true }).waitFor();
+  await shot(page, "desktop-bailian-authorized-model");
 }
 
 async function walkMobile(page) {
@@ -289,7 +314,7 @@ async function walkMobile(page) {
   await gotoReady(page, "/admin/features?feature=writing", "模型与密钥");
   // After desktop walk, writing is enabled on Bailian and leftover test receipts are cleared.
   await page
-    .getByRole("region", { name: "配置变更" })
+    .getByRole("region", { name: "当前生效配置" })
     .getByText("已生效", { exact: true })
     .waitFor();
   await shot(page, "mobile-writing-enabled");
@@ -306,21 +331,25 @@ const browser = await chromium.launch({
   args: ["--no-sandbox"],
 });
 
+async function isolatedContext(viewport) {
+  const target = new URL(origin);
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(target.hostname), "Expected a loopback preview");
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1, serviceWorkers: "block" });
+  await context.route("**/*", (route) =>
+    new URL(route.request().url()).origin === target.origin ? route.continue() : route.abort(),
+  );
+  return context;
+}
+
 try {
-  const desktop = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    deviceScaleFactor: 1,
-  });
+  const desktop = await isolatedContext({ width: 1440, height: 900 });
   const desktopPage = await desktop.newPage();
   desktopPage.setDefaultTimeout(60_000);
   await signIn(desktopPage);
   await walkDesktop(desktopPage);
   await desktop.close();
 
-  const mobile = await browser.newContext({
-    viewport: { width: 390, height: 844 },
-    deviceScaleFactor: 1,
-  });
+  const mobile = await isolatedContext({ width: 390, height: 844 });
   const mobilePage = await mobile.newPage();
   mobilePage.setDefaultTimeout(60_000);
   await signIn(mobilePage);
@@ -338,29 +367,27 @@ try {
   await mobilePage.getByText("草稿未启用").waitFor();
   await shot(mobilePage, "mobile-writing-draft-unenabled");
 
-  const change = mobilePage.getByRole("region", { name: "配置变更" });
-  await change.getByRole("button", { name: "检测连接", exact: true }).click();
+  const drawer = mobilePage.getByRole("dialog", { name: "修改配置" });
+  await drawer.getByRole("button", { name: "验证草稿", exact: true }).click();
   await mobilePage.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await mobilePage.getByRole("button", { name: "确认测试", exact: true }).click();
-  await change.getByText("检测未通过").waitFor();
-  const retest = change.getByRole("button", { name: "检测连接", exact: true });
-  await revealPrimary(mobilePage, retest, "mobile failed 检测连接");
+  await checkDraftColor(mobilePage, false);
+  const retest = drawer.getByRole("button", { name: "验证草稿", exact: true });
+  await revealPrimary(mobilePage, retest, "mobile failed 验证草稿");
   await shotScrolled(mobilePage, "mobile-writing-test-failed-fixed");
   await retest.click();
   await mobilePage.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await mobilePage.getByRole("button", { name: "取消", exact: true }).click();
 
-  await mobilePage.getByRole("button", { name: "修改配置" }).click();
-  await mobilePage.getByRole("dialog", { name: "修改配置" }).waitFor();
   await mobilePage.getByRole("button", { name: "更换" }).click();
   await mobilePage.getByLabel("API Key").fill(KEYS.deepseek);
   await mobilePage.getByRole("button", { name: "保存草稿", exact: true }).click();
-  await change.getByText("草稿未启用").waitFor();
-  await change.getByRole("button", { name: "检测连接", exact: true }).click();
+  await drawer.getByText("草稿未启用").waitFor();
+  await drawer.getByRole("button", { name: "验证草稿", exact: true }).click();
   await mobilePage.getByRole("dialog", { name: "确认测试费用" }).waitFor();
   await mobilePage.getByRole("button", { name: "确认测试", exact: true }).click();
-  await change.getByText("检测通过", { exact: true }).waitFor();
-  const enableButton = change.getByRole("button", { name: "确认启用", exact: true });
+  await checkDraftColor(mobilePage, true);
+  const enableButton = drawer.getByRole("button", { name: "确认启用", exact: true });
   await revealPrimary(mobilePage, enableButton, "mobile passed 确认启用");
   await shotScrolled(mobilePage, "mobile-writing-test-passed-fixed");
   await enableButton.click();
@@ -369,8 +396,9 @@ try {
     .getByRole("dialog", { name: "确认启用" })
     .getByRole("button", { name: "确认启用", exact: true })
     .click();
-  await change.getByText("已生效", { exact: true }).waitFor();
-  const rollbackButton = change.getByRole("button", { name: "回退到上一配置版本" });
+  const current = mobilePage.getByRole("region", { name: "当前生效配置" });
+  await current.getByText("已生效", { exact: true }).waitFor();
+  const rollbackButton = current.getByRole("button", { name: "回退到上一配置版本" });
   await revealPrimary(mobilePage, rollbackButton, "mobile enabled 回退");
   await shotScrolled(mobilePage, "mobile-writing-enabled-fixed");
 

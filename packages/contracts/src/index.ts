@@ -302,6 +302,10 @@ export {
 } from "./title-writing";
 export {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_LOST_BEFORE_SEND,
+  writingMembershipOutcome,
+  type WritingQuotaTransaction,
+  type WritingResumeQuotaCheck,
   TITLE_WRITING_RUN_KIND_DISABLED,
   settledSaveOutcome,
   type TitleCallFinish,

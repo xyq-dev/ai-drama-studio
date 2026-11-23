@@ -7,7 +7,7 @@ import {
   TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_STORED_PROVIDER_KEYS, TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS,
   adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema, adminVendorKeySchema, adminVendorSaveSchema, WRITING_MODEL_CHANNELS,
   type AdminVendorKey, type AdminVendorSave,
-  ANTHROPIC_WORKSPACE_ID_SHAPE, workspaceUpdateOf,
+  ANTHROPIC_WORKSPACE_ID_SHAPE, workspaceUpdateOf, isBailianWorkspaceId, isBailianPlanKey, BAILIAN_PLAN_KEY_MESSAGE,
   type AdminAuditView, type AdminLimitsUpdate, type AdminProviderUpdate, type TitleWritingProviderKey,
   type TitleWritingV1LeftOutProviderKey,
 } from "@ai-drama/contracts";
@@ -59,12 +59,16 @@ const vendorRecordSchema = z.object({
   channel: adminVendorSaveSchema.shape.channel,
   model: adminVendorSaveSchema.shape.model,
   apiKey: SECRET_SCHEMA,
-  workspaceId: providerSchema.shape.workspaceId,
+  workspaceId: adminVendorSaveSchema.shape.workspaceId,
 }).strict();
 export type VendorRecord = z.infer<typeof vendorRecordSchema>;
 const documentSchema = z.object({
   // Supplier drafts are separate from the saved/active runtime pair, including across service restarts.
-  vendors: z.partialRecord(adminVendorKeySchema, vendorRecordSchema).optional(),
+  vendors: z.partialRecord(adminVendorKeySchema, vendorRecordSchema).refine((records) =>
+    Object.entries(records).every(([vendor, record]) => record.workspaceId === undefined
+      || (vendor === "anthropic" && ANTHROPIC_WORKSPACE_ID_SHAPE.test(record.workspaceId))
+      || (vendor === "bailian" && isBailianWorkspaceId(record.workspaceId))),
+  ).optional(),
   active: settingsSchema,
   saved: settingsSchema,
   audit: z.array(z.object({
@@ -625,9 +629,11 @@ export class ModelConfigVault {
       };
       if (input.secretAction === "replace") next.apiKey = input.apiKey!;
       if (input.secretAction === "clear") next.apiKey = null;
-      const workspace = workspaceUpdateOf(input);
-      if (workspace === null) delete next.workspaceId;
-      else if (workspace !== "keep") next.workspaceId = workspace;
+      if (vendor === "bailian" && next.apiKey && isBailianPlanKey(next.apiKey)) {
+        throw new AdminConfigError(400, "ADMIN_CONFIG_BAILIAN_PLAN_KEY", BAILIAN_PLAN_KEY_MESSAGE);
+      }
+      if (input.workspaceAction === "replace") next.workspaceId = input.workspaceId!;
+      else if (workspaceUpdateOf(input) === null) delete next.workspaceId;
       doc.vendors ??= {};
       doc.vendors[vendor] = next;
       await this.persist(doc);

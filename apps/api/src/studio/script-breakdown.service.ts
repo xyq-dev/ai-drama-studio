@@ -278,7 +278,7 @@ export class ScriptBreakdownService {
       },
     });
     const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
-    const hold = await openInstalledHold(context, "writing", projectId);
+    const hold = await openInstalledHold(context, "writing", projectId, "script-breakdown");
     if (hold.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
     try {
     const created = await this.deps.store.createRun(run, {

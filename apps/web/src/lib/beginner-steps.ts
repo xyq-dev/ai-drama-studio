@@ -203,7 +203,7 @@ function listStates(list: ListFacts<Aggregate>): StepState[] {
 }
 
 export function stepStates(facts: BeginnerFacts): Record<StepKey, StepState> {
-  const story = facts.story ? revisionState(facts.story) : "not_started";
+  const story = revisionState(facts.story);
   const scriptStates = episodeNumbers(facts).map((no) => scriptState(facts.episodes.find((item) => item.episodeNo === no)));
   const script = facts.episodes.length === 0 ? "not_started" : combine(scriptStates);
   const anyScript = scriptStates.includes("done");

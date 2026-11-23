@@ -182,7 +182,7 @@ export function providerAnswer(url: string, value: unknown) {
 }
 
 /** A story plan candidate of the model double. Every text says it is the double's sample, not a model's writing. */
-export function fixtureStoryPlan(tag = "模型替身样例"): StoryPlanCandidate {
+export function fixtureStoryPlan(tag = "模型替身样例", count = 3): StoryPlanCandidate {
   return {
     schema: STORY_PLAN_SCHEMA,
     logline: `${tag}：夜班店员守住一份被改过的记录`,
@@ -190,7 +190,7 @@ export function fixtureStoryPlan(tag = "模型替身样例"): StoryPlanCandidate
     opposition: "店长能改时间",
     coreConflict: "解释会被当成承认",
     relationships: [{ name: "店员与店长", pressure: "店员不能供出同事" }],
-    episodes: ([1, 2, 3] as const).map((episodeNo) => ({
+    episodes: ([1, 2, 3, 4, 5, 6] as const).slice(0, count).map((episodeNo) => ({
       episodeNo, entryState: `${tag}·进入${episodeNo}`, goal: `目标${episodeNo}`, action: `行动${episodeNo}`, turn: `转折${episodeNo}`,
       result: `结果${episodeNo}`, handoff: `交接${episodeNo}`,
     })),
@@ -202,7 +202,7 @@ export function fixtureStoryPlan(tag = "模型替身样例"): StoryPlanCandidate
  * episode the prompt asks for (episodeNo 必须是 N).
  */
 export function fixtureCandidateFromPrompt(userPrompt: string): StoryPlanCandidate | EpisodeDraftCandidate {
-  if (userPrompt.includes("模式：故事策划")) return fixtureStoryPlan();
+  if (userPrompt.includes("模式：故事策划")) return fixtureStoryPlan(undefined, Number(/episodes 共 (\d+) 项/.exec(userPrompt)?.[1] ?? 3));
   const episodeNo = Number(/episodeNo 必须是 (\d)/.exec(userPrompt)?.[1] ?? "1");
   return fixtureEpisode(episodeNo);
 }

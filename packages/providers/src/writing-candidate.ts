@@ -60,6 +60,7 @@ export function newWritingCandidate(options: {
   idempotencyKey: string;
   mode: WritingCandidateMode;
   episodeId: string | null;
+  episodeCount?: number | undefined;
   providerKey: TitleWritingProviderKey;
   model: string;
   base: { sourceRevisionId: string | null; ifMatch: number };
@@ -77,6 +78,7 @@ export function newWritingCandidate(options: {
     mode: options.mode,
     episodeId: options.episodeId,
     episodeNo,
+    ...(options.episodeCount !== undefined && { episodeCount: options.episodeCount }),
     providerKey: options.providerKey,
     model: options.model,
     base: { ...options.base },
@@ -112,6 +114,7 @@ export function writingCandidateView(record: WritingCandidateRecord): WritingCan
     mode: record.input.mode,
     episodeId: record.input.episodeId,
     episodeNo: record.input.episodeNo,
+    episodeCount: record.input.episodeCount ?? 3,
     providerKey: record.input.providerKey,
     providerLabel: TITLE_WRITING_PROVIDER_LABELS[record.input.providerKey],
     model: record.input.model,
@@ -137,8 +140,8 @@ const SYSTEM = [
 
 export function buildWritingCandidatePrompt(input: WritingCandidateFrozenInput): { system: string; user: string } {
   const user = input.mode === "story"
-    ? buildStoryPlanInstruction(input.request as WritingCandidateStoryRequest, "online")
-    : buildEpisodeDraftInstruction(input.request as WritingCandidateEpisodeRequest, "online");
+    ? buildStoryPlanInstruction(input.request as WritingCandidateStoryRequest, "online", input.episodeCount)
+    : buildEpisodeDraftInstruction(input.request as WritingCandidateEpisodeRequest, "online", input.episodeCount);
   return { system: SYSTEM, user };
 }
 
@@ -146,8 +149,8 @@ export function buildWritingCandidatePrompt(input: WritingCandidateFrozenInput):
 export function validateWritingCandidate(content: string, input: WritingCandidateFrozenInput):
   { ok: true; output: WritingCandidateOutput } | { ok: false; code: string } {
   try {
-    const imported = parseWritingImport(new TextEncoder().encode(content), { mode: input.mode, episodeNo: input.episodeNo });
-    formatWritingImport(imported);
+    const imported = parseWritingImport(new TextEncoder().encode(content), input);
+    formatWritingImport(imported, input.episodeCount);
     return { ok: true, output: imported };
   } catch (error) {
     if (error instanceof DomainError) {
@@ -215,7 +218,7 @@ export class WritingCandidateExecutor {
       await store.closeUnsent(workspaceId, requestId, this.executorId, "invalid_input", this.now().toISOString());
       return;
     }
-    const schema = writingCandidateJsonSchema(input.mode, input.episodeNo);
+    const schema = writingCandidateJsonSchema(input.mode, input.episodeNo, input.episodeCount);
     const submittedAt = this.now();
     const submitted = await store.markSubmitted(workspaceId, requestId, this.executorId, submittedAt.toISOString(),
       new Date(submittedAt.getTime() + (this.deps.leaseMs ?? WRITING_CANDIDATE_LEASE_MS)).toISOString());
@@ -289,7 +292,9 @@ export class InMemoryWritingCandidateStore implements WritingCandidateStore {
     const target = [...this.targets.entries()].find(([key, value]) => key.startsWith(`${record.projectId}:`) && value.episodeId === record.input.episodeId);
     if (!target) return Promise.resolve({ kind: "target_invalid", reason: "episode" });
     const [, found] = target;
-    if (record.input.mode === "story" && found.episodeCount !== 3) return Promise.resolve({ kind: "target_invalid", reason: "episode_plan" });
+    if ((record.input.mode === "story" || record.input.episodeCount !== undefined) && found.episodeCount !== (record.input.episodeCount ?? 3)) {
+      return Promise.resolve({ kind: "target_invalid", reason: "episode_plan" });
+    }
     if (record.input.mode === "episode" && found.episodeNo !== record.input.episodeNo) return Promise.resolve({ kind: "target_invalid", reason: "episode" });
     const source = record.input.base.sourceRevisionId;
     if (source !== null && !found.revisions.includes(source)) return Promise.resolve({ kind: "target_invalid", reason: "base_revision" });

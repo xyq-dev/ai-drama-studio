@@ -184,7 +184,7 @@ export class ShortSequelAiService {
     requestHash: string, expectedAttemptId: string | null, confirmUncertainAttemptId: string | null): Promise<Result> {
     const now = this.now();
     const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
-    const hold = await openInstalledHold(actor, "writing", projectId);
+    const hold = await openInstalledHold(actor, "writing", projectId, "short-sequel-ai");
     if (hold.denied) return { status: 402, body: { error: { code: hold.denied.code, message: hold.denied.message } } };
     try {
     const created = await this.deps.store.createShortSequel({ id: randomUUID(), workspaceId: this.deps.workspaceId, projectId,

@@ -10,6 +10,8 @@ import {
   storedTitleWritingProviderLabel,
   TITLE_WRITING_PROVIDER_PREFERENCE,
   BAILIAN_WRITING_PROVIDER_KEY,
+  isBailianPlanKey,
+  QWEN_PLUS_MODEL,
   isActiveTitleWritingProvider,
   sdkWritingKind,
   isLegacyDeepseekRun,
@@ -39,7 +41,7 @@ import {
 } from "@ai-drama/providers";
 import type { StudioContext } from "./studio.service";
 import { platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
-import { installedCreatorMembership, openCreatorHold } from "../membership/creator-task-guard";
+import { installedCreatorMembership, openCreatorHold, writingResumeQuotaCheck } from "../membership/creator-task-guard";
 import type { MembershipStore } from "../membership/membership-store";
 
 export interface TitleWritingDependencies {
@@ -77,9 +79,9 @@ export interface TitleWritingDependencies {
     apiKey?: string;
     providerAdapter?: "bailian.ai-sdk.v1" | "deepseek.ai-sdk.v1";
   } | null>;
-  /** Persists the credential reference for a new run before the engine sends. */
   /** Present after the membership migration. Creators are checked before a new run is stored or sent. */
   creatorMembership?: MembershipStore;
+  /** Persists the credential reference for a new run before the engine sends. */
   featureWritingCommit?: (input: {
     runId: string;
     projectId: string;
@@ -166,6 +168,7 @@ export class TitleWritingService {
     const locked = await this.deps.featureWritingLock?.() ?? null;
     if (!locked?.apiKey || !locked.model) return null;
     if (locked.providerKey === BAILIAN_WRITING_PROVIDER_KEY) {
+      if (isBailianPlanKey(locked.apiKey) || locked.model !== QWEN_PLUS_MODEL) return null;
       return await bailianStorageReady(this.deps.store) ? { providerKey: locked.providerKey, model: locked.model } : null;
     }
     if (!isActiveTitleWritingProvider(locked.providerKey)) return null;
@@ -303,7 +306,10 @@ export class TitleWritingService {
       // New requests only: a retired provider is refused here, never moved to another provider.
       // Bailian is a new stored key and is not in the process-provider table.
       if (providerKey === BAILIAN_WRITING_PROVIDER_KEY) {
-        if (!locked?.apiKey || !model) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: ["FEATURE_WRITING_KEY"] });
+        if (!locked?.apiKey || isBailianPlanKey(locked.apiKey)) {
+          return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: ["FEATURE_WRITING_KEY"] });
+        }
+        if (model !== QWEN_PLUS_MODEL) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
         if (!await bailianStorageReady(this.deps.store)) {
           return failure(503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: ["20261122000100_writing_provider_bailian"] });
         }
@@ -353,7 +359,7 @@ export class TitleWritingService {
     const membership = this.deps.creatorMembership ?? installedCreatorMembership()?.store;
     const hold = previous
       ? { denied: null, holdId: null as string | null, keep() {}, async release() {} }
-      : await openCreatorHold(membership, this.deps.workspaceId, context, "writing", projectId);
+      : await openCreatorHold(membership, this.deps.workspaceId, context, "writing", projectId, "title-writing");
     if (hold.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
     let created;
     try {
@@ -470,7 +476,9 @@ export class TitleWritingService {
     const legacy = isLegacyDeepseekRun(existing.run.input);
     const provider = providerConfigFor(this.deps.providers, runProvider);
     const confirmed = parsed.data.confirmUncertainCallIds;
+    const quota = writingResumeQuotaCheck(this.deps.creatorMembership ?? installedCreatorMembership()?.store, existing.run, "title-writing");
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
+      ...(quota ? { reserveForSend: quota } : {}),
       resumeKey: context.idempotencyKey,
       requestHash: hashTitleResume(runId, confirmed),
       confirmedCallIds: confirmed,
@@ -481,6 +489,7 @@ export class TitleWritingService {
         || (provider !== null && provider.ok && provider.models.includes(existing.run.input.model))
       ),
     }, this.now().toISOString());
+    if (prepared.kind === "quota_denied") return failure(402, prepared.denial.code, { message: prepared.denial.message });
     if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
       if (prepared.kind === "not_found") return failure(404, "NOT_FOUND");

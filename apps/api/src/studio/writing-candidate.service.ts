@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  TITLE_WRITING_MAX_EPISODES,
   TITLE_WRITING_PROVIDER_KEYS,
   TITLE_WRITING_PROVIDER_PREFERENCE,
   writingCandidateStartSchema,
@@ -18,6 +19,8 @@ import {
 } from "@ai-drama/providers";
 import { platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import type { StudioContext } from "./studio.service";
+import { installedCreatorMembership, openCreatorHold } from "../membership/creator-task-guard";
+import type { MembershipStore } from "../membership/membership-store";
 
 export interface WritingCandidateDependencies {
   workspaceId: string;
@@ -30,8 +33,9 @@ export interface WritingCandidateDependencies {
   defaultProvider: TitleWritingProviderKey | null;
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: WritingCandidateStore;
+  creatorMembership?: MembershipStore;
   executor: Pick<WritingCandidateExecutor, "workspaceId" | "executorId" | "execute" | "maintain">;
-  projects: Pick<RuntimeStore, "getProject">;
+  projects: Pick<RuntimeStore, "getProject" | "getProjectEpisodePlan">;
   /** The shared rolling 24 h cap of every paid text call of the workspace. */
   maxCallsPerDay: number;
   /** Whether the model console holds saved settings waiting for the API restart (options only; never gates a send). */
@@ -187,13 +191,13 @@ export class WritingCandidateService {
     // recoverable and must never create or send a second request. Same key with another input is refused.
     const previous = await this.deps.store.findByKey(this.deps.workspaceId, context.actorId, key);
     const now = this.now();
-    const build = (providerKey: TitleWritingProviderKey, model: string) => newWritingCandidate({
-      workspaceId: this.deps.workspaceId, projectId, actorId: context.actorId, idempotencyKey: key, mode: start.mode, episodeId,
+    const build = (providerKey: TitleWritingProviderKey, model: string, episodeCount: number | undefined) => newWritingCandidate({
+      workspaceId: this.deps.workspaceId, projectId, actorId: context.actorId, idempotencyKey: key, mode: start.mode, episodeId, episodeCount,
       providerKey, model, base: start.base, request: start.request, confirmedRequestId: start.confirmUncertainRequestId ?? null,
       executorId: this.deps.executor.executorId, now,
     });
     if (previous) {
-      const replay = build(start.providerKey ?? previous.input.providerKey, start.model ?? previous.input.model);
+      const replay = build(start.providerKey ?? previous.input.providerKey, start.model ?? previous.input.model, previous.input.episodeCount);
       return previous.projectId === projectId && replay.requestHash === previous.requestHash
         ? this.found(previous, projectId) : failure(409, "IDEMPOTENCY_KEY_REUSED");
     }
@@ -206,34 +210,42 @@ export class WritingCandidateService {
     if (!await this.deps.store.providerStorageReady(providerKey)) {
       return failure(503, "WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [CANDIDATE_PROVIDER_MIGRATION_GAP] });
     }
-    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
-    const hold = await openInstalledHold(context, "writing", projectId);
+    const { episodeCount } = await this.deps.projects.getProjectEpisodePlan(this.deps.workspaceId, projectId);
+    const longProject = episodeCount > TITLE_WRITING_MAX_EPISODES;
+    if (start.mode === "story" ? longProject : start.request.episodeNo > (longProject ? 3 : episodeCount)) {
+      return failure(409, "WRITING_CANDIDATE_TARGET_INVALID", { reason: "episode_plan" });
+    }
+    const membership = this.deps.creatorMembership ?? installedCreatorMembership()?.store;
+    const hold = await openCreatorHold(membership, this.deps.workspaceId, context, "writing", projectId, "writing-candidate");
     if (hold.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
     try {
-    const created = await this.deps.store.create(build(providerKey, model), {
-      sinceIso: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
-      maxCallsPerDay: this.deps.maxCallsPerDay,
-    });
-    switch (created.kind) {
-      case "created": {
-        hold.keep();
-        if (hold.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.record.id);
-        this.schedule(created.record.id);
-        return this.found(created.record, projectId, 202);
+      const created = await this.deps.store.create(build(providerKey, model, episodeCount), {
+        sinceIso: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+        maxCallsPerDay: this.deps.maxCallsPerDay,
+      });
+      switch (created.kind) {
+        case "created": {
+          hold.keep();
+          if (hold.holdId) await membership?.bindTask(hold.holdId, created.record.id);
+          this.schedule(created.record.id);
+          return this.found(created.record, projectId, 202);
+        }
+        case "existing":
+          // A concurrent request with this key already owns the same quota reservation.
+          hold.keep();
+          return this.found(created.record, projectId);
+        case "conflict":
+          if (hold.holdId && (await this.deps.store.findByKey(this.deps.workspaceId, context.actorId, key))?.projectId === projectId) hold.keep();
+          return failure(409, "IDEMPOTENCY_KEY_REUSED");
+        case "active":
+          return failure(409, "WRITING_CANDIDATE_ACTIVE", { requestId: created.requestId });
+        case "needs_confirmation":
+          return failure(409, "WRITING_CANDIDATE_NEEDS_CONFIRMATION", { requestId: created.requestId });
+        case "target_invalid":
+          return failure(409, "WRITING_CANDIDATE_TARGET_INVALID", { reason: created.reason });
+        default:
+          return failure(429, "WRITING_CANDIDATE_DAILY_CAP");
       }
-      case "existing":
-        return this.found(created.record, projectId);
-      case "conflict":
-        return failure(409, "IDEMPOTENCY_KEY_REUSED");
-      case "active":
-        return failure(409, "WRITING_CANDIDATE_ACTIVE", { requestId: created.requestId });
-      case "needs_confirmation":
-        return failure(409, "WRITING_CANDIDATE_NEEDS_CONFIRMATION", { requestId: created.requestId });
-      case "target_invalid":
-        return failure(409, "WRITING_CANDIDATE_TARGET_INVALID", { reason: created.reason });
-      default:
-        return failure(429, "WRITING_CANDIDATE_DAILY_CAP");
-    }
     } finally {
       await hold.release();
     }

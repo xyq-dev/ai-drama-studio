@@ -121,6 +121,22 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("reads historical Bailian subscription credentials but requires replacement or clearing to save", async () => {
+    const h = await harness();
+    const current = { revision: 3, model: "qwen-plus", channel: "bailian-cn", apiKey: "sk-sp-fixture-legacy" };
+    await seal(h.path, h.masterKey, { saved: h.settings, active: h.settings, vendors: { bailian: current }, audit: [] });
+    const vault = await h.reopen();
+    const original = await fs.readFile(h.path);
+    const input = { expectedRevision: 3, model: "qwen-plus", channel: "bailian-cn" };
+    await expect(vault.saveVendor("bailian", { ...input, secretAction: "keep" })).rejects.toMatchObject({ code: "ADMIN_CONFIG_BAILIAN_PLAN_KEY" });
+    expect(await fs.readFile(h.path)).toEqual(original);
+    expect((await vault.read()).vendors?.bailian).toEqual(current);
+    await vault.saveVendor("bailian", { ...input, secretAction: "replace", apiKey: "sk-regular-fixture" });
+    const doc = await vault.read();
+    expect(doc.vendors?.bailian).toMatchObject({ revision: 4, apiKey: "sk-regular-fixture" });
+    expect(doc.active).toEqual(h.settings);
+  });
+
   it("encrypts all saved settings, uses 600 files, and restores them after restart", async () => {
     const h = await harness();
     await h.vault.updateProvider("anthropic", update());

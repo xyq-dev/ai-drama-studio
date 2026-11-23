@@ -35,6 +35,7 @@ import {
   type AutoCreationStore,
   type AutoResumeBlock,
   type AutoResumePreparation,
+  type AutoResumeRequest,
   type AutoUserRevisePreparation,
   type AutoReviewOutput,
   type AutoRunBundle,
@@ -77,7 +78,7 @@ import {
   type WritingProviderConfig,
   type WritingTransport,
 } from "./text-writing";
-import { TITLE_WRITING_LOST_AFTER_SEND, TITLE_WRITING_LOST_BEFORE_SEND } from "./title-writing-engine";
+import { TITLE_WRITING_LOST_AFTER_SEND, TITLE_WRITING_LOST_BEFORE_SEND, writingMembershipOutcome } from "./title-writing-engine";
 
 export const AUTO_CREATION_LEASE_MS = TEXT_WRITING_TIMEOUT_MS * 2;
 
@@ -412,17 +413,11 @@ export class AutoCreationEngine {
 
   private async finish(runId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null,
     quality?: Exclude<AutoCreationQuality, "pending">): Promise<false> {
-    if (this.deps.onMembershipSignal) {
-      const bundle = await this.deps.store.getRunById(this.workspaceId, runId);
-      const states = bundle?.stages.map((stage) => stage.state) ?? [];
-      const outcome = states.includes("unknown")
-        ? "unknown"
-        : states.some((item) => item === "completed" || item === "rejected" || item === "submitted")
-          ? "sent"
-          : "unsent";
-      await this.deps.onMembershipSignal({ runId, outcome }).catch(() => undefined);
+    const bundle = this.deps.onMembershipSignal ? await this.deps.store.getRunById(this.workspaceId, runId) : null;
+    const finished = await this.deps.store.finishRun(this.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString(), quality);
+    if (finished && bundle && this.deps.onMembershipSignal) {
+      await this.deps.onMembershipSignal({ runId, outcome: writingMembershipOutcome(bundle.calls) }).catch(() => undefined);
     }
-    await this.deps.store.finishRun(this.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString(), quality);
     return false;
   }
 
@@ -472,7 +467,7 @@ export class AutoCreationEngine {
     // Research uses the saved catalog. Outline and revisions follow their frozen run's contracts.
     const schema = autoCreationJsonSchema(prompt.kind, run.input.episodeCount, prompt.kind === "research" ? researchMode : null,
       prompt.kind === "research" ? context.referenceCatalog ?? null : null, prompt.revisionReferences,
-      autoCreationWritesStoryProse(run.input.promptVersion), Boolean(userBrief));
+      autoCreationWritesStoryProse(run.input.promptVersion), Boolean(userBrief), run.input.promptVersion);
     const request = {
       model: run.input.model,
       system: prompt.system,
@@ -945,7 +940,7 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     return "saved";
   }
 
-  async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation> {
+  async prepareResume(workspaceId: string, projectId: string, runId: string, request: AutoResumeRequest, nowIso: string): Promise<AutoResumePreparation> {
     const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
     if (!run) return { kind: "not_found" };
     const previous = this.resumes.find((item) => item.runId === runId && item.key === request.resumeKey);
@@ -966,6 +961,10 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     const sends = redo.some((stage) => stage.stageKey !== "sources") || stages.some((stage) => stage.state === "pending" && stage.stageKey !== "sources");
     if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
     if (sends && run.callsUsed >= run.callCap) return { kind: "budget_exhausted" };
+    if (sends && request.reserveForSend) {
+      const denial = await request.reserveForSend();
+      if (denial) return { kind: "quota_denied", denial };
+    }
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash });
     for (const stage of redo) {
       delete stage.rejectionDiagnostic;

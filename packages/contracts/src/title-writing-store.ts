@@ -83,6 +83,15 @@ export interface TitleCallRecord {
   finishedAt: string | null;
 }
 
+export const TITLE_WRITING_LOST_BEFORE_SEND = "executor_lost_before_send";
+
+export function writingMembershipOutcome(calls: readonly Pick<TitleCallRecord, "state" | "errorCode">[]): "unsent" | "unknown" | "sent" {
+  if (calls.some(call => call.state === "unknown" || call.state === "submitted")) return "unknown";
+  const sent = calls.some(call => call.state === "completed" || (call.state === "rejected"
+    && call.errorCode !== TITLE_WRITING_CANCELED_BEFORE_SEND && call.errorCode !== TITLE_WRITING_LOST_BEFORE_SEND));
+  return sent ? "sent" : "unsent";
+}
+
 export interface TitleRunBundle {
   run: TitleRunRecord;
   steps: TitleStepRecord[];
@@ -156,7 +165,15 @@ export interface TitleCallFinish {
  * conflict: a script breakdown's frozen scene/shot set changed; no resume receipt or new call is created.
  * provider_unconfigured: the resume would send a call again but the run's provider or model cannot send; nothing changes.
  */
+/** The database passes its locked run transaction into the quota check. In-memory stores omit it. */
+export interface WritingQuotaTransaction {
+  query<R extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>;
+}
+export type WritingQuotaDenial = { code: string; message: string };
+export type WritingResumeQuotaCheck = (transaction?: WritingQuotaTransaction) => Promise<WritingQuotaDenial | null>;
+
 export type TitleResumePreparation =
+  | { kind: "quota_denied"; denial: WritingQuotaDenial }
   | { kind: "ok" | "replayed"; bundle: TitleRunBundle }
   | { kind: "not_resumable" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "active" | "active_cap" | "not_found" | "source_changed" | "conflict" | "provider_unconfigured" };
 
@@ -172,6 +189,7 @@ export interface TitleResumeRequest {
    * or a step was never reserved); a resume that only saves a stored answer needs no provider. Absent means ready.
    */
   providerReady?: boolean;
+  reserveForSend?: WritingResumeQuotaCheck;
 }
 
 /** What a breakdown start reads, in one consistent snapshot, before anything is created or sent. */

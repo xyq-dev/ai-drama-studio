@@ -295,7 +295,7 @@ export class RealMediaService {
         }else if(text!==snapshot.sourceText)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Saved source text changed; obtain a new quote");
       }
       const feature: "video" | "voice" | "image" = snapshot.capability.startsWith("video") ? "video" : snapshot.capability === "audio.tts" ? "voice" : "image";
-      const opened = await openInstalledHold(context, feature, projectId);
+      const opened = await openInstalledHold(context, feature, projectId, routeKey);
       holdId = opened.holdId;
       if (opened.denied) throw new PersistenceError("MEMBERSHIP_DENIED", opened.denied.message);
       return {workspaceId:this.options.workspaceId,projectId,sourceShotRevisionId:shotRevisionId,type:realMediaJobKind(snapshot.capability),

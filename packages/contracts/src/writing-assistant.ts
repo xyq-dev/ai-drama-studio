@@ -12,7 +12,7 @@ export const WRITING_IMPORT_MAX_BYTES = 48_000;
 export const WRITING_BODY_MAX_CHARS = 20_000;
 export const WRITING_NOTE_MAX_CHARS = 1_000;
 
-const episodeNoSchema = z.union([z.literal(1), z.literal(2), z.literal(3)]);
+const episodeNoSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]);
 
 function text(min: number, max: number) {
   return z.string().min(min).max(max).refine((value) => !value.includes("\u0000"), "文本含有空字符");
@@ -40,11 +40,11 @@ export const storyPlanCandidateSchema = z.object({
   opposition: text(1, 300),
   coreConflict: text(1, 400),
   relationships: z.array(relationshipSchema).min(1).max(6),
-  episodes: z.array(storyEpisodeSchema).length(3),
+  episodes: z.array(storyEpisodeSchema).min(1).max(6),
 }).strict().superRefine((value, context) => {
   const numbers = new Set(value.episodes.map((episode) => episode.episodeNo));
-  if (numbers.size !== 3 || ![1, 2, 3].every((episodeNo) => numbers.has(episodeNo as 1 | 2 | 3))) {
-    context.addIssue({ code: "custom", message: "三集编号必须是 1、2、3 且不重复" });
+  if (numbers.size !== value.episodes.length || value.episodes.some((episode) => episode.episodeNo > numbers.size)) {
+    context.addIssue({ code: "custom", message: "分集编号必须从 1 开始、连续且不重复" });
   }
 });
 export type StoryPlanCandidate = z.infer<typeof storyPlanCandidateSchema>;
@@ -56,15 +56,9 @@ const sceneSchema = z.object({
   sound: text(0, 120),
 }).strict();
 
-/**
- * An episode draft may belong to any episode a project can have (1–6). Each reader still requires the exact episode
- * it asked for; the story plan above stays three episodes.
- */
-const draftEpisodeNoSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]);
-
 export const episodeDraftCandidateSchema = z.object({
   schema: z.literal(EPISODE_DRAFT_SCHEMA),
-  episodeNo: draftEpisodeNoSchema,
+  episodeNo: episodeNoSchema,
   title: text(1, 80),
   screenplay: text(1, 12_000),
   scenes: z.array(sceneSchema).min(1).max(12),

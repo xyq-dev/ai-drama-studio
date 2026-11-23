@@ -1,10 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_LOST_BEFORE_SEND,
+  writingMembershipOutcome,
   TITLE_WRITING_RUN_KIND_DISABLED,
   frozenProviderAdapter,
   sdkWritingKind,
   isLegacyDeepseekRun,
+  isBailianPlanKey,
+  QWEN_PLUS_MODEL,
   settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
@@ -98,7 +102,7 @@ export const TITLE_WRITING_MAX_CALLS_PER_DAY_DEFAULT = 30;
 export const TITLE_WRITING_MAX_ACTIVE_RUNS_DEFAULT = 1;
 /** The executor lease covers the capped send time twice over. */
 export const TITLE_WRITING_LEASE_MS = TEXT_WRITING_TIMEOUT_MS * 2;
-export const TITLE_WRITING_LOST_BEFORE_SEND = "executor_lost_before_send";
+export { TITLE_WRITING_LOST_BEFORE_SEND, writingMembershipOutcome };
 export const TITLE_WRITING_LOST_AFTER_SEND = "executor_lost";
 const RUN_KINDS: readonly TitleRunKind[] = ["title", "script_breakdown"];
 
@@ -446,17 +450,11 @@ export class TitleWritingEngine {
   }
 
   private async finish(runId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null): Promise<false> {
-    if (this.deps.onMembershipSignal) {
-      const bundle = await this.deps.store.getRunById(this.deps.workspaceId, runId);
-      const states = bundle?.calls.map((call) => call.state) ?? [];
-      const outcome = states.includes("unknown")
-        ? "unknown"
-        : states.some((item) => item === "completed" || item === "rejected" || item === "submitted")
-          ? "sent"
-          : "unsent";
-      await this.deps.onMembershipSignal({ runId, outcome }).catch(() => undefined);
+    const bundle = this.deps.onMembershipSignal ? await this.deps.store.getRunById(this.deps.workspaceId, runId) : null;
+    const finished = await this.deps.store.finishRun(this.deps.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString());
+    if (finished && bundle && this.deps.onMembershipSignal) {
+      await this.deps.onMembershipSignal({ runId, outcome: writingMembershipOutcome(bundle.calls) }).catch(() => undefined);
     }
-    await this.deps.store.finishRun(this.deps.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString());
     return false;
   }
 
@@ -586,6 +584,9 @@ export class TitleWritingEngine {
     const { run } = bundle;
     const feature = await this.deps.featureCredential?.({ id: run.id, providerKey: run.input.providerKey, model: run.input.model }) ?? null;
     if (!feature || !feature.apiKey || !feature.models.includes(run.input.model) || !this.deps.sdkFetch) {
+      return this.finish(runId, "needs_attention", "provider_unconfigured");
+    }
+    if (kind === "bailian" && (isBailianPlanKey(feature.apiKey) || run.input.model !== QWEN_PLUS_MODEL)) {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
     const titleInput = titleInputOf(run);
@@ -1079,6 +1080,10 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     if (isScriptBreakdownInput(run.input)) {
       if (!this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
       if (!this.breakdownSceneSetCurrent(run.input)) return { kind: "conflict" };
+    }
+    if (sends && request.reserveForSend) {
+      const denial = await request.reserveForSend();
+      if (denial) return { kind: "quota_denied", denial };
     }
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash, confirmedCallIds: [...request.confirmedCallIds].sort(), createdAt: nowIso });
     for (const step of redo) Object.assign(step, { state: "pending", updatedAt: nowIso });

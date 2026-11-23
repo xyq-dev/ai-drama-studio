@@ -1,3 +1,4 @@
+import type { TitleRunRecord, WritingResumeQuotaCheck } from "@ai-drama/contracts";
 import { creatorAccountIdFromActor, type MembershipFeature } from "@ai-drama/domain";
 import type { MembershipStore, ReserveResult } from "./membership-store";
 
@@ -30,9 +31,10 @@ export async function openInstalledHold(
   context: CreatorTaskContext,
   feature: MembershipFeature,
   projectId: string,
+  operation: string,
 ): Promise<OpenCreatorHold> {
   if (!installed) return noopHold();
-  return openCreatorHold(installed.store, installed.workspaceId, context, feature, projectId);
+  return openCreatorHold(installed.store, installed.workspaceId, context, feature, projectId, operation);
 }
 
 /** Reserve and keep the hold. Call only when a new task is about to be sent. */
@@ -40,8 +42,9 @@ export async function acceptCreatorTask(
   context: CreatorTaskContext,
   feature: MembershipFeature,
   projectId: string,
+  operation: string,
 ): Promise<{ code: string; message: string } | null> {
-  const hold = await openInstalledHold(context, feature, projectId);
+  const hold = await openInstalledHold(context, feature, projectId, operation);
   if (hold.denied) return hold.denied;
   hold.keep();
   return null;
@@ -53,6 +56,7 @@ export async function openCreatorHold(
   context: CreatorTaskContext,
   feature: MembershipFeature,
   projectId: string,
+  operation: string,
 ): Promise<OpenCreatorHold> {
   const accountId = creatorAccountIdFromActor(context.actorId);
   const key = context.idempotencyKey;
@@ -63,8 +67,8 @@ export async function openCreatorHold(
     accountId,
     feature,
     idempotencyKey: key,
+    operation,
     projectId,
-    taskKey: key,
   });
   if (!reserved.ok) return { denied: { code: reserved.code, message: reserved.message }, holdId: null, keep() {}, async release() {} };
   if ("skipped" in reserved) return { denied: null, holdId: null, keep() {}, async release() {} };
@@ -76,5 +80,21 @@ export async function openCreatorHold(
     async release() {
       if (!kept) await store.release(reserved.holdId);
     },
+  };
+}
+
+/** A resumed run uses its original creator and reservation, including holds created before operation names were stored. */
+export function writingResumeQuotaCheck(
+  store: MembershipStore | undefined,
+  run: Pick<TitleRunRecord, "id" | "workspaceId" | "projectId" | "actorId" | "idempotencyKey">,
+  operation: "title-writing" | "auto-creation",
+): WritingResumeQuotaCheck | undefined {
+  const accountId = creatorAccountIdFromActor(run.actorId);
+  if (!store || !accountId) return undefined;
+  return async transaction => {
+    const result = await store.reserve(run.workspaceId, {
+      accountId, feature: "writing", projectId: run.projectId, taskKey: run.id, idempotencyKey: run.idempotencyKey, operation,
+    }, transaction);
+    return result.ok ? null : { code: result.code, message: result.message };
   };
 }

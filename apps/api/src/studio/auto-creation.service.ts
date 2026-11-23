@@ -53,7 +53,11 @@ import { asProof, platformCreationAllowed, operatorConfigured, type OperatorProo
 import type { StudioContext } from "./studio.service";
 import { PROVIDER_MIGRATION_GAP } from "./title-writing.service";
 
+import { installedCreatorMembership, openCreatorHold, writingResumeQuotaCheck } from "../membership/creator-task-guard";
+import type { MembershipStore } from "../membership/membership-store";
+
 export interface AutoCreationDependencies {
+  creatorMembership?: MembershipStore;
   workspaceId: string;
   /** Title writing is active (its switch and production authorization) and AUTO_CREATION_ENABLED is true. */
   enabled: boolean;
@@ -341,8 +345,8 @@ export class AutoCreationService {
       // still takes part in the hash, so changed content under the key stays a conflict.
       ...(replayed ? { versions: { promptVersion: replayed.promptVersion, checksVersion: replayed.checksVersion } } : {}),
     });
-    const { openInstalledHold, installedCreatorMembership } = await import("../membership/creator-task-guard");
-    const hold = previous ? null : await openInstalledHold(context, "writing", projectId);
+    const membership = this.deps.creatorMembership ?? installedCreatorMembership()?.store;
+    const hold = previous ? null : await openCreatorHold(membership, this.deps.workspaceId, context, "writing", projectId, "auto-creation");
     if (hold?.denied) return failure(402, hold.denied.code, { message: hold.denied.message });
     try {
       const created = await this.deps.store.createRun(run, autoCreationInitialStageKeys(plan.episodeCount), {
@@ -361,7 +365,7 @@ export class AutoCreationService {
       if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
       if (created.kind === "created") {
         hold?.keep();
-        if (hold?.holdId) await installedCreatorMembership()?.store.bindTask(hold.holdId, created.bundle.run.id);
+        if (hold?.holdId) await membership?.bindTask(hold.holdId, created.bundle.run.id);
         this.schedule(created.bundle.run.id);
       }
       return this.found(created.bundle, created.kind === "created" ? 201 : 200);
@@ -501,7 +505,9 @@ export class AutoCreationService {
     // A stopped run is not running, so its saved stages cannot change before the store decides; a replayed key is
     // still answered first. A run final for good (story_too_large) is refused by the store itself.
     const block = autoResumeBlock(existing, { researchFetch: this.deps.research.fetchEnabled });
+    const quota = writingResumeQuotaCheck(this.deps.creatorMembership ?? installedCreatorMembership()?.store, existing.run, "auto-creation");
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
+      ...(quota ? { reserveForSend: quota } : {}),
       resumeKey: context.idempotencyKey,
       requestHash: hashAutoResume(runId, confirmed),
       confirmedCallIds: confirmed,
@@ -509,6 +515,7 @@ export class AutoCreationService {
       providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(input.model),
       blocked: block === "prompt_too_large" || block === "research_fetch_unavailable" || block === "research_sources_missing",
     }, this.now().toISOString());
+    if (prepared.kind === "quota_denied") return failure(402, prepared.denial.code, { message: prepared.denial.message });
     if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
       if (prepared.kind === "not_found") return failure(404, "NOT_FOUND");

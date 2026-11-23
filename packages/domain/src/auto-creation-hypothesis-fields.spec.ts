@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
+  AUTO_CREATION_PROMPT_VERSION,
+  AUTO_CREATION_CHECKS_VERSION,
+  AUTO_CREATION_CHECKS_V17,
+  AUTO_CREATION_PROMPT_V16,
+  autoCreationJsonSchema,
   autoCreationConstraintsSchema,
   autoResearchAnswerSchema,
   autoResearchLimitedAnswerSchema,
   type AutoCreationFrozenInput,
+  type AutoResearch,
 } from "@ai-drama/contracts";
 import { OCEAN_ENGINE_ENTRY_URLS, collectSources } from "./auto-creation-sources";
 import { buildAutoCreationPrompt, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
@@ -139,5 +145,65 @@ describe("B. the strict contract is unchanged: one extra key refuses the whole a
       expect(validateAutoStageOutput("research", answer(mode, [...FOUR.slice(0, 3), fourth]), input(), context()), mode)
         .toMatchObject({ ok: false, code: "invalid_output", field, category });
     }
+  });
+});
+
+describe("limited research for a single episode", () => {
+  const current = { ...input(), promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION };
+  const label = "待验证：1 集、约 1 分钟的故事是否能让观众理解司机的选择？";
+
+  it("preserves the prior counting rules and audit versions for a stored run", () => {
+    const legacy = { ...current, promptVersion: AUTO_CREATION_PROMPT_V16, checksVersion: AUTO_CREATION_CHECKS_V17 };
+    const context = limitedContext();
+    expect(validateAutoStageOutput("research", fourthStatement(label), legacy, context)).toMatchObject({ ok: false, code: "unsourced_number" });
+    const valid = validateAutoStageOutput("research", answer("limited", FOUR), legacy, context);
+    expect(valid).toMatchObject({ ok: true, output: { serverRecord: { executedWith: { promptVersion: AUTO_CREATION_PROMPT_V16, checksVersion: AUTO_CREATION_CHECKS_V17 } } } });
+  });
+
+  it("continues with creative material and no invented hypothesis or direction reference", () => {
+    const context = limitedContext();
+    const result = validateAutoStageOutput("research", answer("limited", []), current, context);
+    expect(result).toMatchObject({ ok: true, output: { facts: [], observations: [], hypotheses: [], unverified: [] } });
+    const research = (result as { output: AutoResearch }).output;
+    const directions = buildAutoCreationPrompt("directions", current, { ...context, research });
+    expect(directions.user).toContain("没有研究编号时 evidenceIds 写 []");
+    expect(directions.user).not.toContain("H1");
+  });
+
+  it.each([
+    [AUTO_CREATION_PROMPT_VERSION, "limited", 0],
+    [AUTO_CREATION_PROMPT_VERSION, "sourced", 1],
+    [AUTO_CREATION_PROMPT_V16, "limited", 1],
+  ] as const)("keeps the schema, validation and prompt aligned for %s / %s", (promptVersion, mode, minimum) => {
+    const frozen = { ...current, promptVersion };
+    const context = mode === "limited" ? limitedContext() : sourcedContext();
+    const schema = autoCreationJsonSchema("research", 1, mode, context.referenceCatalog, undefined, true, false, promptVersion);
+    expect(schema.schema.properties).toMatchObject({ hypotheses: { minItems: minimum } });
+    expect(buildAutoCreationPrompt("research", frozen, context).user.includes("没有可验证的创作假设就写 []")).toBe(minimum === 0);
+    expect(validateAutoStageOutput("research", answer(mode, []), frozen, context).ok).toBe(minimum === 0);
+  });
+
+  const fourthStatement = (statement: string) => answer("limited", [...FOUR.slice(0, 3), { ...FOUR[3], statement }]);
+
+  it.each([
+    label, "1 集、约 1 分钟", "本剧共 1 集，每集约 1 分钟", "待验证：用 1 集和约 60 秒的剧本能否让观众理解结局？",
+  ])("keeps the work’s format as written in the fourth hypothesis: %s", (statement) => {
+    const result = validateAutoStageOutput("research", fourthStatement(statement), current, limitedContext());
+    expect(result.ok).toBe(true);
+    const research = (result as { output: AutoResearch }).output;
+    expect(research.hypotheses[3]?.statement).toBe(statement);
+    expect(research.unverified).toEqual([]);
+  });
+
+  it.each([
+    ["待验证：1 集、约 1 分钟的故事有七成观众喜欢。", "unsourced_number"],
+    ["本剧共 1 集，每集约 1 分钟，70% 的观众会留下。", "unsourced_number"],
+    ["观众通常观看 1 集、约 1 分钟的故事后退出。", "unsourced_number"],
+    ["待验证：2 集、约 1 分钟的故事是否能让观众理解司机的选择？", "constraint_violation"],
+    ["待验证：1 集、约 2 分钟的故事是否能让观众理解司机的选择？", "constraint_violation"],
+  ])("refuses a statistic, viewing habit or different work length: %s", (statement, code) => {
+    const result = validateAutoStageOutput("research", fourthStatement(statement), current, limitedContext());
+    expect(result).toMatchObject({ ok: false, code, field: "hypotheses[3].statement" });
+    expect(result).not.toHaveProperty("output");
   });
 });

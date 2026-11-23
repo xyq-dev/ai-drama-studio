@@ -253,6 +253,7 @@ export class StudioRuntime implements OnModuleDestroy {
             },
           },
           policy: {
+            bailianWritingStorageReady: () => titleStore.bailianStorageReady(),
             writingAllowlist: async (vendor) => {
               const settings = adminModels?.runtimeSettings();
               return settings && vendor === "openai" ? settings.providers.openai.models : null;
@@ -287,7 +288,6 @@ export class StudioRuntime implements OnModuleDestroy {
       sdkFetch: globalThis.fetch,
       maxCallsPerDay,
       allowedRunKinds,
-      onMembershipSignal: (event: { runId: string; outcome: "unsent" | "unknown" | "sent" }) => membership.noteRun(event),
       ...(featureConfig ? {
         featureCredential: async (run) => {
           const locked = await featureConfig!.credentialForTask("writing", workspaceId, run.id);
@@ -394,6 +394,7 @@ export class StudioRuntime implements OnModuleDestroy {
       defaultProvider,
       providers: titleProviders,
       store: candidateStore,
+      creatorMembership: membership,
       executor: new WritingCandidateExecutor({ workspaceId, store: candidateStore, providers: titleProviders, transport: createFetchTransport() }),
       projects: store,
       maxCallsPerDay,
@@ -410,13 +411,13 @@ export class StudioRuntime implements OnModuleDestroy {
       providers: titleProviders,
       transport: createFetchTransport(),
       maxCallsPerDay,
-      onMembershipSignal: (event) => membership.noteRun(event),
       ...(env.AUTO_CREATION_RESEARCH_FETCH ? { fetchPages: createResearchFetcher({ allowedHosts }), defaultResearchUrls: [...OCEAN_ENGINE_ENTRY_URLS] } : {}),
     });
     // Shared with RealMediaService below: options.media must use the same enabled sunburst config path.
     const mediaStore = new RealMediaStore(pool, realRuntime.receiptCipher ? { receiptCipher: realRuntime.receiptCipher } : {});
     const autoCreation = new AutoCreationService({
       workspaceId,
+      creatorMembership: membership,
       enabled: autoCreationEnabled,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
       siteOperator: siteLoginValid,

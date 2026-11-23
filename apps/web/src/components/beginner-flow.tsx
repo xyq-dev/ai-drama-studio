@@ -526,7 +526,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                 <p className="text-[15px] text-[#5F5D66]">审核只针对当前展示的这一集、这一个版本；其他集要分别打开检查。{textOnly
                   ? "系列作品只做文本：剧本不会拆成场景或镜头。"
                   : "剧本里写到的场面还不是场景或镜头记录，它们在「试一段」里单独建立。"}</p>
-                <ScriptPane projectId={projectId} projectVersion={project.version} episode={episode}
+                <ScriptPane projectId={projectId} projectVersion={project.version} episodeCount={episodeNumbers(facts).length} episode={episode}
                   storyCurrent={currentStoryRevision(stories?.items ?? [])} premise={project.premise} refreshEpoch={refreshEpoch}
                   onSaved={reloadBase} onStatus={onStatus} textOnly={textOnly}
                   onOpenScene={(id) => { if (textOnly) return; setSceneId(id); setStep("sample"); }} />
@@ -722,7 +722,7 @@ function ReadFailed({ onRetry }: { onRetry: () => void }) {
 function StepGuide({ step, state }: { step: StepKey; state: StepState }) {
   const text: Record<StepState, string> = {
     not_started: "上一步还没有完成，完成后这里就能开始。",
-    needs_input: step === "story" ? "在下方写下故事并「保存新版本」。若编辑器提供编剧助手，可先准备创作要求，再导入候选、比较后采纳到草稿；不支持的规格会在编辑器里说明。"
+    needs_input: step === "story" ? "可以直接写故事，也可以用编剧助手生成候选。确认正文后，点击「保存新版本」。"
       : step === "script" ? "这一集还没有剧本。可以在下方直接编写并保存；若编辑器提供编剧助手，也可以先生成候选再采纳。"
         : step === "cast" ? "添加主要角色，写下外貌、性格和关系，然后保存并提交审核。"
           : step === "sample" ? "选一个场景里的镜头，为它生成演示视频，再做单镜合成。"

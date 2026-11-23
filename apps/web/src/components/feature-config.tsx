@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  BAILIAN_PLAN_KEY_MESSAGE,
   FEATURE_KEYS,
   FEATURE_VENDOR_KEYS,
+  isBailianPlanKey,
   type FeatureCardView,
   type FeatureConfigView,
   type FeatureKey,
@@ -84,12 +86,19 @@ function pendingDraft(card: FeatureCardView): FeatureSlotView | null {
   );
 }
 
-type ChangeKind = "empty" | "saved" | "testing" | "failed" | "unknown" | "passed" | "enabled";
+const DRAFT_STATUS_LABEL = {
+  saved: "草稿未启用",
+  testing: "正在检测…",
+  failed: "检测未通过",
+  unknown: "结果未知",
+  passed: "检测通过",
+};
 
-function changeKind(card: FeatureCardView, slot: FeatureSlotView | null): ChangeKind {
-  if (!slot || slot.draftStatus === "blank") return "empty";
-  if (slot.draftStatus === "passed") return liveMatches(card, slot) ? "enabled" : "passed";
-  return slot.draftStatus;
+function formError(caught: unknown) {
+  return {
+    message: featureErrorCopy(caught),
+    code: caught instanceof FeatureApiError ? caught.code : undefined,
+  };
 }
 
 export function FeatureConfig() {
@@ -105,25 +114,43 @@ export function FeatureConfig() {
   const [replacing, setReplacing] = useState<Record<string, boolean>>({});
   const [editedModel, setEditedModel] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ message: string; code?: string; unknown?: boolean } | null>(
+    null,
+  );
   const [dialog, setDialog] = useState<"test" | "enable" | null>(null);
   const selectionVersion = useRef(0);
   const priorVendor = useRef<FeatureVendor | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  useModalKeyboard(editing, drawerRef, cancelEdit);
+  useModalKeyboard(editing && !dialog, drawerRef, cancelEdit);
   useModalKeyboard(Boolean(dialog), dialogRef, () => setDialog(null));
   const busyRef = useRef(false);
 
   useEffect(() => {
-    const modal = editing ? drawerRef.current : dialog ? dialogRef.current : null;
-    if (!modal) return;
-    const previous = document.activeElement;
-    modal.querySelector<HTMLElement>("button, select")?.focus();
+    if (!editing) return;
+    const opener = document.activeElement;
+    drawerRef.current?.querySelector<HTMLElement>("button")?.focus();
     return () => {
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
     };
-  }, [editing, dialog]);
+  }, [editing]);
+
+  useEffect(() => {
+    if (!dialog) return;
+    const trigger = document.activeElement;
+    dialogRef.current?.querySelector<HTMLElement>("button")?.focus();
+    return () => {
+      if (
+        trigger instanceof HTMLElement &&
+        trigger.isConnected &&
+        drawerRef.current?.contains(trigger)
+      ) {
+        trigger.focus();
+      } else {
+        drawerRef.current?.querySelector<HTMLElement>("button")?.focus();
+      }
+    };
+  }, [dialog]);
 
   useEffect(() => {
     if (gate !== "ready") return;
@@ -170,29 +197,39 @@ export function FeatureConfig() {
   const enteringKey = Boolean(
     slot && (replacingKey || (!slot.keyConfigured && !slot.vendorKeyConfigured)),
   );
+  const planKey =
+    feature === "writing" && selectedVendor === "bailian" && isBailianPlanKey(draftKey);
+  const keyError =
+    planKey || error?.code === "FEATURE_BAILIAN_PLAN_KEY" ? BAILIAN_PLAN_KEY_MESSAGE : null;
   const needsKey = Boolean(slot?.connected && enteringKey && draftKey.trim().length < 8);
-  const canSave = Boolean(slot?.connected && available && !busy && !needsKey);
+  const canSave = Boolean(slot?.connected && available && !busy && !needsKey && !keyError);
+  const savedStatus =
+    slot?.keyConfigured &&
+    slot.draftStatus !== "blank" &&
+    editedModel === null &&
+    model === slot.model &&
+    !replacingKey &&
+    !draftKey
+      ? slot.draftStatus
+      : null;
+  const needsTest =
+    savedStatus === "saved" || savedStatus === "failed" || savedStatus === "unknown";
   const canTest = Boolean(
-    slot?.connected &&
-    available &&
-    slot.keyConfigured &&
-    !editing &&
-    !busy &&
-    (slot.draftStatus === "saved" ||
-      slot.draftStatus === "failed" ||
-      slot.draftStatus === "unknown"),
+    needsTest && slot?.connected && available && slot.keyConfigured && !busy && !keyError,
   );
+  const visibleStatus = savedStatus && busy === `test:${fieldKey}` ? "testing" : savedStatus;
+  const needsEnable = Boolean(savedStatus === "passed" && card && slot && !liveMatches(card, slot));
+  const storageError = needsEnable && error?.code === "FEATURE_WRITING_STORAGE_UNAVAILABLE";
+  const enableBlockReason = slot?.enableBlockReason || (storageError ? error.message : null);
   const canEnable = Boolean(
+    needsEnable &&
     slot?.connected &&
     available &&
-    slot.draftStatus === "passed" &&
     slot.testToken &&
-    !editing &&
-    !busy &&
-    card &&
-    !liveMatches(card, slot),
+    !enableBlockReason &&
+    !keyError &&
+    !busy,
   );
-  const kind = card && slot ? changeKind(card, slot) : "empty";
 
   // A newer server revision may be adopted after navigation; its receipt must not close a new editor.
   function acceptView(next: FeatureConfigView) {
@@ -208,7 +245,7 @@ export function FeatureConfig() {
     setVendor(null);
     setEditing(false);
     setDialog(null);
-    setError("");
+    setError(null);
     if (next !== "video") replaceSelection(next, null);
   }
 
@@ -217,12 +254,12 @@ export function FeatureConfig() {
     const version = selectionVersion.current;
     busyRef.current = true;
     setBusy("rollback");
-    setError("");
+    setError(null);
     try {
       const next = await client.rollback(feature, { expectedRevision: view.revision });
       acceptView(next);
     } catch (caught) {
-      if (selectionVersion.current === version) setError(featureErrorCopy(caught));
+      if (selectionVersion.current === version) setError(formError(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -236,11 +273,10 @@ export function FeatureConfig() {
     setVendor(next);
     setEditing(true);
     setDialog(null);
-    setError("");
+    setError(null);
     replaceSelection(feature, next);
   }
 
-  /** 取消 discards unsaved model, key and 更换 choices for this feature so 检测连接 / 确认启用 use the saved draft again. */
   function cancelEdit() {
     selectionVersion.current++;
     setEditedModel(null);
@@ -248,7 +284,7 @@ export function FeatureConfig() {
     setReplacing({});
     setVendor(priorVendor.current);
     setEditing(false);
-    setError("");
+    setError(null);
     replaceSelection(feature, priorVendor.current);
   }
 
@@ -264,7 +300,7 @@ export function FeatureConfig() {
     const version = selectionVersion.current;
     busyRef.current = true;
     setBusy("save");
-    setError("");
+    setError(null);
     const secretAction =
       enteringKey && draftKey
         ? ("replace" as const)
@@ -281,12 +317,12 @@ export function FeatureConfig() {
       });
       acceptView(next);
       if (selectionVersion.current !== version) return;
+      priorVendor.current = slot.vendor;
       setEditedModel(null);
       setKeys({});
       setReplacing({});
-      setEditing(false);
     } catch (caught) {
-      if (selectionVersion.current === version) setError(featureErrorCopy(caught));
+      if (selectionVersion.current === version) setError(formError(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -297,9 +333,9 @@ export function FeatureConfig() {
     if (!card || !slot || !view || !canTest || busyRef.current) return;
     const version = selectionVersion.current;
     busyRef.current = true;
-    setBusy("test");
+    setBusy(`test:${fieldKey}`);
     setDialog(null);
-    setError("");
+    setError(null);
     try {
       const result = await client.testDraft(feature, {
         expectedRevision: view.revision,
@@ -312,7 +348,13 @@ export function FeatureConfig() {
         const unknown =
           caught instanceof FeatureApiError &&
           (caught.status === 0 || caught.status === 408 || caught.status === 504);
-        setError(unknown ? "结果未知，请刷新配置并核对供应商调用记录。" : featureErrorCopy(caught));
+        setError({
+          unknown,
+          code: caught instanceof FeatureApiError ? caught.code : undefined,
+          message: unknown
+            ? "结果未知，请刷新配置并核对供应商调用记录。"
+            : featureErrorCopy(caught),
+        });
       }
     } finally {
       busyRef.current = false;
@@ -326,7 +368,7 @@ export function FeatureConfig() {
     busyRef.current = true;
     setBusy("enable");
     setDialog(null);
-    setError("");
+    setError(null);
     try {
       const next = await client.enable(feature, {
         expectedRevision: view.revision,
@@ -334,8 +376,12 @@ export function FeatureConfig() {
         testToken: slot.testToken,
       });
       acceptView(next);
+      if (selectionVersion.current === version) {
+        priorVendor.current = slot.vendor;
+        cancelEdit();
+      }
     } catch (caught) {
-      if (selectionVersion.current === version) setError(featureErrorCopy(caught));
+      if (selectionVersion.current === version) setError(formError(caught));
     } finally {
       busyRef.current = false;
       setBusy("");
@@ -421,28 +467,29 @@ export function FeatureConfig() {
           </button>
         </section>
       ) : (
-        <>
-          <CurrentCard card={card} onEdit={beginConfigure} />
-          <ChangePanel
-            card={card}
-            slot={kind === "empty" ? null : slot}
-            kind={kind}
-            busy={busy}
-            canTest={canTest}
-            canEnable={canEnable}
-            error={editing ? "" : error}
-            onTest={() => {
-              if (canTest) setDialog("test");
-            }}
-            onEnable={() => {
-              if (canEnable) setDialog("enable");
-            }}
-            onRollback={() => void rollback()}
-          />
-        </>
+        <CurrentCard card={card}>
+          <button type="button" className={styles.secondary} onClick={beginConfigure}>
+            修改配置
+          </button>
+          {card.canRollback && (
+            <button
+              type="button"
+              className={styles.secondary}
+              disabled={Boolean(busy)}
+              onClick={() => void rollback()}
+            >
+              {busy === "rollback" ? "正在回退…" : "回退到上一配置版本"}
+            </button>
+          )}
+          {!editing && error && (
+            <p className={styles.fail} role="alert">
+              {error.message}
+            </p>
+          )}
+        </CurrentCard>
       )}
       {editing && card && slot ? (
-        <div className={styles.modal}>
+        <div className={styles.modal} hidden={Boolean(dialog)}>
           <div
             ref={drawerRef}
             className={styles.drawer}
@@ -458,22 +505,77 @@ export function FeatureConfig() {
               replacing={replacingKey}
               bindingVendorKey={canBindVendor}
               busy={busy}
-              canSave={canSave}
               needsKey={needsKey}
-              error={error}
+              keyError={keyError}
               onVendor={selectVendor}
               onModel={(value) => {
+                selectionVersion.current++;
                 setEditedModel(value);
-                setError("");
+                setError(null);
               }}
               onKey={(value) => {
+                selectionVersion.current++;
                 setKeys((current) => ({ ...current, [fieldKey]: value }));
-                setError("");
+                setError(null);
               }}
-              onReplace={() => setReplacing((current) => ({ ...current, [fieldKey]: true }))}
-              onSave={() => void save()}
+              onReplace={() => {
+                selectionVersion.current++;
+                setReplacing((current) => ({ ...current, [fieldKey]: true }));
+                setError(null);
+              }}
               onClose={cancelEdit}
-            />
+            >
+              {visibleStatus && !error && (
+                <div role="status" className={styles.draftStatus} data-outcome={visibleStatus}>
+                  <strong>{DRAFT_STATUS_LABEL[visibleStatus]}</strong>
+                  {(visibleStatus === "failed" || visibleStatus === "unknown") &&
+                    slot.failureMessage && <p>{slot.failureMessage}</p>}
+                </div>
+              )}
+              {error && !keyError && !storageError && (
+                <p className={error.unknown ? styles.hint : styles.fail} role="alert">
+                  {error.message}
+                </p>
+              )}
+              {needsEnable && enableBlockReason && (
+                <p id="feature-enable-block" className={styles.hint}>
+                  {enableBlockReason}
+                </p>
+              )}
+              <div className={styles.actions}>
+                {!savedStatus || !available || (savedStatus === "testing" && !busy) ? (
+                  <button
+                    type="button"
+                    className={styles.primary}
+                    disabled={!canSave}
+                    onClick={() => void save()}
+                  >
+                    {busy === "save" ? "正在保存…" : "保存草稿"}
+                  </button>
+                ) : null}
+                {needsTest && (
+                  <button
+                    type="button"
+                    className={styles.primary}
+                    disabled={!canTest}
+                    onClick={() => setDialog("test")}
+                  >
+                    验证草稿
+                  </button>
+                )}
+                {needsEnable && (
+                  <button
+                    type="button"
+                    className={styles.primary}
+                    disabled={!canEnable}
+                    aria-describedby={enableBlockReason ? "feature-enable-block" : undefined}
+                    onClick={() => setDialog("enable")}
+                  >
+                    {busy === "enable" ? "正在启用…" : "确认启用"}
+                  </button>
+                )}
+              </div>
+            </Editor>
           </div>
         </div>
       ) : null}
@@ -533,7 +635,7 @@ export function FeatureConfig() {
   );
 }
 
-function CurrentCard({ card, onEdit }: { card: FeatureCardView; onEdit: () => void }) {
+function CurrentCard({ card, children }: { card: FeatureCardView; children: ReactNode }) {
   return (
     <section className={styles.current} aria-label="当前生效配置">
       <div className={styles.editorHead}>
@@ -558,128 +660,7 @@ function CurrentCard({ card, onEdit }: { card: FeatureCardView; onEdit: () => vo
           <dd>{card.live ? `${PAGE_LABEL[card.feature]}专用  ${SAVED_SECRET_MASK}` : "未绑定"}</dd>
         </div>
       </dl>
-      <button type="button" className={styles.secondary} onClick={onEdit}>
-        修改配置
-      </button>
-    </section>
-  );
-}
-
-function ChangePanel({
-  card,
-  slot,
-  kind,
-  busy,
-  canTest,
-  canEnable,
-  error,
-  onTest,
-  onEnable,
-  onRollback,
-}: {
-  card: FeatureCardView;
-  slot: FeatureSlotView | null;
-  kind: ChangeKind;
-  busy: string;
-  canTest: boolean;
-  canEnable: boolean;
-  error: string;
-  onTest: () => void;
-  onEnable: () => void;
-  onRollback: () => void;
-}) {
-  const step = kind === "empty" ? 1 : kind === "passed" || kind === "enabled" ? 3 : 2;
-  const done2 = kind === "passed" || kind === "enabled";
-  const done3 = kind === "enabled";
-  return (
-    <section className={styles.change} aria-label="配置变更">
-      <h2>配置变更</h2>
-      <ol className={styles.steps}>
-        <li className={step === 1 ? styles.stepOn : styles.stepDone}>
-          <span>1</span> 保存草稿
-        </li>
-        <li className={done2 ? styles.stepDone : step === 2 ? styles.stepOn : styles.step}>
-          <span>2</span> 检测连接
-        </li>
-        <li className={done3 ? styles.stepDone : step === 3 ? styles.stepOn : styles.step}>
-          <span>3</span> 确认启用
-        </li>
-      </ol>
-      {kind === "empty" ? (
-        <div className={styles.changeBody}>
-          <p className={styles.mutedLine}>
-            <span className={styles.dotMuted} />
-            暂无草稿
-          </p>
-        </div>
-      ) : slot ? (
-        <div className={styles.changeBody}>
-          {kind === "saved" || kind === "testing" || kind === "unknown" ? (
-            <p className={styles.mutedLine}>
-              <span className={styles.dotWarn} />
-              {kind === "testing" ? "正在检测…" : kind === "unknown" ? "结果未知" : "草稿未启用"}
-            </p>
-          ) : null}
-          {kind === "failed" ? (
-            <p className={styles.failLine}>
-              <span className={styles.dotFail} />
-              检测未通过
-            </p>
-          ) : null}
-          {kind === "passed" ? (
-            <p className={styles.okLine}>
-              <span className={styles.dotOk} />
-              检测通过
-            </p>
-          ) : null}
-          {kind === "enabled" ? (
-            <p className={styles.okLine}>
-              <span className={styles.dotOk} />
-              已生效
-            </p>
-          ) : null}
-          <p className={styles.draftMeta}>
-            <strong>{slot.label}</strong>
-            <span>{slot.models.find((item) => item.id === slot.model)?.label ?? slot.model}</span>
-          </p>
-          {(kind === "failed" || kind === "unknown") && slot.failureMessage ? (
-            <p role="status">{slot.failureMessage}</p>
-          ) : null}
-          {slot.model && !slot.models.some((item) => item.id === slot.model) ? (
-            <p>当前列表不可用，请修改配置。</p>
-          ) : null}
-          {error ? (
-            <p className={styles.fail} role="alert">
-              {error}
-            </p>
-          ) : null}
-          {kind === "saved" || kind === "failed" || kind === "unknown" ? (
-            <button type="button" className={styles.primary} disabled={!canTest} onClick={onTest}>
-              {busy === "test" ? "正在检测…" : "检测连接"}
-            </button>
-          ) : null}
-          {kind === "passed" ? (
-            <button
-              type="button"
-              className={styles.primary}
-              disabled={!canEnable}
-              onClick={onEnable}
-            >
-              {busy === "enable" ? "正在启用…" : "确认启用"}
-            </button>
-          ) : null}
-          {card.canRollback ? (
-            <button
-              type="button"
-              className={styles.secondary}
-              disabled={busy !== ""}
-              onClick={onRollback}
-            >
-              {busy === "rollback" ? "正在回退…" : "回退到上一配置版本"}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+      <div className={styles.actions}>{children}</div>
     </section>
   );
 }
@@ -692,14 +673,13 @@ function Editor({
   replacing,
   bindingVendorKey,
   busy,
-  canSave,
   needsKey,
-  error,
+  keyError,
   onVendor,
   onModel,
   onKey,
   onReplace,
-  onSave,
+  children,
   onClose,
 }: {
   card: FeatureCardView;
@@ -709,14 +689,13 @@ function Editor({
   replacing: boolean;
   bindingVendorKey: boolean;
   busy: string;
-  canSave: boolean;
   needsKey: boolean;
-  error: string;
+  keyError: string | null;
   onVendor: (vendor: FeatureVendor) => void;
   onModel: (model: string) => void;
   onKey: (value: string) => void;
   onReplace: () => void;
-  onSave: () => void;
+  children: ReactNode;
   onClose: () => void;
 }) {
   return (
@@ -772,6 +751,8 @@ function Editor({
             ) : (
               <input
                 aria-label="API Key"
+                aria-invalid={Boolean(keyError)}
+                aria-describedby={keyError ? "feature-key-error" : undefined}
                 type="password"
                 autoComplete="off"
                 spellCheck={false}
@@ -783,20 +764,17 @@ function Editor({
             {bindingVendorKey && !replacing ? (
               <small className={styles.hint}>使用「AI 大模型」已保存的密钥。</small>
             ) : null}
-            {needsKey ? <small className={styles.hint}>请输入至少 8 位的 API Key。</small> : null}
+            {keyError ? (
+              <small className={styles.fail} role="alert" id="feature-key-error">
+                {keyError}
+              </small>
+            ) : needsKey ? (
+              <small className={styles.hint}>请输入至少 8 位的 API Key。</small>
+            ) : null}
           </div>
         ) : null}
       </div>
-      {error ? (
-        <p className={styles.fail} role="alert">
-          {error}
-        </p>
-      ) : null}
-      <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={!canSave} onClick={onSave}>
-          {busy === "save" ? "正在保存…" : "保存草稿"}
-        </button>
-      </div>
+      {children}
     </section>
   );
 }

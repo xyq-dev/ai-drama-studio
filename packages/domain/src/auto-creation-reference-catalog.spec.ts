@@ -228,7 +228,7 @@ describe("C. limited, sourced and the series' borrowed research: an id maps to t
       expect(research.contentStructure).toEqual([{ reference: { sourceId: "S-KB-CRAFT", quote: CRAFT_SENTENCE }, application: application() },
         { reference: null, application: application("三个人物被迫合作。", "自主创作设计。") }]);
       expect(JSON.stringify(research)).not.toContain("referenceId");
-      expect(research.serverRecord.executedWith).toEqual({ promptVersion: path.promptVersion, checksVersion: AUTO_CREATION_CHECKS_VERSION,
+      expect(research.serverRecord.executedWith).toEqual({ promptVersion: path.promptVersion, checksVersion: path.promptVersion === AUTO_CREATION_PROMPT_VERSION ? AUTO_CREATION_CHECKS_VERSION : SERIES_RESEARCH_CONTRACT.checksVersion,
         researchSchema: AUTO_CREATION_RESEARCH_SCHEMA, answerContract: path.mode, answerSchema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
         referenceCatalogVersion: AUTO_REFERENCE_CATALOG_VERSION, referenceCatalogHash: path.catalog.hash });
     });

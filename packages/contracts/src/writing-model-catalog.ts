@@ -40,13 +40,24 @@ export const WRITING_MODEL_CHANNELS = {
   },
   bailian: {
     id: "bailian-cn",
-    label: "阿里云百炼（北京）",
+    label: "阿里云百炼（北京 · 按量付费）",
     endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     // https://help.aliyun.com/zh/model-studio/qwen-plus (北京, structured output).
     // https://help.aliyun.com/zh/model-studio/list-model-permissions (API model and display name).
     models: [{ id: "qwen-plus", label: "通义千问-Plus" }],
   },
 } as const;
+
+export const BAILIAN_PLAN_KEY_MESSAGE = "这是套餐密钥，请使用百炼按量付费 API Key";
+
+export function isBailianPlanKey(key: string): boolean {
+  return key.trim().startsWith("sk-sp-");
+}
+
+/** The workspace ID is a single DNS label of the Beijing permissions endpoint. */
+export function isBailianWorkspaceId(id: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(id);
+}
 
 export type WritingModelVendor = keyof typeof WRITING_MODEL_CHANNELS;
 export type WritingModelChannelId = (typeof WRITING_MODEL_CHANNELS)[WritingModelVendor]["id"];

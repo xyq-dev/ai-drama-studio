@@ -1,6 +1,7 @@
 import {
   EPISODE_DRAFT_SCHEMA,
   STORY_PLAN_SCHEMA,
+  TITLE_WRITING_MAX_EPISODES,
   WRITING_BODY_MAX_CHARS,
   WRITING_IMPORT_MAX_BYTES,
   WRITING_NOTE_MAX_CHARS,
@@ -71,24 +72,27 @@ export type WritingImport =
   | { mode: "story"; plan: StoryPlanCandidate }
   | { mode: "episode"; draft: EpisodeDraftCandidate };
 
-const STORY_RULES = [
+const storyRules = (episodeCount: number) => [
   "创作者写明的事实、必须保留的内容和禁止改动的内容优先于创作建议。",
   "人物行动要有目标、阻力和后果。",
   "核心冲突要能在人物关系里持续发生，而不是只换题材标签。",
-  "三集都要写清进入状态、目标、行动、转折、结果，以及交给下一集的事实。",
-  "相邻集的事实和人物状态要能交接。",
+  ...(episodeCount === 1
+    ? ["本作只有一集，写清人物目标、行动、转折与结局。handoff 记录最终发生了什么。"]
+    : [`${episodeCount === 3 ? "三集" : "各集"}都要写清进入状态、目标、行动、转折、结果，以及交给下一集的事实。`, "相邻集的事实和人物状态要能交接。"]),
   "不强制每一集使用相同的反转、钩子或节拍公式。",
   "这些是创作建议，不是平台审核结论，不能把结果标成 APPROVED 或 CURRENT。",
 ].join("\n");
 
-const EPISODE_RULES = [
+const episodeRules = (standalone: boolean) => [
   "创作者写明的事实、必须保留的对白、结局和禁止改动的内容优先于创作建议。",
   "人物行动要有目标、阻力和后果。",
   "每个场景要推动信息、关系、风险或状态变化；没有变化的场景不要凑数。",
   "对白承担人物行动，不堆解释。",
   "可用声音标记标明必要的画外声或音效，不要把标记写成第二份剧情说明。",
   "局部修改保留没有点名的段落。",
-  "写出下一集必须继承的事实，使相邻集的人物状态能够交接。",
+  standalone
+    ? "本作只有一集。将梗概展开为可演出的完整剧本，标明场景与出场人物，写出人物动作和对白，在场景中演出结局。handoffFacts 记录结局事实。"
+    : "写出下一集必须继承的事实，使相邻集的人物状态能够交接。",
   "不强制使用固定反转、钩子或节拍公式。",
   "这些是创作建议，不是平台审核结论，不能把结果标成 APPROVED 或 CURRENT。",
 ].join("\n");
@@ -151,7 +155,10 @@ function header(mode: string, channel: WritingInstructionChannel): string[] {
   ];
 }
 
-export function buildStoryPlanInstruction(request: StoryPlanRequest, channel: WritingInstructionChannel = "external"): string {
+export function buildStoryPlanInstruction(request: StoryPlanRequest, channel: WritingInstructionChannel = "external", episodeCount = 3): string {
+  if (!Number.isInteger(episodeCount) || episodeCount < 1 || episodeCount > TITLE_WRITING_MAX_EPISODES) {
+    throw new DomainError("WRITING_EPISODE_MISMATCH", "作品集数超出短篇编剧助手的范围");
+  }
   assertNote("梗概", request.premise);
   assertNote("题材", request.genre);
   assertNote("目标观众", request.audience);
@@ -164,7 +171,7 @@ export function buildStoryPlanInstruction(request: StoryPlanRequest, channel: Wr
   return [
     ...header("故事策划", channel),
     "创作建议：",
-    STORY_RULES,
+    storyRules(episodeCount),
     "作品梗概：",
     request.premise,
     "题材（只属于本次助手草稿，不是已保存的项目配置）：",
@@ -181,15 +188,15 @@ export function buildStoryPlanInstruction(request: StoryPlanRequest, channel: Wr
     "当前正文：",
     request.currentText,
     "请输出 schema 为 ads.writing.story-plan.v1 的 JSON。",
-    "字段：logline、protagonistGoal、opposition、coreConflict、relationships[{name,pressure}]、episodes 共 3 项。",
-    "episodes 的 episodeNo 必须正好是 1、2、3 且不重复。",
+    `字段：logline、protagonistGoal、opposition、coreConflict、relationships[{name,pressure}]、episodes 共 ${episodeCount} 项。`,
+    `episodes 的 episodeNo 必须正好是 ${Array.from({ length: episodeCount }, (_, index) => index + 1).join("、")} 且不重复。`,
     "每一项包含 entryState、goal、action、turn、result、handoff。",
   ].join("\n");
 }
 
-export function buildEpisodeDraftInstruction(request: EpisodeDraftRequest, channel: WritingInstructionChannel = "external"): string {
-  if (request.episodeNo !== 1 && request.episodeNo !== 2 && request.episodeNo !== 3) {
-    throw new DomainError("WRITING_EPISODE_MISMATCH", "当前试制只接受第 1、2、3 集");
+export function buildEpisodeDraftInstruction(request: EpisodeDraftRequest, channel: WritingInstructionChannel = "external", episodeCount = 3): string {
+  if (!Number.isInteger(request.episodeNo) || request.episodeNo < 1 || request.episodeNo > Math.min(episodeCount, TITLE_WRITING_MAX_EPISODES)) {
+    throw new DomainError("WRITING_EPISODE_MISMATCH", "所选集数超出作品范围");
   }
   assertNote("梗概", request.premise);
   assertNote("题材", request.genre);
@@ -204,7 +211,7 @@ export function buildEpisodeDraftInstruction(request: EpisodeDraftRequest, chann
   return [
     ...header("单集写作", channel),
     "创作建议：",
-    EPISODE_RULES,
+    episodeRules(episodeCount === 1),
     `当前集：第 ${request.episodeNo} 集`,
     "作品梗概：",
     request.premise,
@@ -258,7 +265,7 @@ function assertSafe(value: unknown): void {
 
 export function parseWritingImport(
   bytes: Uint8Array,
-  expected: { mode: "story" | "episode"; episodeNo: number | null },
+  expected: { mode: "story" | "episode"; episodeNo: number | null; episodeCount?: number | undefined },
 ): WritingImport {
   if (bytes.byteLength > WRITING_IMPORT_MAX_BYTES) {
     throw new DomainError("WRITING_TOO_LARGE", `导入文件超过 ${WRITING_IMPORT_MAX_BYTES} 字节，已拒绝`);
@@ -286,6 +293,10 @@ export function parseWritingImport(
     if (!result.success) {
       throw new DomainError("WRITING_INVALID_CANDIDATE", result.error.issues[0]?.message ?? "故事策划候选无效");
     }
+    const count = expected.episodeCount ?? 3;
+    if (result.data.episodes.length !== count) {
+      throw new DomainError("WRITING_EPISODE_MISMATCH", `作品共有 ${count} 集，候选必须包含对应的全部分集。`);
+    }
     assertSafe(result.data);
     return { mode: "story", plan: result.data };
   }
@@ -298,6 +309,11 @@ export function parseWritingImport(
   }
   if (result.data.episodeNo !== expected.episodeNo) {
     throw new DomainError("WRITING_EPISODE_MISMATCH", `候选是第 ${result.data.episodeNo} 集，当前选择的是第 ${expected.episodeNo ?? "?"} 集`);
+  }
+  if (expected.episodeCount === 1 && (!result.data.screenplay.trim()
+    || !result.data.scenes.some((scene) => scene.heading.trim() && scene.action.trim() && scene.dialogue.trim())
+    || !result.data.handoffFacts.some((fact) => fact.trim()))) {
+    throw new DomainError("WRITING_INVALID_CANDIDATE", "单集剧本需要正文、场景动作、人物对白和结局事实。");
   }
   assertSafe(result.data);
   return { mode: "episode", draft: result.data };
@@ -328,7 +344,7 @@ export function formatStoryPlan(plan: StoryPlanCandidate): string {
     "人物关系",
     ...plan.relationships.map((item) => `${item.name}：${item.pressure}`),
     "",
-    "三集大纲",
+    episodes.length === 3 ? "三集大纲" : "分集大纲",
   ];
   for (const episode of episodes) {
     lines.push(
@@ -338,7 +354,7 @@ export function formatStoryPlan(plan: StoryPlanCandidate): string {
       `行动：${episode.action}`,
       `转折：${episode.turn}`,
       `结果：${episode.result}`,
-      `交接事实：${episode.handoff}`,
+      `${episodes.length === 1 ? "结局事实" : "交接事实"}：${episode.handoff}`,
       "",
     );
   }
@@ -367,8 +383,9 @@ export function formatEpisodeDraft(draft: EpisodeDraftCandidate, handoffHeading:
   return assertFormatted(lines.join("\n").trimEnd());
 }
 
-export function formatWritingImport(imported: WritingImport): string {
-  return imported.mode === "story" ? formatStoryPlan(imported.plan) : formatEpisodeDraft(imported.draft);
+export function formatWritingImport(imported: WritingImport, episodeCount = 3): string {
+  return imported.mode === "story" ? formatStoryPlan(imported.plan)
+    : formatEpisodeDraft(imported.draft, episodeCount === 1 ? "本集结局事实" : "下一集需要继承的事实");
 }
 
 export function freezeWritingContext(

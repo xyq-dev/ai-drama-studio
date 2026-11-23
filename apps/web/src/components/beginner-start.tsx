@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { TITLE_WRITING_DEFAULT_EPISODE_COUNT } from "@ai-drama/contracts";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { bindDirectionToProject, premiseBlock, readSelectedDirection, removeOwned, switchBlock, trackOwned, type OwnedBlock } from "../lib/creative-direction-link";
 import { CATEGORIES, DIRECTION_STORAGE_KEY, EMPTY_DIRECTION, type DirectionDraft } from "../lib/creative-taxonomy";
-import { IDEA_TEMPLATES, START_SCOPE_NOTE, suggestTitle } from "../lib/beginner-start";
+import { IDEA_TEMPLATES, SHORT_EPISODE_COUNTS, START_SCOPE_NOTE, manualProjectInput, suggestTitle } from "../lib/beginner-start";
 import { LIMITS, draftStorageKey, nextDraft, readDraft, releaseSubmittedDraft, writeDraft } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
 import { InspirationPicker, type DirectionState } from "./inspiration-picker";
@@ -36,13 +37,14 @@ function storeDirection(direction: DirectionDraft | null): void {
 
 /**
  * "你的故事，从这里开始". Typing, choosing a template, or browsing and using a story direction never creates a
- * project: only "确认创建作品" posts { title, premise } with the draft's idempotency key, which survives a failed or
+ * project: only "确认创建作品" posts the project plan with the draft's idempotency key, which survives a failed or
  * unsure reply. A direction is appended to the idea once; switching or removing it takes out only the exact block
  * this page added, and never guesses at text the user has edited.
  */
 export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   const [idea, setIdea] = useState("");
   const [title, setTitle] = useState("");
+  const [episodeCount, setEpisodeCount] = useState<number>(TITLE_WRITING_DEFAULT_EPISODE_COUNT);
   const [confirming, setConfirming] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,12 +65,15 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     let restored: string | null = null;
     try {
       const draft = readDraft(window.sessionStorage, CREATE_KEY);
-      const payload = draft?.payload as { title?: unknown; premise?: unknown } | undefined;
+      const payload = draft?.payload as { title?: unknown; premise?: unknown; episodeCount?: unknown } | undefined;
       if (payload && typeof payload.premise === "string") {
         setIdea(payload.premise);
         restored = payload.premise;
       }
       if (payload && typeof payload.title === "string") setTitle(payload.title);
+      if (typeof payload?.episodeCount === "number" && SHORT_EPISODE_COUNTS.includes(payload.episodeCount)) {
+        setEpisodeCount(payload.episodeCount);
+      }
     } catch {
       // A broken draft slot only means nothing is restored.
     }
@@ -95,14 +100,15 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     if (confirming) confirmHeading.current?.focus();
   }, [confirming]);
 
-  function remember(nextTitle: string, nextIdea: string) {
+  function remember(nextTitle: string, nextIdea: string, nextEpisodeCount = episodeCount) {
     // While a create is in flight the request content is frozen: nothing may change what was submitted.
     if (creatingRef.current) return;
     setTitle(nextTitle);
     setIdea(nextIdea);
+    setEpisodeCount(nextEpisodeCount);
     try {
       writeDraft(window.sessionStorage, CREATE_KEY,
-        nextDraft(readDraft(window.sessionStorage, CREATE_KEY), { title: nextTitle, premise: nextIdea }, null, () => crypto.randomUUID()));
+        nextDraft(readDraft(window.sessionStorage, CREATE_KEY), manualProjectInput(nextTitle, nextIdea, nextEpisodeCount), null, () => crypto.randomUUID()));
     } catch {
       // Without session storage the page still works; a retry then cannot reuse the key across a reload.
     }
@@ -203,18 +209,19 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
       ideaRef.current?.focus();
       return;
     }
+    const body = manualProjectInput(title, idea, episodeCount);
     let draft;
     try {
-      draft = nextDraft(readDraft(window.sessionStorage, CREATE_KEY), { title, premise: idea }, null, () => crypto.randomUUID());
+      draft = nextDraft(readDraft(window.sessionStorage, CREATE_KEY), body, null, () => crypto.randomUUID());
       writeDraft(window.sessionStorage, CREATE_KEY, draft);
     } catch {
-      draft = nextDraft(null, { title, premise: idea }, null, () => crypto.randomUUID());
+      draft = nextDraft(null, body, null, () => crypto.randomUUID());
     }
     creatingRef.current = true;
     setCreating(true);
     setError(null);
     try {
-      const created = await client.write<ProjectItem>({ path: "/projects", body: { title, premise: idea }, idempotencyKey: draft.idempotencyKey });
+      const created = await client.write<ProjectItem>({ path: "/projects", body, idempotencyKey: draft.idempotencyKey });
       try {
         // Clear only the snapshot that was submitted; anything newer stays as this tab's draft.
         releaseSubmittedDraft(window.sessionStorage, CREATE_KEY, draft);
@@ -313,6 +320,12 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
                   建议名称按规则截取自你的想法开头，不是 AI 生成，可以直接修改。
                   <button className="ml-2 underline" type="button" disabled={creating} onClick={() => remember(suggestTitle(idea), idea)}>重新按想法截取</button>
                 </p>
+                <label className="mt-4 block font-medium" htmlFor="work-episode-count">集数</label>
+                <select id="work-episode-count" className={styles.titleInput} value={episodeCount} disabled={creating}
+                  onChange={(event) => remember(title, idea, Number(event.target.value))}>
+                  {SHORT_EPISODE_COUNTS.map((count) => <option key={count} value={count}>{count} 集</option>)}
+                </select>
+                {episodeCount !== TITLE_WRITING_DEFAULT_EPISODE_COUNT ? <p className="mt-1 text-sm text-[#5F5D66]">每集目标时长约 1 分钟。</p> : null}
                 <p className="mt-3 font-medium">故事想法</p>
                 <p className={styles.premise}>{idea}</p>
                 <div className={`${styles.confirmActions} fixed inset-x-0 bottom-0 sm:static`}>

@@ -1,3 +1,4 @@
+import type { WritingQuotaTransaction } from "@ai-drama/contracts";
 import { createHash, randomUUID } from "node:crypto";
 import {
   MEMBERSHIP_FEATURES,
@@ -58,6 +59,19 @@ export type ReserveResult =
 
 export const MEMBERSHIP_STORE = "MEMBERSHIP_STORE";
 
+export interface MembershipReservation {
+  accountId: string;
+  feature: MembershipFeature;
+  idempotencyKey: string;
+  operation?: string;
+  projectId?: string | null;
+  taskKey?: string | null;
+  units?: number;
+  now?: Date;
+  /** Retry of an already accepted task: do not create a hold when none exists. */
+  replayOnly?: boolean;
+}
+
 export interface MembershipStore {
   ready(): Promise<boolean>;
   listPlans(workspaceId: string): Promise<MembershipPlanRecord[]>;
@@ -91,17 +105,7 @@ export interface MembershipStore {
   }): Promise<number>;
   balances(workspaceId: string, accountId: string): Promise<Record<MembershipFeature, number>>;
   ledger(workspaceId: string, accountId: string): Promise<MembershipLedgerRecord[]>;
-  reserve(workspaceId: string, input: {
-    accountId: string;
-    feature: MembershipFeature;
-    idempotencyKey: string;
-    projectId?: string | null;
-    taskKey?: string | null;
-    units?: number;
-    now?: Date;
-    /** Retry of an already accepted task: do not create a hold when none exists. */
-    replayOnly?: boolean;
-  }): Promise<ReserveResult>;
+  reserve(workspaceId: string, input: MembershipReservation, transaction?: WritingQuotaTransaction): Promise<ReserveResult>;
   release(holdId: string): Promise<void>;
   bindTask(holdId: string, taskKey: string): Promise<void>;
   noteRun(input: { runId: string; outcome: "unsent" | "unknown" | "sent" }): Promise<void>;
@@ -261,16 +265,7 @@ export class MemoryMembershipStore implements MembershipStore {
     return this.rows.filter((row) => row.accountId === accountId).slice().reverse();
   }
 
-  async reserve(workspaceId: string, input: {
-    accountId: string;
-    feature: MembershipFeature;
-    idempotencyKey: string;
-    projectId?: string | null;
-    taskKey?: string | null;
-    units?: number;
-    now?: Date;
-    replayOnly?: boolean;
-  }): Promise<ReserveResult> {
+  async reserve(workspaceId: string, input: MembershipReservation): Promise<ReserveResult> {
     return this.exclusive(() => this.reserveUnlocked(workspaceId, input));
   }
 
@@ -298,19 +293,10 @@ export class MemoryMembershipStore implements MembershipStore {
     else if (input.outcome === "sent" && hold.status === "held") hold.status = "committed";
   }
 
-  private async reserveUnlocked(workspaceId: string, input: {
-    accountId: string;
-    feature: MembershipFeature;
-    idempotencyKey: string;
-    projectId?: string | null;
-    taskKey?: string | null;
-    units?: number;
-    now?: Date;
-    replayOnly?: boolean;
-  }): Promise<ReserveResult> {
+  private async reserveUnlocked(workspaceId: string, input: MembershipReservation): Promise<ReserveResult> {
     const now = input.now ?? new Date();
     const units = input.units ?? 1;
-    const scopedKey = scopeHoldKey(input.feature, input.projectId, input.idempotencyKey);
+    const scopedKey = scopeHoldKey(input.feature, input.projectId, input.idempotencyKey, input.operation);
     const existing = this.holds.find((hold) => hold.workspaceId === workspaceId && hold.accountId === input.accountId
       && hold.feature === input.feature
       && (hold.projectId ?? null) === (input.projectId ?? null)
@@ -379,18 +365,22 @@ export class MemoryMembershipStore implements MembershipStore {
   }
 }
 
+async function membershipStorageReady(client: WritingQuotaTransaction): Promise<boolean> {
+  const result = await client.query<{ present: boolean }>(
+    `SELECT to_regclass('creator_membership') IS NOT NULL
+        AND to_regclass('creator_quota_hold') IS NOT NULL
+        AND to_regclass('usage_plan_feature') IS NOT NULL AS present`,
+  );
+  return result.rows[0]?.present === true;
+}
+
 export class PostgresMembershipStore implements MembershipStore {
   constructor(private readonly pool: DatabasePool) {}
 
   async ready(): Promise<boolean> {
     const client = await this.pool.connect();
     try {
-      const result = await client.query<{ present: boolean }>(
-        `SELECT to_regclass('creator_membership') IS NOT NULL
-            AND to_regclass('creator_quota_hold') IS NOT NULL
-            AND to_regclass('usage_plan_feature') IS NOT NULL AS present`,
-      );
-      return result.rows[0]?.present === true;
+      return await membershipStorageReady(client);
     } finally {
       client.release();
     }
@@ -684,116 +674,109 @@ export class PostgresMembershipStore implements MembershipStore {
     }
   }
 
-  async reserve(workspaceId: string, input: {
-    accountId: string;
-    feature: MembershipFeature;
-    idempotencyKey: string;
-    projectId?: string | null;
-    taskKey?: string | null;
-    units?: number;
-    now?: Date;
-    replayOnly?: boolean;
-  }): Promise<ReserveResult> {
-    if (!await this.ready()) return { ok: true, skipped: true };
-    const now = input.now ?? new Date();
-    const units = input.units ?? 1;
-    const scopedKey = scopeHoldKey(input.feature, input.projectId, input.idempotencyKey);
+  async reserve(workspaceId: string, input: MembershipReservation, transaction?: WritingQuotaTransaction): Promise<ReserveResult> {
+    if (transaction) return this.reserveInTransaction(transaction, workspaceId, input);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const existing = await client.query<{ id: string; status: QuotaHoldStatus }>(
-        `SELECT id, status FROM creator_quota_hold
-          WHERE workspace_id = $1 AND account_id = $2 AND feature = $5
-            AND project_id IS NOT DISTINCT FROM $6::uuid
-            AND (idempotency_key = $3 OR ($4::text IS NOT NULL AND task_key = $4))
-          FOR UPDATE`,
-        [workspaceId, input.accountId, scopedKey, input.taskKey ?? null, input.feature, input.projectId ?? null],
-      );
-      if (existing.rows.length === 0 && input.replayOnly) {
-        await client.query("COMMIT");
-        return { ok: true, skipped: true };
-      }
-      const membership = await client.query<{ status: "active" | "disabled"; starts_at: Date; ends_at: Date; plan_id: string }>(
-        `SELECT status, starts_at, ends_at, plan_id FROM creator_membership
-          WHERE workspace_id = $1 AND account_id = $2
-          ORDER BY (status = 'active' AND starts_at <= $3 AND ends_at > $3) DESC, ends_at DESC
-          LIMIT 1`,
-        [workspaceId, input.accountId, now],
-      );
-      const planId = membership.rows[0]?.plan_id;
-      const feature = planId
-        ? await client.query<{ enabled: boolean }>(
-          `SELECT enabled FROM usage_plan_feature WHERE workspace_id = $1 AND plan_id = $2 AND feature = $3`,
-          [workspaceId, planId, input.feature],
-        )
-        : { rows: [] as { enabled: boolean }[] };
-      await client.query(
-        `INSERT INTO creator_feature_balance (workspace_id, account_id, feature, remaining_units)
-         VALUES ($1, $2, $3, 0) ON CONFLICT DO NOTHING`,
-        [workspaceId, input.accountId, input.feature],
-      );
-      const balance = await client.query<{ remaining_units: string }>(
-        `SELECT remaining_units::text FROM creator_feature_balance
-          WHERE workspace_id = $1 AND account_id = $2 AND feature = $3 FOR UPDATE`,
-        [workspaceId, input.accountId, input.feature],
-      );
-      const row = membership.rows[0];
-      const decision = decideReserve({
-        now: now.getTime(),
-        membership: row ? { status: row.status, startsAt: row.starts_at.getTime(), endsAt: row.ends_at.getTime() } : null,
-        featureEnabled: feature.rows[0]?.enabled === true,
-        remaining: Number(balance.rows[0]?.remaining_units ?? 0),
-        units,
-        existing: existing.rows[0] ? { status: existing.rows[0].status } : null,
-      });
-      if (decision.action === "deny") {
-        await client.query("ROLLBACK");
-        return { ok: false, code: decision.code, message: membershipDenialMessage(decision.code, input.feature) };
-      }
-      if (decision.action === "replay") {
-        await client.query("COMMIT");
-        return { ok: true, holdId: String(existing.rows[0]?.id), replay: true };
-      }
-      await client.query(
-        `UPDATE creator_feature_balance SET remaining_units = remaining_units - $4, updated_at = now()
-          WHERE workspace_id = $1 AND account_id = $2 AND feature = $3`,
-        [workspaceId, input.accountId, input.feature, units],
-      );
-      let holdId = existing.rows[0]?.id;
-      if (decision.action === "rehold" && holdId) {
-        await client.query(
-          `UPDATE creator_quota_hold SET status = 'held', units = $2, updated_at = now() WHERE id = $1`,
-          [holdId, units],
-        );
-      } else {
-        holdId = randomUUID();
-        await client.query(
-          `INSERT INTO creator_quota_hold (
-             id, workspace_id, account_id, feature, project_id, task_key, idempotency_key, units, status
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'held')`,
-          [holdId, workspaceId, input.accountId, input.feature, input.projectId ?? null, input.taskKey ?? null, scopedKey, units],
-        );
-      }
-      await insertLedger(client, {
-        workspaceId,
-        accountId: input.accountId,
-        feature: input.feature,
-        kind: "debit",
-        units: String(units),
-        reason: "提交任务占用额度",
-        idempotencyKey: `hold:${holdId}:debit:${decision.action}`,
-        actorId: null,
-        taskKey: input.taskKey ?? null,
-        holdStatus: "held",
-      });
+      const result = await this.reserveInTransaction(client, workspaceId, input);
       await client.query("COMMIT");
-      return { ok: true, holdId: String(holdId), replay: false };
+      return result;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
     } finally {
       client.release();
     }
+  }
+
+  private async reserveInTransaction(client: WritingQuotaTransaction, workspaceId: string, input: MembershipReservation): Promise<ReserveResult> {
+    if (!await membershipStorageReady(client)) return { ok: true, skipped: true };
+    const now = input.now ?? new Date();
+    const units = input.units ?? 1;
+    const scopedKey = scopeHoldKey(input.feature, input.projectId, input.idempotencyKey, input.operation);
+    // A new hold has no row to lock. Serialize reservations before the replay lookup.
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `membership-quota:${workspaceId}:${input.accountId}:${input.feature}`,
+    ]);
+    const existing = await client.query<{ id: string; status: QuotaHoldStatus }>(
+      `SELECT id, status FROM creator_quota_hold
+        WHERE workspace_id = $1 AND account_id = $2 AND feature = $5
+          AND project_id IS NOT DISTINCT FROM $6::uuid
+          AND (idempotency_key = $3 OR ($4::text IS NOT NULL AND task_key = $4))
+        FOR UPDATE`,
+      [workspaceId, input.accountId, scopedKey, input.taskKey ?? null, input.feature, input.projectId ?? null],
+    );
+    if (existing.rows.length === 0 && input.replayOnly) {
+      return { ok: true, skipped: true };
+    }
+    const membership = await client.query<{ status: "active" | "disabled"; starts_at: Date; ends_at: Date; plan_id: string }>(
+      `SELECT status, starts_at, ends_at, plan_id FROM creator_membership
+        WHERE workspace_id = $1 AND account_id = $2
+        ORDER BY (status = 'active' AND starts_at <= $3 AND ends_at > $3) DESC, ends_at DESC
+        LIMIT 1`,
+      [workspaceId, input.accountId, now],
+    );
+    const planId = membership.rows[0]?.plan_id;
+    const feature = planId
+      ? await client.query<{ enabled: boolean }>(
+        `SELECT enabled FROM usage_plan_feature WHERE workspace_id = $1 AND plan_id = $2 AND feature = $3`,
+        [workspaceId, planId, input.feature],
+      )
+      : { rows: [] as { enabled: boolean }[] };
+    const balance = await client.query<{ remaining_units: string }>(
+      `SELECT remaining_units::text FROM creator_feature_balance
+        WHERE workspace_id = $1 AND account_id = $2 AND feature = $3 FOR UPDATE`,
+      [workspaceId, input.accountId, input.feature],
+    );
+    const row = membership.rows[0];
+    const decision = decideReserve({
+      now: now.getTime(),
+      membership: row ? { status: row.status, startsAt: row.starts_at.getTime(), endsAt: row.ends_at.getTime() } : null,
+      featureEnabled: feature.rows[0]?.enabled === true,
+      remaining: Number(balance.rows[0]?.remaining_units ?? 0),
+      units,
+      existing: existing.rows[0] ? { status: existing.rows[0].status } : null,
+    });
+    if (decision.action === "deny") {
+      return { ok: false, code: decision.code, message: membershipDenialMessage(decision.code, input.feature) };
+    }
+    if (decision.action === "replay") {
+      return { ok: true, holdId: String(existing.rows[0]?.id), replay: true };
+    }
+    await client.query(
+      `UPDATE creator_feature_balance SET remaining_units = remaining_units - $4, updated_at = now()
+        WHERE workspace_id = $1 AND account_id = $2 AND feature = $3`,
+      [workspaceId, input.accountId, input.feature, units],
+    );
+    let holdId = existing.rows[0]?.id;
+    if (decision.action === "rehold" && holdId) {
+      await client.query(
+        `UPDATE creator_quota_hold SET status = 'held', units = $2, updated_at = now() WHERE id = $1`,
+        [holdId, units],
+      );
+    } else {
+      holdId = randomUUID();
+      await client.query(
+        `INSERT INTO creator_quota_hold (
+           id, workspace_id, account_id, feature, project_id, task_key, idempotency_key, units, status
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'held')`,
+        [holdId, workspaceId, input.accountId, input.feature, input.projectId ?? null, input.taskKey ?? null, scopedKey, units],
+      );
+    }
+    await insertLedger(client, {
+      workspaceId,
+      accountId: input.accountId,
+      feature: input.feature,
+      kind: "debit",
+      units: String(units),
+      reason: decision.action === "rehold" ? "重新占用额度" : "提交任务占用额度",
+      idempotencyKey: `hold:${holdId}:debit:${randomUUID()}`,
+      actorId: null,
+      taskKey: input.taskKey ?? null,
+      holdStatus: "held",
+    });
+    return { ok: true, holdId: String(holdId), replay: false };
   }
 
   async release(holdId: string): Promise<void> {
@@ -821,7 +804,7 @@ export class PostgresMembershipStore implements MembershipStore {
           kind: "credit",
           units: hold.units,
           reason: "未发出的请求已释放额度",
-          idempotencyKey: `hold:${holdId}:release`,
+          idempotencyKey: `hold:${holdId}:release:${randomUUID()}`,
           actorId: null,
           holdStatus: "released",
         });
@@ -868,8 +851,12 @@ export class PostgresMembershipStore implements MembershipStore {
   }
 }
 
-/** One hold is one account, feature, project and task. The raw request key stays recoverable after the prefix. */
-function scopeHoldKey(feature: string, projectId: string | null | undefined, key: string): string {
+function scopeHoldKey(feature: MembershipFeature, projectId: string | null | undefined, key: string, operation?: string): string {
+  if (operation !== undefined) {
+    // Legacy keys start with a feature name or are bare hashes; even an arbitrary old client key cannot alias a new hold.
+    const identity = JSON.stringify([feature, projectId ?? null, operation, key]);
+    return `task:${createHash("sha256").update(identity).digest("hex")}`;
+  }
   const scoped = `${feature}:${projectId ?? "-"}:${key}`;
   return scoped.length <= 200 ? scoped : createHash("sha256").update(scoped).digest("hex");
 }

@@ -103,6 +103,77 @@ it("shows a retired model and permits key rotation without rewriting that ID", a
   expect(saveBody).toMatchObject({ model: "old-model", secretAction: "replace" });
 });
 
+it("blocks a pasted subscription key at the field and submits only the corrected Bailian key", async () => {
+  const original = view("bailian", { keyConfigured: true, model: "qwen-plus", workspaceId: "ws-old" });
+  const writes: unknown[] = [];
+  install((_url, init) => {
+    if (init?.method === "PUT") writes.push(JSON.parse(String(init.body)));
+    return Response.json(original);
+  });
+  render(<AiModelVendorSettings vendorId="bailian" />);
+  const dialog = await edit();
+  fireEvent.click(dialog.getByRole("button", { name: "更换" }));
+  const key = dialog.getByLabelText("API Key");
+  const save = dialog.getByRole("button", { name: "保存设置" }) as HTMLButtonElement;
+  fireEvent.change(key, { target: { value: "sk-sp-test-fixture" } });
+  expect(dialog.getByRole("alert").textContent).toBe("这是套餐密钥，请使用百炼按量付费 API Key");
+  expect(save.disabled).toBe(true);
+  fireEvent.click(save);
+  expect(writes).toHaveLength(0);
+  fireEvent.change(key, { target: { value: "sk-fake-regular" } });
+  expect(dialog.queryByRole("alert")).toBeNull();
+  fireEvent.change(dialog.getByLabelText("业务空间 ID"), { target: { value: "ws-new" } });
+  fireEvent.click(save);
+  await screen.findByText("密钥已保存 · 连接待测试");
+  expect(writes).toEqual([{ expectedRevision: 2, model: "qwen-plus", channel: "bailian-cn",
+    secretAction: "replace", apiKey: "sk-fake-regular", workspaceAction: "replace", workspaceId: "ws-new" }]);
+});
+
+it("saves a missing Beijing workspace without rotating the key and restores it on refresh", async () => {
+  let saved = view("bailian", { keyConfigured: true, model: "qwen-plus" });
+  const writes: unknown[] = [];
+  install((_url, init) => {
+    if (init?.method === "PUT") {
+      writes.push(JSON.parse(String(init.body)));
+      saved = { ...saved, workspaceId: "ws-test", revision: 3 };
+    }
+    return Response.json(saved);
+  });
+  const page = render(<AiModelVendorSettings vendorId="bailian" />);
+  expect(await screen.findByText("请先在编辑设置中保存业务空间 ID")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "检测连接" }) as HTMLButtonElement).disabled).toBe(true);
+  const dialog = await edit();
+  const space = dialog.getByLabelText("业务空间 ID");
+  fireEvent.change(space, { target: { value: "https://wrong.invalid/" } });
+  fireEvent.click(dialog.getByRole("button", { name: "保存设置" }));
+  expect(dialog.getByRole("alert").textContent).toContain("无需填写网址");
+  expect(writes).toHaveLength(0);
+  fireEvent.change(space, { target: { value: "ws-test" } });
+  fireEvent.click(dialog.getByRole("button", { name: "保存设置" }));
+  await screen.findByText("密钥已保存 · 连接待测试");
+  expect(writes).toEqual([{ expectedRevision: 2, channel: "bailian-cn", model: "qwen-plus",
+    secretAction: "keep", workspaceAction: "replace", workspaceId: "ws-test" }]);
+  page.unmount();
+  render(<AiModelVendorSettings vendorId="bailian" />);
+  expect((await screen.findByRole("button", { name: "检测连接" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(((await edit()).getByLabelText("业务空间 ID") as HTMLInputElement).value).toBe("ws-test");
+});
+
+it("points a legacy subscription key back to the credential field even when it is masked", async () => {
+  const original = view("bailian", { keyConfigured: true, model: "qwen-plus", workspaceId: "ws-test" });
+  install((_url, init) => init?.method === "PUT"
+    ? Response.json({ error: { code: "ADMIN_CONFIG_BAILIAN_PLAN_KEY" } }, { status: 400 })
+    : Response.json(original));
+  render(<AiModelVendorSettings vendorId="bailian" />);
+  const editor = await edit();
+  fireEvent.click(editor.getByRole("button", { name: "保存设置" }));
+  expect((await editor.findByRole("alert")).textContent).toBe("这是套餐密钥，请使用百炼按量付费 API Key");
+  expect(editor.getByLabelText("已保存密钥")).toBeTruthy();
+  fireEvent.click(editor.getByRole("button", { name: "更换" }));
+  expect(editor.queryByRole("alert")).toBeNull();
+  expect((editor.getByLabelText("API Key") as HTMLInputElement).value).toBe("");
+});
+
 it("clears model and secret on vendor change and ignores an earlier vendor detail returning late", async () => {
   let release!: (value: Response) => void;
   const late = new Promise<Response>((resolve) => {
@@ -199,6 +270,7 @@ it("does not issue duplicate checks or let a late receipt override a changed dra
   fireEvent.click(check);
   fireEvent.click(check);
   expect(probes).toBe(1);
+  expect(screen.getByText("正在读取模型列表…").hasAttribute("data-outcome")).toBe(false);
   const dialog = await edit();
   fireEvent.click(dialog.getByRole("combobox", { name: "模型" }));
   fireEvent.click(
@@ -208,10 +280,13 @@ it("does not issue duplicate checks or let a late receipt override a changed dra
     finish(Response.json(evidence));
   });
   expect(screen.queryByText("已读取模型列表")).toBeNull();
+  expect(screen.getByText("密钥已保存 · 连接待测试").hasAttribute("data-outcome")).toBe(false);
 });
 
 it.each([
   ["listed", "已读取模型列表"],
+  ["unavailable", "已读取模型列表，当前凭证未列出所选模型。"],
+  ["failed", "无法读取模型列表，请检查密钥及访问权限。"],
   ["unknown", "结果未知"],
 ])("labels the actual %s evidence and does not retry", async (status, expected) => {
   const saved = view("openai", { keyConfigured: true, model: "gpt-6-luna" });
@@ -228,10 +303,34 @@ it.each([
   );
   render(<AiModelVendorSettings vendorId="openai" />);
   fireEvent.click(await screen.findByRole("button", { name: "检测连接" }));
-  expect(await screen.findByText(expected)).toBeTruthy();
+  expect((await screen.findByText(expected)).dataset.outcome).toBe(status);
   expect(screen.queryByText("检测通过")).toBeNull();
   expect(fetch).toHaveBeenCalledTimes(3);
 });
+
+it.each([
+  [403, "请使用有配置权限的账号重新登录。", "failed"],
+  [504, "结果未知", "unknown"],
+] as const)(
+  "clears previous success when a check returns HTTP %i",
+  async (code, message, outcome) => {
+    const saved = view("openai", { keyConfigured: true, model: "gpt-6-luna" });
+    let checks = 0;
+    install((url) => {
+      if (!url.endsWith("/check")) return Response.json(saved);
+      if (++checks === 1)
+        return Response.json({ ...saved, status: "listed", message: "已读取模型列表" });
+      return Response.json({}, { status: code });
+    });
+    render(<AiModelVendorSettings vendorId="openai" />);
+    const check = await screen.findByRole("button", { name: "检测连接" });
+    fireEvent.click(check);
+    expect((await screen.findByText("已读取模型列表")).dataset.outcome).toBe("listed");
+    fireEvent.click(check);
+    expect((await screen.findByText(message)).dataset.outcome).toBe(outcome);
+    expect(checks).toBe(2);
+  },
+);
 
 it("explains the empty project allowlist at the picker", async () => {
   install(() => Response.json(view("openai", { models: [] })));
