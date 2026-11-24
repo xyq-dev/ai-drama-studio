@@ -20,6 +20,8 @@ export interface EpisodeComposeJobPanelProps {
   onChanged?: () => void;
   /** A new compose (or a resend of an unconfirmed one) cannot start now; the list, review and downloads stay. */
   startBlocked?: boolean;
+  /** An unapproved script can inspect prior exports, including their quality reports. */
+  historyOnly?: boolean;
 }
 
 interface JobView {
@@ -451,11 +453,11 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
 
   const canStart = Boolean(props.body) || Boolean(held?.identity === identity && held.unresolved);
   return (
-    <section className="creator-episode-results mt-4 min-w-0" aria-label="集级合成">
-      <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={!canStart || busy || Boolean(props.startBlocked)} onClick={() => void start()}>开始多镜合成</button>
+    <section className="creator-episode-results mt-4 min-w-0" aria-label={props.historyOnly ? "成片历史" : "集级合成"}>
+      {!props.historyOnly && <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={!canStart || busy || Boolean(props.startBlocked)} onClick={() => void start()}>开始多镜合成</button>}
       {job ? <p className="mt-2 text-sm" role="status">多镜合成已受理 {job.state}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
-      {job && !TERMINAL.has(job.state) ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void cancel()}>取消合成</button> : null}
+      {!props.historyOnly && job && !TERMINAL.has(job.state) ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void cancel()}>取消合成</button> : null}
       <section id="episode-quality-results" tabIndex={-1} aria-label="成片质检结果" className="mt-3">
         {listError ? (
           <div className="text-sm">
@@ -482,7 +484,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
                 {(item.segments ?? []).map((segment) => <li key={`${item.assetId}:${segment.position}:${segment.assetId}`}>{segment.position}. {segment.shotId}</li>)}
               </ol>
               <EpisodeQualityPlayer assetId={item.assetId} report={item.qualityReport} enabled={item.qualityCheckEnabled} containsMockSources={item.containsMockSources} />
-              {item.status === "ACTIVE" && item.reviewStatus === "APPROVED" ? (
+              {!props.historyOnly && item.status === "ACTIVE" && item.reviewStatus === "APPROVED" ? (
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button className="rounded border px-2 py-1" type="button" disabled={pendingDownloads[item.assetId] !== undefined} onClick={() => void download(item, "mp4")}>
                     {pendingDownloads[item.assetId] === "mp4" ? "正在下载" : "下载 MP4"}
@@ -493,7 +495,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
                 </div>
               ) : null}
               {downloadErrors[item.assetId] !== undefined ? <p className="mt-2" role="alert">{downloadErrors[item.assetId]}</p> : null}
-              {item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
+              {!props.historyOnly && item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "APPROVE")}>批准成片</button>
                   <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "REJECT")}>退回成片</button>

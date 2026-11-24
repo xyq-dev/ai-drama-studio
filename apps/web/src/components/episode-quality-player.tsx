@@ -44,7 +44,7 @@ export function EpisodeQualityPlayer({ assetId, report, enabled, containsMockSou
 
   return (
     <>
-      <video ref={player} className="creator-composite-player mt-2 aspect-[9/16] w-full bg-black" controls
+      <video ref={player} className="creator-composite-player mt-2 aspect-[9/16] w-full bg-black" controls controlsList="nodownload"
         src={`/api/v1/assets/${assetId}/content`} aria-label="成片预览" onLoadedMetadata={() => {
           if (pendingSeek.current !== null && player.current) player.current.currentTime = pendingSeek.current;
           pendingSeek.current = null;

@@ -47,6 +47,7 @@ import { currentStoryRevision } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
 import { AutoRunEntry } from "./auto-run-entry";
 import { EntityPane, ScenePane, ScriptPane, StoryPane, TaskDrawer, usesSeriesWritingPage } from "./workbench";
+import { EpisodeComposeJobPanel } from "./episode-compose-job-panel";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 
@@ -708,12 +709,14 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                 <EpisodeComposePreflight projectId={projectId} episodeNo={episodeNo} episodeId={episode.id} onChanged={refreshFacts}
                   composeBlocked={composeBlockedReason(gates.episode, "episode")} />
               ) : (
-                <p id="creator-export-section" tabIndex={-1} className="rounded-[12px] border bg-white p-4">
-                  {episodeFinalState(facts, episodeNo) === "source_updated"
-                    ? "这一集的剧本改过了，原来批准的成片已标为历史（来源已更新）。请先在「看剧本」确认新版本，再重新试做样片和编排。"
-                    : activeLaunch?.skill === "qc-skill" ? "请先确认本集剧本，再生成成片查看质检。"
-                    : "这一集的剧本还没有确认通过，暂时不能编排成片。"}
-                </p>
+                <>
+                  <p id="creator-export-section" tabIndex={-1} className="rounded-[12px] border bg-white p-4">
+                    {episodeFinalState(facts, episodeNo) === "source_updated"
+                      ? "这一集的剧本改过了，原来批准的成片已标为历史（来源已更新）。请先在「看剧本」确认新版本，再重新试做样片和编排。"
+                      : "这一集的剧本还没有确认通过，暂时不能编排成片。"}
+                  </p>
+                  {episode && <EpisodeComposeJobPanel key={episode.id} client={client} projectId={projectId} episodeId={episode.id} body={null} historyOnly />}
+                </>
               )}
               <section className="rounded-[12px] border border-[#E7E5E0] bg-white p-4" aria-label="费用">
                 <h3 className="font-medium">费用</h3>
