@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { Test } from "@nestjs/testing";
-import { mkdtempSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -210,8 +211,9 @@ describe("episode compose preflight service", () => {
     expect(createAndQueueWorkflowJob).toHaveBeenCalledTimes(2);
   });
 
-  it("reads a stored episode composite from the compose directory when mock storage is absent", async () => {
-    const checksum = "ab".repeat(32);
+  it("reads owner-scoped stored episode bytes while rendering and mock storage are off", async () => {
+    const bytes = Buffer.from("stored-episode");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
     const jobId = "99999999-9999-4999-8999-999999999999";
     const attemptId = "88888888-8888-4888-8888-888888888888";
     const assetId = "77777777-7777-4777-8777-777777777777";
@@ -223,7 +225,7 @@ describe("episode compose preflight service", () => {
       storageProvider: "local-compose",
       objectKey,
       mimeType: "video/mp4",
-      byteSize: 128,
+      byteSize: bytes.length,
       checksumSha256: checksum,
       width: 1080,
       height: 1920,
@@ -239,6 +241,7 @@ describe("episode compose preflight service", () => {
     };
     const getWorkspaceAsset = vi.fn(async () => asset);
     const compositeOutputSchema = vi.fn(async () => "m4.episode.compose.asset.v1");
+    const root = await mkdtemp(join(tmpdir(), "episode-compose-"));
     const studio = new StudioService(
       { runIdempotent: vi.fn() } as never,
       {} as never,
@@ -251,14 +254,27 @@ describe("episode compose preflight service", () => {
       false,
       false,
       false,
-      mkdtempSync(join(tmpdir(), "episode-compose-")),
-      true,
+      root,
+      false,
     );
-    await expect(studio.readMockAssetContent(assetId)).rejects.toMatchObject({
-      code: "NOT_FOUND",
-      message: "Asset content is unavailable",
-    });
-    expect(getWorkspaceAsset).toHaveBeenCalledWith(workspaceId, assetId);
+    try {
+      await expect(studio.readMockAssetContent(assetId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await mkdir(join(root, "compose", workspaceId, projectId, jobId, attemptId), { recursive: true });
+      await writeFile(join(root, objectKey), bytes);
+      await expect(studio.readMockAssetContent(assetId)).resolves.toEqual({ mimeType: "video/mp4", bytes });
+      expect(getWorkspaceAsset).toHaveBeenCalledWith(workspaceId, assetId);
+      await expect(studio.readOperatorAssetContent(assetId, null)).resolves.toEqual({ mimeType: "video/mp4", bytes });
+
+      // A foreign or missing asset is rejected by the same owner-scoped lookup, before reading its schema or file.
+      compositeOutputSchema.mockClear();
+      getWorkspaceAsset.mockRejectedValueOnce(new PersistenceError("NOT_FOUND", "Asset not found"));
+      await expect(studio.readMockAssetContent(assetId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(compositeOutputSchema).not.toHaveBeenCalled();
+      await writeFile(join(root, objectKey), Buffer.alloc(bytes.length));
+      await expect(studio.readMockAssetContent(assetId)).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
     const image = new StudioService(
       { runIdempotent: vi.fn() } as never,
       {} as never,

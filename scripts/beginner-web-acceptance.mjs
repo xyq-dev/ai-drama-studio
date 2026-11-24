@@ -994,7 +994,25 @@ async function main() {
       // Issue #54 D: a completed step whose compose is switched off still offers a recheck in its notice. The API is
       // restarted without the compose switches; 试一段 is done (episode 1 has an approved sample).
       await stopProcess("api");
-      await startApi(env);
+      await startApi({ ...env, M4_COMPOSE_OBJECT_DIR: composeObjectDir });
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=final`, { waitUntil: "domcontentloaded" });
+      await page.getByText(/集级合成由平台统一开启，目前还没开/).waitFor();
+      const approved = results["step5-final"].detail;
+      const savedCard = page.locator(`[data-composite-id="${approved.asset}"]`);
+      const beforeRead = await counts();
+      await playVideo(savedCard.locator("video"), 1000);
+      const savedMp4 = join(scratch, "approved-episode.mp4");
+      const savedManifest = join(scratch, "approved-episode.json");
+      await saveDownload(savedCard.getByRole("button", { name: "下载 MP4" }), savedMp4);
+      await saveDownload(savedCard.getByRole("button", { name: "下载来源清单" }), savedManifest);
+      const savedHash = createHash("sha256").update(await readFile(savedMp4)).digest("hex");
+      const savedInfo = JSON.parse(await readFile(savedManifest, "utf8"));
+      const afterRead = await counts();
+      if (savedHash !== approved.sha256 || savedInfo.asset?.checksumSha256 !== savedHash ||
+          beforeRead.jobs !== afterRead.jobs || beforeRead.costs !== afterRead.costs) {
+        throw new Error("Reading an approved episode with compose disabled must preserve its bytes, jobs and costs");
+      }
+      evidence.checks.approvedEpisodeWhileClosed = { sha256: savedHash, playback: true, manifest: true };
       await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
       const closedNotice = page.getByRole("status").filter({ hasText: "当前环境没有开启单镜成片所需的功能" });
       await closedNotice.waitFor({ timeout: 20_000 });

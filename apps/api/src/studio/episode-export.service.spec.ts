@@ -63,7 +63,7 @@ describe("episode composite export", () => {
     const studio = new StudioService(
       {} as never, { getProject: async () => ({ id: projectId }) } as never, {} as never, workspaceId, undefined,
       { inspectEpisodeCompositeExport } as unknown as MediaAssetStore,
-      false, null, false, false, false, root, true,
+      false, null, false, false, false, root, false,
     );
     await expect(studio.exportEpisodeComposite(projectId, episodeId, assetId, {
       expectedContentHash: record.checksumSha256,
@@ -98,7 +98,7 @@ describe("episode composite export", () => {
     await expect(pending).rejects.toMatchObject({ code: "COMPOSE_INPUT_INVALID" });
   });
 
-  it("returns the verified bytes only when the second eligibility check still matches", async () => {
+  it.each([true, false])("exports an owned approved episode after verifying its bytes with rendering enabled=%s", async (renderingEnabled) => {
     const root = await mkdtemp(join(tmpdir(), "episode-export-ok-"));
     created.push(root);
     const bytes = Buffer.from("same-bytes");
@@ -108,7 +108,7 @@ describe("episode composite export", () => {
     const studio = new StudioService(
       {} as never, { getProject: async () => ({ id: projectId }) } as never, {} as never, workspaceId, undefined,
       { inspectEpisodeCompositeExport: async () => record } as unknown as MediaAssetStore,
-      false, null, false, false, false, root, true,
+      false, null, false, false, false, root, renderingEnabled,
     );
     const exported = await studio.exportEpisodeComposite(projectId, episodeId, assetId, {
       expectedContentHash: record.checksumSha256,

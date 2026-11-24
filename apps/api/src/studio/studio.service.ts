@@ -928,9 +928,6 @@ export class StudioService {
       const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
       const episodeOutput = schema === "m4.episode.compose.asset.v1";
       const shotOutput = schema === "m4.shot.compose.asset.v1" || schema === "m4.shot.voice-compose.asset.v1";
-      if (episodeOutput && !this.episodeComposeEnabled) {
-        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
-      }
       if (shotOutput && !this.localComposeEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
       }
@@ -982,8 +979,8 @@ export class StudioService {
     assetId: string,
     query: Record<string, unknown>,
   ): Promise<{ filenameStem: string; bytes: Buffer; manifest: ReturnType<typeof episodeExportBody>["manifest"] }> {
-    if (!this.episodeComposeEnabled || !this.composeObjectDir || !this.mediaAssets) {
-      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
+    if (!this.composeObjectDir || !this.mediaAssets) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose storage is unavailable");
     }
     // Opaque ownership gate for download + export-manifest (same NOT_FOUND as a missing project).
     await this.store.getProject(this.workspaceId, projectId);
