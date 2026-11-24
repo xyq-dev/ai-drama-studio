@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-  VIMAX_PLANNING_BUDGET, VIMAX_PLANNING_PROMPT_VERSION, VIMAX_UPSTREAM_REVISION,
+  DRAMA_TEXT_SKILL_VERSION, VIMAX_PLANNING_BUDGET, VIMAX_PLANNING_PROMPT_VERSION, VIMAX_UPSTREAM_REVISION,
   vimaxCandidateTargetSchema, vimaxPlanningFrozenSchema, vimaxPlanningStartSchema, vimaxPlatformSourceSnapshotSchema,
   type TitleWritingProviderKey, type VimaxCandidateCreate, type VimaxCandidateTarget, type VimaxPlanningFrozen, type VimaxPlanningStart,
   type VimaxPlatformInput, type VimaxPlatformSourceSnapshot,
@@ -60,6 +60,7 @@ export function freezeVimaxPlanning(sourceValue: VimaxPlatformSourceSnapshot, ta
   }
   if (validateVimaxPlatformPlanningInput(vimaxPlanningPlatformInput(source, request))) return { ok: false, code: "VIMAX_PLANNING_INPUT_BLOCKED" };
   const input = vimaxPlanningFrozenSchema.parse({ schema: "ads.vimax-planning.frozen.v1", promptVersion: VIMAX_PLANNING_PROMPT_VERSION,
+    ...(request.skill && { skillVersion: DRAMA_TEXT_SKILL_VERSION }),
     source, target, request, providerKey, model, budget: VIMAX_PLANNING_BUDGET });
   if (Buffer.byteLength(JSON.stringify(input), "utf8") > 1024 * 1024) return { ok: false, code: "VIMAX_PLANNING_INPUT_TOO_LARGE" };
   return { ok: true, input, frozenHash: hashVimaxPlanningFrozen(input) };

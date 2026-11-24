@@ -8,10 +8,11 @@ interface Pending { key: string; body: VimaxPlanningStart }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const message = (e: unknown) => e instanceof VimaxPlanningError ? e.message : "结果尚未确认，请保留原请求并稍后确认。";
 const safeRefusal = (e: unknown) => e instanceof VimaxPlanningError && (
-  [400, 413, 422, 429].includes(e.status) || ["VIMAX_PLANNING_ACTIVE", "VIMAX_PLANNING_NEEDS_CONFIRMATION", "VIMAX_PLANNING_SOURCE_CHANGED",
+  [400, 413, 422, 429].includes(e.status) || ["CREATOR_SKILL_DISABLED", "VIMAX_PLANNING_ACTIVE", "VIMAX_PLANNING_NEEDS_CONFIRMATION", "VIMAX_PLANNING_SOURCE_CHANGED",
     "VIMAX_PLANNING_PROJECT_ACTIVE", "VIMAX_PLANNING_TARGET_CHANGED", "VIMAX_PLANNING_HAS_SHOTS", "VIMAX_PLANNING_ACTIVE_BREAKDOWN", "SOURCE_STALE", "SERIES_MEDIA_NOT_ENABLED"].includes(e.code));
 export interface VimaxPlanningPanelProps {
   projectId: string; episodeId: string;
+  initiallyOpen?: boolean;
   draftRequest: VimaxPlanningStart | null;
   onCandidate: (candidate: VimaxCandidateCreate) => void;
   client?: Pick<VimaxPlanningClient, "options" | "list" | "get" | "start" | "cancel">;
@@ -24,7 +25,7 @@ function PlanningSession(props: VimaxPlanningPanelProps) {
   const storageKey = `ads.vimax-planning.pending.v1:${props.projectId}:${props.episodeId}`;
   const mounted = useRef(true), busyRef = useRef(false), sequence = useRef(0);
   const pendingRef = useRef<Pending | null>(null);
-  const [opened, setOpened] = useState(false), [busy, setBusy] = useState(false), [reading, setReading] = useState(false);
+  const [opened, setOpened] = useState(props.initiallyOpen ?? false), [busy, setBusy] = useState(false), [reading, setReading] = useState(false);
   const [options, setOptions] = useState<VimaxPlanningOptions | null>(null), [items, setItems] = useState<VimaxPlanningView[]>([]);
   const [selected, setSelected] = useState<VimaxPlanningView | null>(null), [pending, setPending] = useState<Pending | null>(null);
   const [confirmed, setConfirmed] = useState(false), [uncertainConfirmed, setUncertainConfirmed] = useState(false);

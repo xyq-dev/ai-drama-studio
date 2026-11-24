@@ -169,6 +169,7 @@ export class StudioService {
     private readonly referenceGate: CharacterReferenceGateMode = "legacy",
     private readonly realComposeEnabled = false,
     private readonly realSourcesOnly = false,
+    private readonly qualityCheckEnabled: () => Promise<boolean> = async () => true,
   ) {}
 
   get workspace(): string {
@@ -831,7 +832,7 @@ export class StudioService {
           requestedBy: context.actorId,
           kind: "MEDIA_COMPOSE",
           inputHash: frozen.inputHash,
-          inputSnapshot: frozen.snapshot,
+          inputSnapshot: { ...frozen.snapshot, qualityCheckEnabled: await this.qualityCheckEnabled() },
           traceId: context.traceId,
         };
       },
@@ -921,7 +922,7 @@ export class StudioService {
     return this.readMockAssetContent(assetId);
   }
 
-  async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {
+  async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer; etag?: string }> {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);
     if (asset.kind === "COMPOSITE") {
@@ -935,7 +936,8 @@ export class StudioService {
         throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
       }
       if (!this.composeObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Composite storage is unavailable");
-      return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
+      const content = await readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
+      return { ...content, etag: `"${asset.checksumSha256}"` };
     }
     return this.readMockMediaBytes(asset);
   }

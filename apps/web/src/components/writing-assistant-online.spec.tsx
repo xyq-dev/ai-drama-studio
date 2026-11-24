@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WritingCandidateView } from "@ai-drama/contracts";
 import type { StoryPlanCandidate, WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
 import { WritingAssistant } from "./writing-assistant";
+import { CreatorSkillContext } from "./creator-skill-assistant";
 
 const P1 = "22222222-2222-4222-8222-222222222222";
 const P2 = "33333333-3333-4333-8333-333333333333";
@@ -31,6 +32,7 @@ function json(body: unknown, status = 200): Promise<Response> {
 }
 
 interface ServerOptions {
+  candidate?: WritingCandidateView["candidate"];
   tokenRequired?: boolean;
   /** What the request becomes when it is read (after its send). */
   outcome?: "completed" | "unknown" | "rejected";
@@ -75,7 +77,7 @@ function fakeServer(options: ServerOptions = {}) {
       if (found.state === "reserved" && found.reads > (options.pendingReads ?? 0)) {
         const outcome = options.outcome ?? "completed";
         Object.assign(found, outcome === "completed"
-          ? { state: "completed", candidate: { mode: "story", plan: PLAN } }
+          ? { state: "completed", candidate: options.candidate ?? { mode: "story", plan: PLAN } }
           : { state: outcome, errorCode: outcome === "unknown" ? "timeout" : "refusal" });
       }
       return json({ request: found });
@@ -94,7 +96,7 @@ function fakeServer(options: ServerOptions = {}) {
           return json({ error: { code: "WRITING_CANDIDATE_NEEDS_CONFIRMATION", message: "上一次在线生成的结果不确定，可能已经产生费用。请先确认后再发起新的生成。", details: { requestId: latest.requestId } } }, 409);
         }
         const id = `9999999${String(requests.size)}-9999-4999-8999-999999999999`;
-        found = { key: key ?? "", reads: 0, requestId: id, projectId: start[1]!, mode: body.mode as "story", episodeId: (body.episodeId as string | undefined) ?? null,
+        found = { ...(body.skill === "short-drama-write" && { skill: "short-drama-write" as const }), key: key ?? "", reads: 0, requestId: id, projectId: start[1]!, mode: body.mode as "story", episodeId: (body.episodeId as string | undefined) ?? null,
           episodeNo: null, providerKey: "anthropic", providerLabel: "Claude", model: String(body.model), state: "reserved", errorCode: null,
           providerRequestId: null, responseModel: null, usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null },
           billing: "unknown", base: body.base as { sourceRevisionId: string | null; ifMatch: number }, request: body.request as never, candidate: null,
@@ -280,6 +282,30 @@ describe("online candidates in the writing assistant", () => {
     expect(JSON.stringify({ ...sessionStorage })).not.toContain("operator-token-0123456789");
   });
 
+  it("loads the skill instruction as an editable request, then sends the current episode text only after confirmation", async () => {
+    const server = fakeServer();
+    vi.stubGlobal("fetch", server.fetch);
+    const onAdopt = vi.fn(() => true);
+    const episode = { ...props({ onAdopt }), mode: "episode" as const, entityKey: `script:${E2}`, episodeNo: 2, episodeId: E2,
+      confirmedMaterials: "已确认的故事", capture: () => ({ ...target(), currentText: "司机：走吧。", entityKey: `script:${E2}`, mode: "episode" as const, episodeNo: 2 }) };
+    sessionStorage.setItem(`ads-writing:${P1}:script:${E2}`, JSON.stringify({ revisionRequest: "原先的修改要求", mustKeepEnding: "末班车准时到站" }));
+    render(<CreatorSkillContext.Provider value={{ id: "launch", projectId: P1, episodeId: E2, skill: "short-drama-write", instruction: "把司机的对白改自然一点" }}>
+      <WritingAssistant {...episode} />
+    </CreatorSkillContext.Provider>);
+    await screen.findByTestId("online-provider");
+    expect((screen.getByLabelText("修改要求") as HTMLTextAreaElement).value).toBe("把司机的对白改自然一点");
+    expect(screen.getByRole("button", { name: "恢复之前的修改要求" })).toBeTruthy();
+    expect((screen.getByLabelText("必须保留的结局") as HTMLTextAreaElement).value).toBe("末班车准时到站");
+    const send = screen.getByRole("button", { name: "确认并生成剧本候选" });
+    expect(server.posts).toHaveLength(0);
+    fireEvent.click(screen.getByLabelText("确认使用当前已加载的故事与分集材料"));
+    fireEvent.click(send);
+    await waitFor(() => expect(server.posts).toHaveLength(1));
+    expect(server.posts[0]!.body).toMatchObject({ skill: "short-drama-write", confirmedTextSend: true, episodeId: E2,
+      request: { episodeNo: 2, currentText: "司机：走吧。", revisionRequest: "把司机的对白改自然一点", mustKeepEnding: "末班车准时到站" } });
+    expect(onAdopt).not.toHaveBeenCalled();
+  });
+
   it("an episode request names its episode and keeps the dialogue, ending and revision constraints", async () => {
     const server = fakeServer();
     vi.stubGlobal("fetch", server.fetch);
@@ -366,4 +392,27 @@ describe("why online candidates cannot be asked for, from the real providers and
     await waitFor(() => expect(server.posts).toHaveLength(1));
     expect(server.posts[0]!.body).toMatchObject({ providerKey: "anthropic", model: "claude-opus-5-5" });
   });
+});
+
+it("adopts a validated skill revision with the untouched editor text intact", async () => {
+  const currentText = " 雨落在车窗。\r\n司机：走吧。\n小杰上车。 ";
+  const after = "司机：上来，给你留了座。";
+  const server = fakeServer({ candidate: { mode: "episode-edit", edit: { changes: [{ before: "司机：走吧。", after }] } } });
+  vi.stubGlobal("fetch", server.fetch);
+  const onAdopt = vi.fn(() => true);
+  const entityKey = `script:${E2}`;
+  const capture = () => ({ ...target(), currentText, entityKey, mode: "episode" as const, episodeNo: 2 });
+  render(<CreatorSkillContext.Provider value={{ id: "revision", projectId: P1, episodeId: E2, skill: "short-drama-write", instruction: "改自然一点" }}>
+    <WritingAssistant {...props({ onAdopt })} mode="episode" episodeNo={2} episodeId={E2} entityKey={entityKey}
+      confirmedMaterials="已确认的故事" capture={capture} />
+  </CreatorSkillContext.Provider>);
+  await screen.findByTestId("online-provider");
+  fireEvent.click(screen.getByLabelText("确认使用当前已加载的故事与分集材料"));
+  fireEvent.click(screen.getByRole("button", { name: "确认并生成剧本候选" }));
+  await screen.findByLabelText("候选正文", undefined, { timeout: 5000 });
+  expect(onAdopt).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "采纳到草稿" }));
+  expect(onAdopt).toHaveBeenCalledWith(currentText.replace("司机：走吧。", after), expect.objectContaining({ currentText }),
+    { changes: [{ before: "司机：走吧。", after }] });
+  expect(server.posts).toHaveLength(1);
 });

@@ -8,7 +8,8 @@
 .button { min-height: 44px; padding: .55rem .85rem; border: 1px solid #bdcee3; border-radius: 8px; color: #173f78; background: #fff; cursor: pointer; font: inherit; }
 .button:disabled { opacity: .5; cursor: default; }
 .primary { color: #fff; background: #173f78; border-color: #173f78; }
-.label { display: grid; gap: .4rem; min-width: 0; font-weight: 600; }
+.label { display: grid; grid-template-columns: minmax(0, 1fr); gap: .4rem; min-width: 0; font-weight: 600; }
+.label select { min-width: 0; max-width: 100%; min-height: 44px; }
 .file { display: block; width: 100%; max-width: 100%; min-width: 0; min-height: 44px; font-weight: 400; }
 .file::file-selector-button { min-height: 44px; padding: .4rem .7rem; margin-right: .5rem; border: 1px solid #bdcee3; border-radius: 8px; background: #fff; color: #173f78; cursor: pointer; }
 .json { width: 100%; max-width: 100%; box-sizing: border-box; min-height: 150px; border: 1px solid #bdcee3; border-radius: 8px; padding: .7rem; font: .85rem/1.5 monospace; resize: vertical; }

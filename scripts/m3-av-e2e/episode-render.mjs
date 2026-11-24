@@ -454,10 +454,23 @@ async function episodeWithoutMockDir(ctx, localSingleOff = false) {
     const asset = await episodeAsset(ctx, accepted.jobId);
     const listed = ctx.expectStatus(await ctx.callApi(base, "GET", `${path}/composites?limit=10`), 200).body;
     if (listed.items?.[0]?.assetId !== asset.id) throw new Error("newest episode composite was not listed first without mock dir");
+    const listedAsset = listed.items[0];
+    const stored = asset.metadata_json.qualityReport;
+    if (listedAsset.qualityCheckEnabled !== true || listedAsset.containsMockSources !== true ||
+        stored?.skill !== "qc-skill" || stored.status !== "FAIL" ||
+        !stored.findings.some((finding) => finding.code === "SILENCE") ||
+        !listedAsset.qualityReport?.findings.some((finding) => finding.code === "SILENCE")) {
+      throw new Error("episode composite did not preserve the silent demo's measured quality report");
+    }
     const content = await fetch(`${base}/api/v1/assets/${asset.id}/content`);
     const bytes = Buffer.from(await content.arrayBuffer());
     if (content.status !== 200 || !String(content.headers.get("content-type")).includes("video/mp4") || bytes.subarray(4, 8).toString() !== "ftyp") {
       throw new Error(`episode content without mock dir ${content.status} ${bytes.length}`);
+    }
+    const slice = await fetch(content.url, { headers: { range: "bytes=4-7" } });
+    if (slice.status !== 206 || slice.headers.get("content-range") !== `bytes 4-7/${bytes.length}` ||
+        Buffer.from(await slice.arrayBuffer()).toString() !== "ftyp") {
+      throw new Error("episode preview did not serve the requested MP4 bytes");
     }
     const reviewed = ctx.expectStatus(await ctx.callApi(base, "POST", `/assets/${asset.id}/review`, {
       ifMatch: Number(asset.row_version),

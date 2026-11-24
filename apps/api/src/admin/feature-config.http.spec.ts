@@ -17,6 +17,9 @@ let HASH = "";
 
 function backend() {
   return {
+    skills: vi.fn(async () => ({ revision: 0, skills: [] })),
+    setSkill: vi.fn(async () => ({ revision: 1, skills: [] })),
+    skillRuns: vi.fn(async () => []),
     view: vi.fn(async () => ({ revision: 0, validation: "local_only", features: [] })),
     saveDraft: vi.fn(async () => ({ revision: 1, validation: "local_only", features: [] })),
     testDraft: vi.fn(async () => ({ view: { revision: 2, validation: "local_only", features: [] }, probe: { ok: true, message: "ok" } })),
@@ -107,6 +110,29 @@ describe("feature config HTTP boundary", () => {
     expect(JSON.stringify(await denied.json())).not.toContain(SECRET);
     expect(store.view).not.toHaveBeenCalled();
     expect(store.operatorUsage).not.toHaveBeenCalled();
+  });
+
+  it("restricts skill switching and run history using the current operator role", async () => {
+    const auth = await start({ staff: true });
+    const creator = await login("creator-a");
+    expect((await request("/admin/skills", { headers: { cookie: creator.cookie } })).status).toBe(401);
+    expect(store.skills).not.toHaveBeenCalled();
+    const staff = await login("staff");
+    const headers = { cookie: staff.cookie, origin: ORIGIN, "content-type": "application/json", "x-csrf-token": staff.csrf };
+    const put = (value: unknown, h = headers) => request("/admin/skills/qc-skill", {
+      method: "PUT", headers: h, body: JSON.stringify(value),
+    });
+    expect(await (await request("/admin/skills", { headers })).json()).toMatchObject({ canManage: false, canViewRuns: false });
+    expect((await request("/admin/skills/runs", { headers })).status).toBe(403);
+    expect((await put({ enabled: false, expectedRevision: 0 })).status).toBe(403);
+    expect(store.setSkill).not.toHaveBeenCalled();
+    auth.syncStaff("staff", { status: "active", permissions: ["enable_models", "view_usage"] });
+    expect((await request("/admin/skills/runs", { headers })).status).toBe(200);
+    expect((await put({ enabled: false, expectedRevision: 0 }, { ...headers, "x-csrf-token": "" })).status).toBe(403);
+    expect((await put({ enabled: false, expectedRevision: -1 })).status).toBe(400);
+    expect(store.setSkill).not.toHaveBeenCalled();
+    expect((await put({ enabled: false, expectedRevision: 0 })).status).toBe(200);
+    expect(store.setSkill).toHaveBeenCalledExactlyOnceWith("qc-skill", false, 0);
   });
 
   it("does not call the probe when the test body is not an explicit confirmation", async () => {

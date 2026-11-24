@@ -8,7 +8,9 @@ import {
   WRITING_PROMPT_VERSION,
   episodeDraftCandidateSchema,
   storyPlanCandidateSchema,
+  episodeEditSchema,
   type EpisodeDraftCandidate,
+  type EpisodeEdit,
   type StoryPlanCandidate,
 } from "@ai-drama/contracts";
 import { DomainError } from "./errors";
@@ -68,9 +70,35 @@ export interface FrozenWritingContext extends WritingTargetSnapshot {
   loaded: true;
 }
 
-export type WritingImport =
+type StructuredWritingImport =
   | { mode: "story"; plan: StoryPlanCandidate }
   | { mode: "episode"; draft: EpisodeDraftCandidate };
+
+export type WritingImport = StructuredWritingImport | { mode: "episode-edit"; text: string; edit?: EpisodeEdit };
+
+/** Rebuild locally from the source. Unchanged text, including spacing and line breaks, is retained byte-for-byte. */
+export function applyEpisodeEdit(source: string, raw: unknown): string {
+  const edit = episodeEditSchema.parse(raw);
+  const replacements = edit.changes.map(({ before, after }) => {
+    assertSafe(after);
+    assertSavedBody("新内容", after);
+    const start = source.indexOf(before);
+    if (start < 0 || source.indexOf(before, start + 1) >= 0 || before === after) {
+      throw new DomainError("WRITING_INVALID_CANDIDATE", "修改位置无法唯一匹配原稿，已保留原文。");
+    }
+    return { start, end: start + before.length, after };
+  }).sort((a, b) => a.start - b.start);
+  let cursor = 0;
+  let text = "";
+  for (const replacement of replacements) {
+    if (replacement.start < cursor) throw new DomainError("WRITING_INVALID_CANDIDATE", "候选包含重叠修改。");
+    text += source.slice(cursor, replacement.start) + replacement.after;
+    cursor = replacement.end;
+  }
+  text += source.slice(cursor);
+  if (!text.trim()) throw new DomainError("WRITING_INVALID_CANDIDATE", "修改后剧本为空。");
+  return assertFormatted(text);
+}
 
 const storyRules = (episodeCount: number) => [
   "创作者写明的事实、必须保留的内容和禁止改动的内容优先于创作建议。",
@@ -266,7 +294,7 @@ function assertSafe(value: unknown): void {
 export function parseWritingImport(
   bytes: Uint8Array,
   expected: { mode: "story" | "episode"; episodeNo: number | null; episodeCount?: number | undefined },
-): WritingImport {
+): StructuredWritingImport {
   if (bytes.byteLength > WRITING_IMPORT_MAX_BYTES) {
     throw new DomainError("WRITING_TOO_LARGE", `导入文件超过 ${WRITING_IMPORT_MAX_BYTES} 字节，已拒绝`);
   }
@@ -384,6 +412,7 @@ export function formatEpisodeDraft(draft: EpisodeDraftCandidate, handoffHeading:
 }
 
 export function formatWritingImport(imported: WritingImport, episodeCount = 3): string {
+  if (imported.mode === "episode-edit") return assertFormatted(imported.text);
   return imported.mode === "story" ? formatStoryPlan(imported.plan)
     : formatEpisodeDraft(imported.draft, episodeCount === 1 ? "本集结局事实" : "下一集需要继承的事实");
 }

@@ -556,3 +556,17 @@
     align-items: stretch;
   }
 }
+
+.skillRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--admin-line, #dce2ea);
+}
+.skillRow > div { flex: 1 1 120px; }
+.skillRow .scope, .skillRuns small { display: block; }
+.skillRuns ul { padding-inline-start: 20px; overflow-wrap: anywhere; }
+.skillRuns li { margin-block: 8px; }
+.skillRuns small { color: var(--admin-muted, #53637b); }

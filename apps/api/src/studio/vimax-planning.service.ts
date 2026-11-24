@@ -12,6 +12,7 @@ import type { StudioContext } from "./studio.service";
 export interface VimaxPlanningDependencies extends OperatorPolicy {
   workspaceId: string; nodeEnv: "development" | "test" | "production"; enabled: boolean;
   allowProduction?: boolean;
+  skillEnabled?: (skill: "short-drama-storyboard") => Promise<boolean>;
   /** True only while site login is enabled. This capability never runs on an anonymous site. */
   siteAuthRequired: boolean;
   defaultProvider: TitleWritingProviderKey | null;
@@ -22,6 +23,7 @@ export interface VimaxPlanningDependencies extends OperatorPolicy {
 }
 export interface VimaxPlanningResult { status: number; body: unknown }
 const failures: Record<string, [number, string]> = {
+  CREATOR_SKILL_DISABLED: [409, "短剧分镜技能已停用。"],
   VIMAX_PLANNING_DISABLED: [404, "当前环境未开放在线单场景规划。"],
   VIMAX_PLANNING_FORBIDDEN: [403, "需要已登录管理员的操作权限，未发出新调用。"],
   VIMAX_PLANNING_STORAGE_UNAVAILABLE: [503, "单场景规划存储尚未启用，未预约或发送。"],
@@ -99,6 +101,9 @@ export class VimaxPlanningService {
       const previous = await this.deps.store.findByKey(this.deps.workspaceId, context.actorId, context.idempotencyKey!);
       if (previous) return previous.requestHash === requestHash && previous.projectId === projectId && previous.episodeId === episodeId
         ? this.found(previous, projectId, episodeId, 200, true) : failure("IDEMPOTENCY_KEY_REUSED");
+      if (parsed.data.skill && this.deps.skillEnabled && !await this.deps.skillEnabled(parsed.data.skill)) {
+        return failure("CREATOR_SKILL_DISABLED");
+      }
       const providerKey = this.choice(), provider = providerKey ? this.deps.providers[providerKey] : null;
       if (!providerKey || !provider?.ok || !provider.models[0]) return failure("VIMAX_PLANNING_PROVIDER_UNCONFIGURED");
       const now = this.now();

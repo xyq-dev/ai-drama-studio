@@ -12,6 +12,7 @@ import type {
 } from "@ai-drama/contracts";
 import {
   DomainError,
+  applyEpisodeEdit,
   formatWritingImport,
   parseWritingImport,
   type FrozenWritingContext,
@@ -79,7 +80,7 @@ function writeRecord(record: OnlineRecord): boolean {
  */
 const AFTER_KEY_LOOKUP = new Set(["WRITING_CANDIDATE_ACTIVE", "WRITING_CANDIDATE_NEEDS_CONFIRMATION", "WRITING_CANDIDATE_TARGET_INVALID",
   "WRITING_CANDIDATE_DAILY_CAP", "WRITING_CANDIDATE_MODEL_UNAVAILABLE", "WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED",
-  "VALIDATION_ERROR"]);
+  "CREATOR_SKILL_DISABLED", "VALIDATION_ERROR"]);
 function decided(error: unknown): error is TitleWritingError {
   return error instanceof TitleWritingError && AFTER_KEY_LOOKUP.has(error.code);
 }
@@ -87,6 +88,10 @@ function decided(error: unknown): error is TitleWritingError {
 export function candidateImport(view: WritingCandidateView): WritingImport | null {
   if (!view.candidate) return null;
   try {
+    if (view.candidate.mode === "episode-edit") {
+      if (view.skill !== "short-drama-write" || view.mode !== "episode") return null;
+      return { mode: "episode-edit", text: applyEpisodeEdit(view.request.currentText, view.candidate.edit), edit: view.candidate.edit };
+    }
     const value = view.candidate.mode === "story" ? view.candidate.plan : view.candidate.draft;
     const imported = parseWritingImport(new TextEncoder().encode(JSON.stringify(value)), { mode: view.mode, episodeNo: view.episodeNo, episodeCount: view.episodeCount ?? 3 });
     formatWritingImport(imported, view.episodeCount);
@@ -130,6 +135,7 @@ const SHORT_STATE: Record<WritingCandidateState, string> = {
 };
 
 export function OnlineCandidatePanel(props: {
+  agentWrite?: boolean;
   mode: "story" | "episode";
   projectId: string;
   entityKey: string;
@@ -339,7 +345,7 @@ export function OnlineCandidatePanel(props: {
       ? { mode: "story", providerKey: chosen.providerKey, model: model || chosen.defaultModel!, request: prepared.request as WritingCandidateStoryRequest,
         base: { sourceRevisionId: prepared.frozen.sourceRevisionId, ifMatch: prepared.frozen.ifMatch! },
         ...(uncertainId ? { confirmUncertainRequestId: uncertainId } : {}) }
-      : { mode: "episode", episodeId: props.episodeId!, providerKey: chosen.providerKey, model: model || chosen.defaultModel!,
+      : { mode: "episode", ...(props.agentWrite ? { skill: "short-drama-write" as const, confirmedTextSend: true as const } : {}), episodeId: props.episodeId!, providerKey: chosen.providerKey, model: model || chosen.defaultModel!,
         request: prepared.request as WritingCandidateEpisodeRequest,
         base: { sourceRevisionId: prepared.frozen.sourceRevisionId, ifMatch: prepared.frozen.ifMatch! },
         ...(uncertainId ? { confirmUncertainRequestId: uncertainId } : {}) };
@@ -435,9 +441,10 @@ export function OnlineCandidatePanel(props: {
           <button className="underline" type="button" disabled={sending} onClick={abandon}>放弃上次请求</button>
         </div>
       ) : null}
+      {props.agentWrite && !unconfirmed && !unavailable && chosen && <p className="mt-2 text-sm">确认后会使用本集的写作额度，并可能产生模型费用。</p>}
       <button className="mt-2 rounded bg-neutral-900 px-3 py-1 text-sm text-white disabled:opacity-50" type="button"
         disabled={unconfirmed ? sending || (needsToken && token.trim().length === 0) : blocked} onClick={() => void generate()}>
-        {sending ? "正在生成…" : unconfirmed ? "确认上次请求" : props.mode === "story" ? "在线生成故事候选" : "在线生成本集候选"}
+        {sending ? "正在生成…" : unconfirmed ? "确认上次请求" : props.mode === "story" ? "在线生成故事候选" : props.agentWrite ? "确认并生成剧本候选" : "在线生成本集候选"}
       </button>
       {message ? <p className="mt-2 text-sm [overflow-wrap:anywhere]" role="status" data-testid="online-message">{message}</p> : null}
       <div className="mt-3">

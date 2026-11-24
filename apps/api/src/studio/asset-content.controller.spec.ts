@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { StreamableFile } from "@nestjs/common";
+import { buffer } from "node:stream/consumers";
 import type { StudioService } from "./studio.service";
 import { StudioController } from "./studio.controller";
 
@@ -30,6 +31,42 @@ describe("asset content response", () => {
     const headResult = await controller.readAssetContent(assetId, { method: "HEAD" }, response);
     expect(headResult).toBeUndefined();
     expect(studio.readMockAssetContent).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves bounded, open and suffix ranges of verified composites after authorization", async () => {
+    const bytes = Buffer.from("0123456789");
+    const etag = '"verified-hash"';
+    const read = vi.fn(async () => ({ bytes, mimeType: "video/mp4", etag }));
+    const controller = new StudioController({ readMockAssetContent: read } as unknown as StudioService);
+    async function get(range: string, ifRange?: string, method = "GET") {
+      const headers = new Headers();
+      const response = { status: vi.fn(), setHeader: (name: string, value: string) => headers.set(name, value) };
+      const file = await controller.readAssetContent("asset", { method, headers: { range, "if-range": ifRange } }, response);
+      return { status: response.status.mock.calls[0]?.[0], headers, bytes: file ? (await buffer(file.getStream())).toString() : "" };
+    }
+    for (const [request, bounds, expected] of [
+      ["bytes=0-0", "0-0", "0"], ["bytes=2-4", "2-4", "234"], ["bytes=7-", "7-9", "789"],
+      ["bytes=8-23", "8-9", "89"], ["bytes=-3", "7-9", "789"], ["bytes=-25", "0-9", "0123456789"],
+    ] as const) {
+      const result = await get(request, etag);
+      expect(result).toMatchObject({ status: 206, bytes: expected });
+      expect(result.headers.get("content-range")).toBe(`bytes ${bounds}/10`);
+      expect(result.headers.get("content-length")).toBe(String(expected.length));
+      expect(result.headers.get("accept-ranges")).toBe("bytes");
+      expect(result.headers.get("etag")).toBe(etag);
+    }
+    for (const request of ["bytes=10-", "bytes=7-3", "bytes=-0"]) {
+      const result = await get(request);
+      expect(result).toMatchObject({ status: 416, bytes: "" });
+      expect(result.headers.get("content-range")).toBe("bytes */10");
+    }
+    expect(await get("bytes=2-3", '"earlier"')).toMatchObject({ status: 200, bytes: "0123456789" });
+    expect(await get("bytes=1-2,4-", etag)).toMatchObject({ status: 200, bytes: "0123456789" });
+    const head = await get("bytes=2-3", etag, "HEAD");
+    expect(head).toMatchObject({ status: 200, bytes: "" });
+    expect(head.headers.get("content-length")).toBe("10");
+    read.mockRejectedValueOnce(new Error("asset not found"));
+    await expect(get("bytes=100-")).rejects.toThrow("asset not found");
   });
 
   it("downloads the verified MP4 and manifest with one filename stem, and leaves errors without attachment headers", async () => {

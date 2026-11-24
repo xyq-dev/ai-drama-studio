@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { VimaxPlanningStart, VimaxPlatformPreviewRequest, VimaxCandidateCreate } from "@ai-drama/contracts";
 import { vimaxPlanningFixture } from "../lib/vimax-planning-test-fixtures";
 import { VimaxPreviewPanel } from "./vimax-preview-panel";
+import { CreatorSkillContext } from "./creator-skill-assistant";
 afterEach(()=>{cleanup();sessionStorage.clear();vi.restoreAllMocks();});
 function setup(){
   const f=vimaxPlanningFixture();
@@ -40,6 +41,27 @@ describe("mounted first-time ViMax planning in the existing workbench preview",(
     await screen.findByText("结构校验通过，可以人工对照");expect(h.previewClient.preview).toHaveBeenCalledOnce();expect(h.candidates.create).not.toHaveBeenCalled();expect(h.candidates.saveScene).not.toHaveBeenCalled();expect(h.candidates.placeShots).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button",{name:"保存与审核分镜候选"}));await screen.findByRole("button",{name:"保存候选"});
     expect(h.candidates.targets.mock.calls.length).toBeGreaterThanOrEqual(2);expect(h.candidates.create).not.toHaveBeenCalled();
+  });
+  it("passes the assistant's instruction into the scoped planning request only after the editor confirms source and billing", async () => {
+    const h = setup();
+    render(<CreatorSkillContext.Provider value={{ id: "launch", projectId: h.source.projectId, episodeId: h.source.episodeId,
+      skill: "short-drama-storyboard", instruction: "把这场拆成三个镜头" }}>
+      <VimaxPreviewPanel {...h.props} />
+    </CreatorSkillContext.Provider>);
+    await screen.findByRole("option", { name: /1\. 内景/ });
+    expect(screen.getByText("本次分镜要求：把这场拆成三个镜头")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("选择空场景及原文范围"), { target: { value: h.target.sceneId } });
+    fireEvent.click(screen.getByLabelText("我已核对选中原文范围、每句对白与具体角色身份"));
+    await screen.findByText(/最近 24 小时共享额度/);
+    const send = screen.getByRole("button", { name: "预约并生成分镜规划" });
+    expect((send as HTMLButtonElement).disabled).toBe(true);
+    expect(h.planning.start).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText("我确认发送当前单场景文本，接受一次规划费用未知"));
+    fireEvent.click(send);
+    await screen.findByRole("button", { name: "导入候选供人工核对" });
+    expect(h.planning.start.mock.calls[0]!.slice(0, 3)).toMatchObject([h.source.projectId, h.source.episodeId,
+      { skill: "short-drama-storyboard", instruction: "把这场拆成三个镜头", confirmedTextSend: true, target: h.body.target }]);
+    expect(h.candidates.create).not.toHaveBeenCalled();
   });
   it("never starts a send for an ineligible target or an invalidated approved source",async()=>{
     const h=setup();h.candidates.targets.mockResolvedValue({...h.targets,targets:[{...h.targets.targets[0]!,eligible:false,reasons:["target_has_shots"],activeShotCount:1}]});

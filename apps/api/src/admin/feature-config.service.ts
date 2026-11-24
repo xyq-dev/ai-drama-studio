@@ -1,5 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  CREATOR_SKILL_RELEASES,
+  creatorSkillIdSchema,
+  type CreatorSkillId,
+  type SkillRunView,
   BAILIAN_PLAN_KEY_MESSAGE,
   WRITING_MODEL_CHANNELS,
   isBailianPlanKey,
@@ -93,6 +97,7 @@ export interface LegacyFeatureSource {
 }
 
 export interface FeaturePolicy {
+  readSkillRuns?: () => Promise<SkillRunView[]>;
   bailianWritingStorageReady?: () => Promise<boolean>;
   writingAllowlist?: (vendor: string) => Promise<readonly string[] | null>;
   writingCallsRemaining?: () => Promise<number | null>;
@@ -183,6 +188,35 @@ export class FeatureConfigService {
   operatorUsageDetail(recordId: string): Promise<UsageRecordView> {
     if (!this.homeWorkspaceId) throw new FeatureConfigError(503, "ADMIN_NOT_CONFIGURED", "管理员配置尚未就绪。");
     return this.usageDetail(this.homeWorkspaceId, recordId);
+  }
+
+  async skillEnabled(id: CreatorSkillId): Promise<boolean> {
+    const doc = await this.vault.read();
+    return doc.skillSwitches?.[id] ?? true;
+  }
+
+  private skillSnapshot(doc: FeatureVaultDocument) {
+    return {
+      revision: doc.revision,
+      skills: creatorSkillIdSchema.options.map((id) => ({
+        id, ...CREATOR_SKILL_RELEASES[id], enabled: doc.skillSwitches?.[id] ?? true,
+      })),
+    };
+  }
+
+  async skillRuns(): Promise<SkillRunView[]> {
+    if (!this.policy.readSkillRuns) throw new FeatureConfigError(503, "ADMIN_NOT_CONFIGURED", "技能执行记录暂不可用。");
+    return this.policy.readSkillRuns();
+  }
+
+  async skills() {
+    return this.skillSnapshot(await this.vault.read());
+  }
+
+  async setSkill(id: CreatorSkillId, enabled: boolean, expectedRevision: number) {
+    return this.skillSnapshot(await this.vault.update((doc) => {
+      doc.skillSwitches = { ...doc.skillSwitches, [id]: enabled };
+    }, expectedRevision));
   }
 
   async view(): Promise<FeatureConfigView> {

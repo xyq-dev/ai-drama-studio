@@ -76,8 +76,13 @@ const common = {
 
 export const writingCandidateStartSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("story"), ...common, request: writingCandidateStoryRequestSchema }).strict(),
-  z.object({ mode: z.literal("episode"), episodeId: z.string().uuid(), ...common, request: writingCandidateEpisodeRequestSchema }).strict(),
-]);
+  z.object({
+    mode: z.literal("episode"), episodeId: z.string().uuid(), ...common, request: writingCandidateEpisodeRequestSchema,
+    skill: z.literal("short-drama-write").optional(), confirmedTextSend: z.literal(true).optional(),
+  }).strict(),
+]).refine(value => value.mode !== "episode" || Boolean(value.skill) === Boolean(value.confirmedTextSend), {
+  message: "使用短剧编剧需要确认本次文本生成", path: ["confirmedTextSend"],
+});
 export type WritingCandidateStart = z.infer<typeof writingCandidateStartSchema>;
 export type WritingCandidateStoryRequest = z.infer<typeof writingCandidateStoryRequestSchema>;
 export type WritingCandidateEpisodeRequest = z.infer<typeof writingCandidateEpisodeRequestSchema>;
@@ -87,6 +92,8 @@ export type WritingCandidateMode = "story" | "episode";
 export interface WritingCandidateFrozenInput {
   schema: typeof WRITING_CANDIDATE_INPUT_SCHEMA;
   promptVersion: string;
+  skill?: "short-drama-write";
+  skillVersion?: string;
   /** Absent from historical requests, which used three episodes. */
   episodeCount?: number;
   projectId: string;
@@ -106,7 +113,17 @@ export interface WritingCandidateFrozenInput {
  */
 export type WritingCandidateState = "reserved" | "submitted" | "completed" | "rejected" | "unknown";
 
+/** Exact replacements in the frozen editor text. The server applies them only to build a preview. */
+export const episodeEditSchema = z.object({
+  changes: z.array(z.object({
+    before: z.string().min(1).max(1000),
+    after: z.string().max(1500),
+  }).strict()).min(1).max(12),
+}).strict();
+export type EpisodeEdit = z.infer<typeof episodeEditSchema>;
+
 export type WritingCandidateOutput =
+  | { mode: "episode-edit"; edit: EpisodeEdit }
   | { mode: "story"; plan: StoryPlanCandidate }
   | { mode: "episode"; draft: EpisodeDraftCandidate };
 
@@ -185,6 +202,8 @@ export interface WritingCandidateStore {
 }
 
 export interface WritingCandidateView {
+  skill?: "short-drama-write";
+  skillVersion?: string;
   episodeCount?: number;
   requestId: string;
   projectId: string;

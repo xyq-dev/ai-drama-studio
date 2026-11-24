@@ -13,6 +13,7 @@ import { parseVimaxPreviewImport, VimaxPreviewClient, VimaxPreviewError } from "
 import styles from "./vimax-preview-panel.module.css";
 import { VimaxStoryboardReview } from "./vimax-storyboard-review";
 import { VimaxCandidatePanel } from "./vimax-candidate-panel";
+import { useCreatorSkillLaunch } from "./creator-skill-assistant";
 import { VimaxPlanningSetup } from "./vimax-planning-setup";
 import type { VimaxPlanningClient } from "../lib/vimax-planning-client";
 import type { VimaxCandidateClient } from "../lib/vimax-candidate-client";
@@ -41,6 +42,8 @@ export function VimaxPreviewPanel(props: VimaxPreviewPanelProps) {
 function PreviewSession(props: VimaxPreviewPanelProps) {
   const client = props.client ?? defaultClient;
   const epoch = props.refreshEpoch ?? 0;
+  const launch = useCreatorSkillLaunch("short-drama-storyboard", props.projectId, props.episodeId);
+  const heading = useRef<HTMLButtonElement>(null);
   const current = useRef({ epoch, scriptReady: props.scriptReady, generation: 0 });
   // A true→false→true approval transition must not revive an earlier preview, even at the same refresh epoch.
   if (current.current.epoch !== epoch || current.current.scriptReady !== props.scriptReady) {
@@ -107,6 +110,16 @@ function PreviewSession(props: VimaxPreviewPanelProps) {
     invalidatePreview();
     setSourceBusy(false);
   }, [epoch, props.scriptReady, invalidatePreview]);
+
+  useEffect(() => {
+    if (!launch) return;
+    setOpened(true);
+    heading.current?.focus();
+  }, [launch]);
+  const assistantActive = Boolean(launch);
+  useEffect(() => {
+    if (assistantActive && props.scriptReady) void loadSource();
+  }, [assistantActive, generation, props.scriptReady, loadSource]);
 
   const open = () => {
     if (!opened) {
@@ -205,7 +218,7 @@ function PreviewSession(props: VimaxPreviewPanelProps) {
   const stale = result !== null && (result.generation !== generation || !props.scriptReady || !sourceReady);
 
   return <section className={styles.panel} aria-label="单场景分镜预览">
-    <h3 className={styles.heading}><button type="button" className={styles.toggle} aria-expanded={opened} onClick={open}>
+    <h3 className={styles.heading}><button type="button" ref={heading} className={styles.toggle} aria-expanded={opened} onClick={open}>
       <span>单场景分镜预览</span><span aria-hidden="true">{opened ? "收起" : "展开"}</span>
     </button></h3>
     {opened ? <div className={styles.body}>
@@ -223,7 +236,7 @@ function PreviewSession(props: VimaxPreviewPanelProps) {
         {!sourceReady ? <p className={styles.notice}>来源可能已变化，请重新读取后再校验；不会自动替换导入方案记录的来源。</p> : null}
       </div> : null}
       {sourceReady && source ? <VimaxPlanningSetup key={`${generation}:${source.value.scriptRevisionId}:${source.value.scriptContentHash}:${JSON.stringify(source.value.characters)}`}
-        source={source.value} targetsClient={props.candidateClient} planningClient={props.planningClient}
+        source={source.value} launch={launch} targetsClient={props.candidateClient} planningClient={props.planningClient}
         onCandidate={(candidate) => { void acceptPlanningCandidate(candidate); }} /> : null}
       <p className={styles.muted}>来源模板尚未包含场景边界、对白目录、分镜候选及补充字段，填完整后再导入。方案须为平台格式，最大 300 KB；离线评估报告不能直接导入。</p>
       <label className={styles.label}>导入分镜方案 JSON

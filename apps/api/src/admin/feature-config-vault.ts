@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { FEATURE_KEYS, FEATURE_VENDOR_KEYS, type FeatureDraftStatus, type FeatureKey, type FeatureVendor } from "@ai-drama/contracts";
+import { creatorSkillIdSchema, type CreatorSkillId, FEATURE_KEYS, FEATURE_VENDOR_KEYS, type FeatureDraftStatus, type FeatureKey, type FeatureVendor } from "@ai-drama/contracts";
 
 /**
  * Encrypted per-feature drafts. Sibling of models.enc, same MODEL_ADMIN_MASTER_KEY.
@@ -38,6 +38,7 @@ const featureSchema = z.object({
 }).strict();
 const documentSchema = z.object({
   revision: revisionSchema,
+  skillSwitches: z.partialRecord(creatorSkillIdSchema, z.boolean()).optional(),
   features: z.object({ writing: featureSchema, storyboard: featureSchema, voice: featureSchema }).strict(),
   credentials: z.record(z.string().regex(/^fc_[A-Za-z0-9_-]{8,80}$/), SECRET),
 }).strict();
@@ -70,6 +71,7 @@ export interface FeatureRecord {
   slots: Partial<Record<FeatureVendor, FeatureSlotRecord>>;
 }
 export interface FeatureVaultDocument {
+  skillSwitches?: Partial<Record<CreatorSkillId, boolean>>;
   revision: number;
   features: Record<FeatureKey, FeatureRecord>;
   credentials: Record<string, string>;

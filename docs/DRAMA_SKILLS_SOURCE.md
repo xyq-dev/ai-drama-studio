@@ -23,6 +23,7 @@
 | skills/short-drama-write/SKILL.md | da55f07db5d92ec63192fc7510fc52cc0e7f5142050155c8d5945a02eb82e111 |
 | skills/short-drama-write/references/screenplay-format.md | 809b6033554899224c387d548aad096cfe469930fe0c0d713bfde732841a1dfa |
 | skills/short-drama-write/references/dialogue-craft.md | c67a0487e56d2e2b30ae13ff76a140d3629da5ddb76809c81e73ed521e6387d2 |
+| skills/short-drama-storyboard/SKILL.md | a603d2254e91d6dc323f69fd137620fdfdc36b1ff738f3ef292ba9c3f4a8b4f5 |
 | skills/short-drama-review/references/rubric-story-script.md | f0cc27d7446f06751262dd69e7c9d6cb4f04d72f1186e8721a22cbf996dc5928 |
 
 没有导入上游示例小说、图片、视频或品牌素材，也没有引入 Toonflow。
@@ -41,3 +42,10 @@
 | 工作台入口与草稿采纳 | `apps/web/src/components/writing-assistant.tsx`，故事和分集剧本编辑区 |
 
 这是本项目的候选契约，不是上游原生交付格式。
+
+## 红果创作助手的文本技能
+
+创作者确认后，红果调用固定版本的写作或分镜指引。两项指引都在 `packages/providers/src/drama-skill-instructions.ts` 中适配。请求快照保存技能标识和适配版本。
+
+- `short-drama-write` 可以生成本集草稿。修改已有正文时，模型返回原句和新句，红果校验每个原句都能唯一定位，再用原文生成对比候选。
+- `short-drama-storyboard` 将选定场次的正文、原对白和创作者的拍法要求交给模型。红果校验对白、角色和镜头数据，创作者核对后可采纳。
