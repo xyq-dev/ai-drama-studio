@@ -404,10 +404,13 @@ describe("online writing in a real browser with the site login, real web and API
     await page.waitForURL(`${WEB}/create`, { timeout: 30_000 });
     await page.getByText(/服务端已配置：OpenAI、Claude、DeepSeek。/).waitFor({ timeout: 30_000 });
     expect(await page.getByText(/千问/).count()).toBe(0);
-    expect(await page.locator("#ai-token").count()).toBe(0);
-    await page.getByText("调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。").waitFor();
-    await page.locator("#ai-title").fill(TITLE);
-    await viewports("01-title-start", page.getByText("调用权限由当前管理员登录确认", { exact: false }), page.getByRole("button", { name: "AI 一键创作" }));
+    const titleCard = page.getByRole("region", { name: "AI 一键创作", exact: true });
+    const sessionNotice = titleCard.getByText("调用权限由你的登录账号确认，模型密钥只在服务端。", { exact: true });
+    await sessionNotice.waitFor();
+    expect(await titleCard.getByLabel("操作者令牌").count()).toBe(0);
+    expect(await titleCard.getByText(/按你的会员写作额度计次/).count()).toBe(0);
+    await titleCard.getByLabel("剧名", { exact: true }).fill(TITLE);
+    await viewports("01-title-start", sessionNotice, titleCard.getByRole("button", { name: "AI 一键创作" }));
     const navigated = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/writing$/, { timeout: 30_000 });
     await page.getByRole("button", { name: "AI 一键创作" }).click();
     await navigated;
@@ -593,7 +596,7 @@ describe("online writing in a real browser with the site login, real web and API
     expect((JSON.parse(options) as { providers: Array<{ providerKey: string; ready: boolean }> }).providers.map((item) => [item.providerKey, item.ready]))
       .toEqual([["openai", true], ["anthropic", true], ["deepseek", true]]);
     const titleOptions = await page.evaluate(async () => await (await fetch("/api/v1/writing/title-runs/options")).text());
-    expect(JSON.parse(titleOptions)).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: "deepseek" });
+    expect(JSON.parse(titleOptions)).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: "deepseek", viewerIsCreator: false, operatorTokenRequired: false });
     expect(pageWrites.filter((write) => write.token)).toEqual([]);
     expect(pageErrors).toEqual([]);
     expect(sent.every((item) => item.keyMatches)).toBe(true);
