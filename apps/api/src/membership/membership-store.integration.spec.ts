@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { closePostgresPool, createPostgresPool, PostgresSeriesWritingStore, PostgresWritingCandidateStore, runMigrations, settleCreatorQuotaHold, TextChainService } from "@ai-drama/database";
+import { JobPersistenceService, RuntimeStore, closePostgresPool, createPostgresPool, PostgresSeriesWritingStore, PostgresWritingCandidateStore, runMigrations, settleCreatorQuotaHold, TextChainService, runWithStoreCreatorAccess } from "@ai-drama/database";
 import { admitSeriesGrant, canonicalInputHash } from "@ai-drama/domain";
-import { newSeries, newSeriesGrant, newWritingCandidate } from "@ai-drama/providers";
+import { newSeries, newSeriesGrant, newWritingCandidate, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { fixtureStoryPlan } from "@ai-drama/providers/title-writing-fixtures";
 import { SERIES_FINAL_REVIEW_DIMENSIONS, SERIES_FINAL_REVIEW_SCHEMA, seriesConstraintsSchema, seriesScopeCalls, SHORT_SEQUEL_AI_SCHEMA, type ShortSequelAiInput, type WritingCandidateFinish } from "@ai-drama/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PostgresMembershipStore } from "./membership-store";
+import { SeriesWritingService } from "../studio/series-writing.service";
+import { StudioService } from "../studio/studio.service";
+import { PostgresMembershipStore, writingPreflight } from "./membership-store";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for quota integration tests");
@@ -68,6 +70,58 @@ describe("PostgreSQL membership reservations", () => {
     expect(holds.filter((hold) => !hold.replay)).toHaveLength(1);
     expect((await store.balances(workspaceId, accountId)).writing).toBe(units - 1);
     expect((await store.ledger(workspaceId, accountId)).filter((row) => row.kind === "debit")).toHaveLength(1);
+  });
+
+  it("opens a new series for its creator and hides it from another creator", async () => {
+    const creator = await memberWithWritingQuota(1);
+    const other = await memberWithWritingQuota(1);
+    const service = new SeriesWritingService({
+      workspaceId, enabled: true, operatorToken: null, siteOperator: true, defaultProvider: null,
+      providers: titleWritingProviderConfigs({}), store: new PostgresSeriesWritingStore(pool, new TextChainService(pool)),
+      engine: { workspaceId, drive: async () => undefined, maintain: async () => undefined }, projects: new RuntimeStore(pool),
+      maxCallsPerDay: 1, maxActiveRuns: 1, research: { fetchEnabled: false, allowedHosts: [] },
+    });
+    const asCreator = <T>(id: string, work: () => Promise<T>) => runWithStoreCreatorAccess(
+      { kind: "scoped", ownerAccountId: id, actorId: `creator:${id}` }, work);
+    const context = { actorId: `creator:${creator}`, traceId: "series-owner", idempotencyKey: randomUUID() };
+    const result = await asCreator(creator, () => service.create({ title: "末班车", episodeCount: 3, episodeSeconds: 60 },
+      { token: undefined, session: true }, context));
+    expect(result.status).toBe(201);
+    const { projectId } = (result.body as { series: { projectId: string } }).series;
+    expect((await asCreator(creator, () => service.get(projectId))).status).toBe(200);
+    await expect(asCreator(other, () => service.get(projectId))).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await store.balances(workspaceId, creator)).writing).toBe(1);
+  });
+
+  it("rolls back a writing project if another transaction spends its last unit, and keeps prior creation receipts", async () => {
+    const accountId = await memberWithWritingQuota(1);
+    const context = { actorId: `creator:${accountId}`, ownerAccountId: accountId, traceId: "quota-race", idempotencyKey: randomUUID() };
+    const studio = new StudioService(new JobPersistenceService(pool), new RuntimeStore(pool), new TextChainService(pool), workspaceId);
+    const input = { title: "额度竞争", premise: "", writingStart: true };
+    const alreadyCreated = await studio.createProject(input, context);
+    const newContext = { ...context, idempotencyKey: randomUUID() };
+    expect(await writingPreflight(store, workspaceId, accountId)).toBeNull();
+    const other = await pool.connect();
+    try {
+      await other.query("BEGIN");
+      const reservation = await store.reserve(workspaceId, { accountId, feature: "writing", idempotencyKey: randomUUID() }, other);
+      expect(reservation.ok).toBe(true);
+      const pid = (await other.query("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+      const creating = studio.createProject(input, newContext).then(() => "created", (error: Error & { code?: string }) => error.code);
+      await expect.poll(async () => (await pool.query(
+        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting", [pid],
+      )).rows[0]?.waiting).toBe(true);
+      await other.query("COMMIT");
+      expect(await creating).toBe("QUOTA_EXHAUSTED");
+      expect((await studio.createProject(input, context)).body).toEqual(alreadyCreated.body);
+    } finally {
+      await other.query("ROLLBACK");
+      other.release();
+    }
+    expect((await pool.query("SELECT count(*)::int AS count FROM project WHERE workspace_id=$1 AND owner_account_id=$2",
+      [workspaceId, accountId])).rows[0]?.count).toBe(1);
+    expect((await pool.query("SELECT 1 FROM idempotency_record WHERE workspace_id=$1 AND idempotency_key=$2",
+      [workspaceId, newContext.idempotencyKey])).rowCount).toBe(0);
   });
 
   it("charges exactly one of several competing tasks for the last unit", async () => {

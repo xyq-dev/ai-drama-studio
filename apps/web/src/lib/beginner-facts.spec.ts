@@ -38,6 +38,17 @@ function facts(media: BeginnerFacts["media"], episodes = [EPISODE]): BeginnerFac
 }
 
 describe("progress facts follow pagination (review)", () => {
+  it("counts approved shots instead of alternate cuts of the same shot, across pages", async () => {
+    const client = pagedClient({
+      [`${BASE}/compose-candidates`]: [
+        { items: [{ shotId: "one", assetId: "cut-a" }, { shotId: "one", assetId: "cut-b" }], nextCursor: "c1" },
+        { items: [{ shotId: "two", assetId: "cut-c" }], nextCursor: null },
+      ],
+    });
+    const media = await loadEpisodeMedia(client, "p", [EPISODE]);
+    expect(media[1]?.candidates).toEqual({ read: "ok", count: 2 });
+    expect(client.urls.filter(url => url.includes("compose-candidates"))).toHaveLength(2);
+  });
   it("does not count a scan cursor as a candidate: an empty page with a cursor keeps reading", async () => {
     const client = pagedClient({
       [`${BASE}/compose-candidates`]: [{ items: [], nextCursor: "c1" }, { items: [], nextCursor: "c2" }, { items: [], nextCursor: null }],
@@ -50,7 +61,7 @@ describe("progress facts follow pagination (review)", () => {
 
   it("finds a candidate on a later page after empty pages", async () => {
     const client = pagedClient({
-      [`${BASE}/compose-candidates`]: [{ items: [], nextCursor: "c1" }, { items: [{ assetId: "a" }], nextCursor: null }],
+      [`${BASE}/compose-candidates`]: [{ items: [], nextCursor: "c1" }, { items: [{ shotId: "one", assetId: "a" }], nextCursor: null }],
     });
     const media = await loadEpisodeMedia(client, "p", [EPISODE]);
     expect(media[1]!.candidates).toEqual({ read: "ok", count: 1 });
@@ -60,7 +71,7 @@ describe("progress facts follow pagination (review)", () => {
   it("finds an ACTIVE + APPROVED composite at position 11, behind ten newer drafts", async () => {
     const drafts = Array.from({ length: 10 }, () => composite("ACTIVE", "DRAFT"));
     const client = pagedClient({
-      [`${BASE}/compose-candidates`]: [{ items: [{}, {}], nextCursor: null }],
+      [`${BASE}/compose-candidates`]: [{ items: [{ shotId: "one" }, { shotId: "two" }], nextCursor: null }],
       [`${BASE}/composites`]: [{ items: drafts, nextCursor: "c1" }, { items: [composite("ACTIVE", "APPROVED")], nextCursor: null }],
     });
     const media = await loadEpisodeMedia(client, "p", [EPISODE]);
@@ -101,7 +112,7 @@ describe("progress facts follow pagination (review)", () => {
 
   it("classifies the two compose reads separately: candidates survive when only episode compose is off", async () => {
     const client = pagedClient(
-      { [`${BASE}/compose-candidates`]: [{ items: [{}], nextCursor: null }] },
+      { [`${BASE}/compose-candidates`]: [{ items: [{ shotId: "one" }], nextCursor: null }] },
       { [`${BASE}/composites`]: new ApiError(503, "CONFIGURATION_ERROR", "Episode compose is not enabled") },
     );
     const media = await loadEpisodeMedia(client, "p", [EPISODE]);

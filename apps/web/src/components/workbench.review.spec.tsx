@@ -532,7 +532,7 @@ function createSim(): Sim {
       return json({ workflowRunId: "av-run", jobId: "av-job" }, 202);
     }
     if (/\/assets\/[^/]+\/content$/.test(path) && method === "GET") {
-      return new Response("WEBVTT\n\n00:00:00.000 --> 00:00:00.100\nMock subtitle\n<script>alert(1)</script>\n", {
+      return new Response("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n小杰：师傅！等等！\n<script>alert(1)</script>\n", {
         status: 200,
         headers: { "content-type": "text/vtt" },
       });
@@ -869,6 +869,161 @@ describe("workbench review interactions against a simulated API", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "当前版本" })).toBeTruthy());
     expect(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("true");
     expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色甲");
+  });
+
+  it("serializes two character creations, keeps later typing and rereads a conflicting project before retry", async () => {
+    const sim = createSim();
+    const read = sim.fetch;
+    const projectPath = `/api/v1/projects/${PROJECT}`;
+    const names: string[] = [];
+    const versions: number[] = [];
+    let version = 5;
+    let release!: () => void;
+    const firstRead = new Promise<void>(resolve => { release = resolve; });
+    sim.fetch = async (url, init) => {
+      if (url === projectPath) {
+        if (names.length === 1) await firstRead;
+        return json({ id: PROJECT, title: "测试", premise: "", version, status: "ACTIVE" });
+      }
+      if (url === projectPath + "/characters") {
+        if (init?.method !== "POST") return json({ items: names.map((name, index) => ({
+          ...listAggregate(`char-${index}`), name,
+        })), nextCursor: null });
+        const expected = Number(new Headers(init.headers).get("If-Match"));
+        versions.push(expected);
+        if (expected !== version) return fail(409, "REVISION_CONFLICT", "Project version did not match");
+        names.push(JSON.parse(String(init.body)).name);
+        version++;
+        return json({ entityId: `char-${names.length - 1}` }, 201);
+      }
+      return read(url, init);
+    };
+    install(sim);
+    const first = renderAt("focus=character");
+    await screen.findByRole("heading", { name: "新建角色" });
+    const form = formOf("新建角色");
+    const save = within(form).getByRole("button", { name: "保存新版本" }) as HTMLButtonElement;
+    fireEvent.change(within(form).getByLabelText("名称"), { target: { value: "小杰" } });
+    fireEvent.click(save);
+    await waitFor(() => expect(names).toEqual(["小杰"]));
+    expect(save.disabled).toBe(true);
+    fireEvent.change(within(form).getByLabelText("名称"), { target: { value: "司机" } });
+    fireEvent.change(within(form).getByLabelText("正文"), { target: { value: "珍惜全家福" } });
+    fireEvent.submit(form);
+    expect(versions).toEqual([5]);
+    release();
+    await waitFor(() => expect(save.disabled).toBe(false));
+    // Another writer updates the project between our read and the next click.
+    version = 9;
+    fireEvent.click(save);
+    await screen.findByText("内容已更新，已载入最新版本，请确认后再保存");
+    expect(field("entity-name").value).toBe("司机");
+    expect(field("entity-text").value).toBe("珍惜全家福");
+    expect(versions).toEqual([5, 6]);
+    fireEvent.click(save);
+    await screen.findByRole("button", { name: /司机/ });
+    expect(versions).toEqual([5, 6, 9]);
+    expect(names).toEqual(["小杰", "司机"]);
+    expect(draftFor("character:new")).toBeNull();
+    first.unmount();
+    renderAt("focus=character");
+    await screen.findByRole("button", { name: /司机/ });
+    expect(field("entity-name").value).toBe("");
+    expect(draftFor("character:new")).toBeNull();
+  });
+
+  it("retries just the failed list read after the character write was accepted", async () => {
+    const sim = createSim();
+    const read = sim.fetch;
+    const path = `/api/v1/projects/${PROJECT}/characters`;
+    let writes = 0;
+    let failRead = true;
+    sim.fetch = async (url, init) => {
+      if (url !== path) return read(url, init);
+      if (init?.method === "POST") {
+        writes++;
+        return json({ entityId: CHAR_A }, 201);
+      }
+      if (writes && failRead) return fail(503, "UNAVAILABLE", "读取失败");
+      return json({ items: writes ? [{ ...listAggregate(CHAR_A), name: "司机" }] : [], nextCursor: null });
+    };
+    install(sim);
+    renderAt("focus=character");
+    await screen.findByRole("heading", { name: "新建角色" });
+    const form = formOf("新建角色");
+    fireEvent.change(within(form).getByLabelText("名称"), { target: { value: "司机" } });
+    fireEvent.click(within(form).getByRole("button", { name: "保存新版本" }));
+    await within(form).findByText("已保存，列表尚未刷新。");
+    expect(draftFor("character:new")).toBeNull();
+    failRead = false;
+    fireEvent.click(within(form).getByRole("button", { name: "重新载入" }));
+    await screen.findByRole("button", { name: /司机/ });
+    expect(writes).toBe(1);
+    expect(within(form).getByRole("button", { name: "保存新版本" })).toBeTruthy();
+  });
+
+  it("creates three shots against the newest scene version, keeps the conflict draft and updates the list count", async () => {
+    const sim = createSim();
+    const read = sim.fetch;
+    let version = 4;
+    let source = "approved-v1";
+    const ids = ["existing"];
+    const ordinals = [7];
+    const attempted: [number, string, number][] = [];
+    sim.fetch = async (url, init) => {
+      const path = url.split("?")[0]!;
+      if (path.endsWith("/scenes/scene-1/revisions") && init?.method === "GET") return json({
+        aggregate: aggregate("scene-1", version, source, "APPROVED", 1, source),
+        items: [sceneRevision(source, 1, "雨夜", "APPROVED", "CURRENT")],
+      });
+      if (path.endsWith("/scenes/scene-1/shots")) {
+        if (init?.method !== "POST") {
+          const offset = Number(new URL(url, "http://test").searchParams.get("cursor") ?? "0");
+          const all = ids.map((id, index) => ({
+            ...listAggregate(id),
+            storyboard: {
+              ordinal: ordinals[index], shotType: "中景", camera: "固定", action: "站立", dialogue: null,
+              durationHint: null, plannedDurationMs: null, promptText: "", sourceScene: "雨夜", location: null,
+              characters: [], candidates: [], selectedAssetId: null,
+            },
+          }));
+          return json({ items: all.slice(offset, offset + 2), nextCursor: offset + 2 < all.length ? String(offset + 2) : null });
+        }
+        const expected = Number(new Headers(init.headers).get("If-Match"));
+        const body = JSON.parse(String(init.body));
+        attempted.push([expected, body.sourceSceneRevisionId, body.ordinal]);
+        if (expected !== version || body.sourceSceneRevisionId !== source) {
+          return fail(409, "REVISION_CONFLICT", "Source revision did not match");
+        }
+        expect(ordinals).not.toContain(body.ordinal);
+        ordinals.push(body.ordinal);
+        ids.push(`shot-${ids.length}`);
+        version++;
+        return json({ entityId: ids.at(-1) }, 201);
+      }
+      return read(url, init);
+    };
+    install(sim);
+    renderAt("focus=scene&episode=1&scene=scene-1");
+    fireEvent.click(await screen.findByRole("button", { name: "新增分镜" }));
+    const form = formOf("新建镜头");
+    const save = within(form).getByRole("button", { name: "保存新版本" });
+    for (let i = 1; i <= 3; i++) {
+      if (i === 2) { version = 8; source = "approved-v2"; }
+      fireEvent.change(field("new-shot-action"), { target: { value: `动作${i}` } });
+      fireEvent.click(save);
+      if (i === 2) {
+        await screen.findByText("内容已更新，已载入最新版本，请确认后再保存");
+        expect(field("new-shot-action").value).toBe("动作2");
+        expect(draftFor("shot-new:scene-1")?.payload).toMatchObject({ action: "动作2" });
+        expect(ids).toHaveLength(2);
+        fireEvent.click(save);
+      }
+      await screen.findByText(`已加载 ${i + 1} 个分镜`);
+      await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false));
+      expect(draftFor("shot-new:scene-1")).toBeNull();
+    }
+    expect(attempted).toEqual([[4, "approved-v1", 8], [5, "approved-v1", 9], [8, "approved-v2", 9], [9, "approved-v2", 10]]);
   });
 
   it("drops the choice when the kind changes, and a late history answer of the old kind shows nothing", async () => {
@@ -1444,7 +1599,13 @@ describe("workbench review interactions against a simulated API", () => {
     renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
     const button = await screen.findByRole("button", { name: "生成 Mock 图片" });
     expect((button as HTMLButtonElement).disabled).toBe(false);
-    for (const name of [/生成 Mock 视频（/, /生成 Mock 配音（/, /生成 Mock 字幕（/, /生成 Mock 音乐（/]) {
+    expect(screen.getByText("先提交审核并通过这个镜头，才能生成演示素材")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "前往镜头审核" }));
+    const target = document.getElementById(`shot-review-${SHOT_A}-rev`)!;
+    await waitFor(() => expect(document.activeElement).toBe(target));
+    expect(target.closest("[aria-label='检查面板']")?.className).not.toContain("hidden");
+    expect(sim.calls.every(call => call.method === "GET")).toBe(true);
+    for (const name of ["生成 Mock 视频", "生成 Mock 配音", "生成 Mock 字幕", "生成 Mock 音乐"]) {
       const approvedButton = screen.getByRole("button", { name });
       expect((approvedButton as HTMLButtonElement).disabled).toBe(true);
       fireEvent.click(approvedButton);
@@ -2004,19 +2165,26 @@ describe("workbench review interactions against a simulated API", () => {
     expect(posts[1]?.url).not.toContain(`${SHOT_A}-rev/`);
   });
 
-  it("shows fixed subtitle text without injecting markup and keeps music out of speech", async () => {
+  it("labels the batch scene template as a demonstration draft", async () => {
+    install(createSim());
+    renderAt("focus=script&episode=1");
+    expect(await screen.findByText(/每集生成一个开场场景演示草稿/)).toBeTruthy();
+  });
+
+  it("shows saved dialogue as demonstration subtitles without injecting markup and keeps music out of speech", async () => {
     const sim = createSim();
     sim.imageReady = true;
     const revisionId = `${SHOT_A}-rev`;
     sim.imageAssets[revisionId] = [
-      { ...imageRecord(revisionId, "ACTIVE", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"), kind: "SUBTITLE", mimeType: "text/vtt", width: null, height: null, durationMs: 100 },
+      { ...imageRecord(revisionId, "ACTIVE", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"), kind: "SUBTITLE", mimeType: "text/vtt", width: null, height: null, durationMs: 1000 },
       { ...imageRecord(revisionId, "ACTIVE", "ffffffff-ffff-4fff-8fff-ffffffffffff"), kind: "MUSIC", mimeType: "audio/wav", width: null, height: null, durationMs: 100 },
       { ...imageRecord(revisionId, "ACTIVE", "12121212-1212-4121-8121-121212121212"), kind: "AUDIO", mimeType: "audio/wav", width: null, height: null, durationMs: 100 },
     ];
     install(sim);
     renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
     expect(await screen.findByRole("heading", { name: "Mock 字幕" })).toBeTruthy();
-    expect(await within(mediaSection("Mock 字幕")).findByText(/Mock subtitle/)).toBeTruthy();
+    expect(within(mediaSection("Mock 字幕")).getByText("演示字幕显示已保存的对白，时长约 1 秒。")).toBeTruthy();
+    expect(await within(mediaSection("Mock 字幕")).findByText(/小杰：师傅！等等！/)).toBeTruthy();
     expect(mediaSection("Mock 字幕").querySelector("script")).toBeNull();
     expect(mediaSection("Mock 字幕").querySelector("pre")?.textContent).toContain("<script>alert(1)</script>");
     expect(mediaSection("Mock 音乐").querySelector("audio")).toBeTruthy();

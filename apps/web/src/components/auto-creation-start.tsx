@@ -24,6 +24,7 @@ import {
 } from "@ai-drama/domain/auto-creation-media-capability";
 import type { AutoStoryboardImageProviderKey } from "@ai-drama/contracts";
 import { ApiError, StudioClient } from "../lib/studio-client";
+import { LIMITS } from "../lib/studio-model";
 import { suggestTitle } from "../lib/beginner-start";
 import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, providerTarget, tokenRequired } from "../lib/title-writing-client";
 import {
@@ -33,6 +34,7 @@ import {
   type AutoCreationOptionsView,
   type AutoStartBody,
 } from "../lib/auto-creation-client";
+import { useCreatorWritingAccess } from "../lib/creator-writing-access";
 import styles from "./title-writing.module.css";
 import autoStyles from "./auto-creation.module.css";
 
@@ -156,8 +158,10 @@ function startError(caught: unknown, projectCreated: boolean): string {
 /** The optional genre and idea share a request with the size, budget and model shown before starting. */
 export function AutoCreationStart() {
   const [options, setOptions] = useState<AutoCreationOptionsView | null>(null);
+  const access = useCreatorWritingAccess(options?.viewerIsCreator === true);
   const [loaded, setLoaded] = useState(false);
   const [idea, setIdea] = useState("");
+  const [title, setTitle] = useState("");
   const [selectedEpisodeCount, setSelectedEpisodeCount] = useState<number | null>(null);
   const [selectedSeconds, setSelectedSeconds] = useState<number | null>(null);
   const [storyboardSource, setStoryboardSource] = useState<"model" | "upload">("model");
@@ -241,7 +245,7 @@ export function AutoCreationStart() {
   const strayProvider = frozen ? !readyProviders.some((item) => item.providerKey === shown.providerKey) : target.kind === "blocked";
   const locked = busy || pending !== null;
 
-  async function send(draft: PendingAutoStart) {
+  async function send(draft: PendingAutoStart, fresh = false) {
     const mine = {};
     operation.current = mine;
     const live = () => operation.current === mine;
@@ -250,8 +254,15 @@ export function AutoCreationStart() {
     let current = draft;
     try {
       if (!current.projectId) {
+        if (!await access.check() || !live()) {
+          if (fresh && live()) {
+            clearPending(current);
+            setPending(null);
+          }
+          return;
+        }
         const created = await studio.write<unknown>({ path: "/projects", idempotencyKey: current.projectKey,
-          body: { title: current.title, premise: current.request.idea, episodeCount: current.request.episodeCount, targetEpisodeSeconds: current.request.episodeSeconds } });
+          body: { ...(options?.viewerIsCreator && { writingStart: true }), title: current.title, premise: current.request.idea, episodeCount: current.request.episodeCount, targetEpisodeSeconds: current.request.episodeSeconds } });
         if (!live()) return;
         const id = created.body && typeof created.body === "object" ? (created.body as { id?: unknown }).id : undefined;
         if (!isEntityId(id)) throw new TitleWritingUnconfirmedError(created.status);
@@ -268,7 +279,13 @@ export function AutoCreationStart() {
       clearPending(current);
       window.location.assign(`/projects/${current.projectId!}/auto`);
     } catch (caught) {
-      if (live()) setError(startError(caught, current.projectId !== null));
+      if (!live()) return;
+      if (access.recordRefusal(caught)) {
+        if (!current.projectId) {
+          clearPending(current);
+          setPending(null);
+        }
+      } else setError(startError(caught, current.projectId !== null));
     } finally {
       if (live()) {
         operation.current = null;
@@ -278,7 +295,7 @@ export function AutoCreationStart() {
   }
 
   async function start() {
-    if (operation.current || !loaded) return;
+    if (operation.current || !loaded || access.blocked) return;
     if (pending) {
       await send(pending);
       return;
@@ -310,12 +327,12 @@ export function AutoCreationStart() {
     };
     const draft: PendingAutoStart = {
       version: 1,
-      title: (idea.trim() ? suggestTitle(idea) : "") || `AI 自动创作 ${new Date().toLocaleDateString("zh-CN")}`,
+      title: title.trim() || suggestTitle(idea) || `AI 自动创作 ${new Date().toLocaleDateString("zh-CN")}`,
       request, projectKey: crypto.randomUUID(), projectId: null, runKey: crypto.randomUUID(),
     };
     if (!savePending(draft, "empty")) return setError("浏览器没能保存这次请求的标识（会话存储不可用），为避免重复创建或重复收费，没有发送。");
     setPending(draft);
-    await send(draft);
+    await send(draft, true);
   }
 
   function abandon() {
@@ -334,7 +351,7 @@ export function AutoCreationStart() {
       </p>
       {pending && !busy ? (
         <div className={styles.notice} role="status">
-          <p>上次的启动请求还没有确认结果。重试会原样重放，使用同一个请求标识，不会重复创建或收费。</p>
+          {!access.blocked && <p>上次的启动请求还没有确认结果。重试会原样重放，使用同一个请求标识，不会重复创建或收费。</p>}
           <p className={styles.actions}>
             {pending.projectId ? <a className={styles.secondary} href={`/projects/${pending.projectId}/auto`}>查看进度</a> : null}
             <button className={styles.textLink} type="button" onClick={abandon}>放弃上次请求，重新填写</button>
@@ -353,6 +370,9 @@ export function AutoCreationStart() {
           ))}
         </div>
       </fieldset>
+      <label className={styles.label} htmlFor="auto-work-title">作品名（可选）</label>
+      <input id="auto-work-title" className={styles.input} maxLength={LIMITS.title} value={pending?.title ?? title}
+        disabled={locked} onChange={(event) => setTitle(event.target.value)} />
       <label className={styles.label} htmlFor="auto-idea">一句话想法（可不填）</label>
       <input id="auto-idea" className={styles.input} maxLength={300} placeholder="不填则由 AI 根据资料自主策划" value={shown.idea}
         disabled={locked} onChange={(event) => setIdea(event.target.value)} />
@@ -521,10 +541,11 @@ export function AutoCreationStart() {
         ) : null}
       </section>
       <div className={styles.actions}>
-        <button className={styles.primary} type="button" disabled={busy || !loaded || (pending === null && unavailable !== null)} onClick={() => void start()}>
-          {busy ? "正在启动…" : pending ? "重试上次请求" : shownGenre ? "开始 AI 创作" : "AI 自动创作"}
+        <button className={styles.primary} type="button" disabled={busy || access.blocked || !loaded || (pending === null && unavailable !== null)} onClick={() => void start()}>
+          {busy ? "正在启动…" : pending && !access.blocked ? "重试上次请求" : shownGenre ? "开始 AI 创作" : "AI 自动创作"}
         </button>
       </div>
+      {access.reason ? <p className={styles.warning} role="status">{access.reason}</p> : null}
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
     </section>
   );

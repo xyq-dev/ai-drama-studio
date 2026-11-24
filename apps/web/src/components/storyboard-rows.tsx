@@ -99,7 +99,7 @@ export function StoryboardRows({ projectId, items, currentId, loading, hasMore, 
 
   return <section className={styles.workbench} aria-labelledby={title}>
     <div className={styles.header}>
-      <div><h2 id={title}>分镜工作台</h2><p>已加载 {items.length} 个分镜</p></div>
+      <div><h2 id={title}>分镜工作台</h2><p role="status">{loading ? "正在读取分镜…" : `已加载 ${items.length} 个分镜`}</p></div>
       <div className={styles.actions}>
         {createForm ? <button className={styles.primary} type="button" aria-expanded={newOpen} onClick={() => setNewOpen(!newOpen)}>
           {newOpen ? "收起新建表单" : "新增分镜"}</button> : null}
@@ -129,7 +129,6 @@ export function StoryboardRows({ projectId, items, currentId, loading, hasMore, 
       {items.filter(shot => !shot.storyboard && shot.entityId !== currentId).map(shot => <button key={shot.entityId}
         className={styles.link} type="button" onClick={() => onOpen(shot.entityId)}>镜头 {shot.entityId.slice(0, 8)}</button>)}
     </div>}
-    {loading && items.length === 0 ? <p className={styles.state} role="status">正在读取分镜…</p> : null}
     {!loading && visible.length === 0 ? <p className={styles.state} role="status">
       {currentId ? "该分镜不在已加载列表中。" : items.length ? "已加载的分镜没有符合筛选的结果。" : "还没有镜头。"}
     </p> : null}

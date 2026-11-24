@@ -68,6 +68,20 @@ function server(handler: (method: string, url: string, body: unknown) => Respons
   return calls;
 }
 
+describe("series creation eligibility", () => {
+  it.each(["MEMBERSHIP_REQUIRED", "FEATURE_NOT_INCLUDED"])("refuses %s before creating a series", async denial => {
+    const calls = server((_method, url) => url.endsWith("/options") ? json({ ...OPTIONS, viewerIsCreator: true })
+      : url.includes("membership?preflight=writing") ? json({ denial }) : undefined);
+    render(<SeriesWritingStart />);
+    fireEvent.click(screen.getByTestId("series-start-open"));
+    await screen.findByText(/请联系管理员开通/);
+    const button = screen.getByRole("button", { name: "创建系列作品" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(calls.filter(call => call.method === "POST")).toEqual([]);
+  });
+});
+
 describe("series writing page", () => {
   it("shows the partial state, 1–60 episodes, every batch, the budget and the downloads from the stored view", async () => {
     server();

@@ -16,6 +16,7 @@ import {
   stepStateText,
   targetText,
   tokenRequired,
+  writingSessionNotice,
   uncertainCallIds,
   type TitleWritingRunView,
 } from "../lib/title-writing-client";
@@ -136,7 +137,8 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const [actionMessage, setActionMessage] = useState<ActionMessage | null>(null);
   const [token, setToken] = useState("");
   // Until the server says otherwise a token is asked for; with the site login on the administrator's session suffices.
-  const [needsToken, setNeedsToken] = useState(true);
+  const [accessOptions, setAccessOptions] = useState<{ viewerIsCreator?: boolean; operatorTokenRequired?: boolean } | null>(null);
+  const needsToken = tokenRequired(accessOptions);
   // The uncertain calls the person confirmed, as a sorted id list. It only counts while it equals what is shown now.
   const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
   const resumeAction = useRef<ResumeAction | null>(null);
@@ -291,7 +293,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
     if (!resumable) return;
     let alive = true;
     const reading = typeof client.options === "function" ? client.options() : null;
-    void reading?.then((value) => { if (alive) setNeedsToken(tokenRequired(value)); }).catch(() => undefined);
+    void reading?.then((value) => { if (alive) setAccessOptions(value); }).catch(() => undefined);
     return () => { alive = false; };
   }, [client, resumable]);
 
@@ -389,7 +391,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                       <input id="resume-token" className={styles.input} type="password" autoComplete="off" value={token}
                         onChange={(event) => setToken(event.target.value)} />
                     </>
-                  ) : <p className={styles.helper}>调用权限由当前管理员登录确认。</p>}
+                  ) : <p className={styles.helper}>{writingSessionNotice(accessOptions?.viewerIsCreator === true)}</p>}
                   <button className={styles.primary} type="button" disabled={busy || (needsToken && token.trim().length === 0) || (uncertain && !confirmUncertain)}
                     onClick={() => resume(run)}>
                     继续创作

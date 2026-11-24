@@ -51,6 +51,8 @@ export interface AutoNumberFrame {
   episodeSeconds: number;
   /** Current research can restate the frozen single-episode format in a question about its story. */
   singleEpisodeResearch?: boolean;
+  /** v19 research distinguishes lexical ordinals and uncategorized ordering from a market rank. */
+  contextualOrdinals?: boolean;
   maxCharacters: number | null;
   maxLocations: number | null;
 }
@@ -182,10 +184,10 @@ const PLAN_NUMBER = new RegExp(`(\\d+(?:\\.\\d+)?|[${CN_DIGITS}]+)\\s*(集|秒|�
 /** Ordinals, spaced or not: 第 3 集, 第二场, 播放量第 3. */
 const ORDINAL = new RegExp(`第\\s*(?:\\d+|[${CN_DIGITS}]+)`, "gu");
 /**
- * The ordinals that are a position in the work or the plan, never a place in a ranking: one followed by its own unit
- * (第 3 集, 第二场, 第 2 轮, 第一次, 第一时间), or an item number opening a clause (第一，…). Any other 第N is a place
- * (第三名, 播放量第 3) and needs a source.
+ * These whole words are ordinary vocabulary (第三方叙述, 第一手资料). Only the working text for number checks is
+ * masked; the original sentence remains available both to the writer and for the research refusal excerpt.
  */
+const LEXICAL_ORDINAL = /第三(?:方|者)|第一(?:手|线|时间|印象|人称|眼)|第二天性/gu;
 /** Includes typological category units (第N类 / 第N种): creative-method classification, never a market place. */
 const STRUCTURAL_UNITS = "集|场|幕|章|节|季|话|回|段|镜|轮|稿|版|步|句|次|个|眼|人称|视角|印象|反应|类|种";
 /** Positions in the story's own time (第 10 秒, 第二天): structural only outside a viewing or market clause. */
@@ -296,10 +298,15 @@ type NumberClause = { raw: string | undefined; text: string; notices: AutoNumber
 const SENTENCE_BOUNDARY = /(?<=[。；;！？!?\n])/u;
 const CLAUSE_BOUNDARY = /(?<=[，,])/u;
 
-function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = "", planSteps = false,
-  researchOrdinals = false): NumberClause[][] {
+interface OrdinalReading {
+  planSteps?: boolean;
+  researchOrdinals?: boolean;
+  contextualOrdinals?: boolean;
+}
+
+function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = "", rules: OrdinalReading = {}): NumberClause[][] {
   const sentences = numberText(value).split(SENTENCE_BOUNDARY);
-  const rawSentences = researchOrdinals ? value.split(SENTENCE_BOUNDARY) : [];
+  const rawSentences = rules.researchOrdinals ? value.split(SENTENCE_BOUNDARY) : [];
   return sentences.map((sentence, i) => {
     const target = restatableAudience(sentence, frozenAudience);
     const clauses = sentence.split(CLAUSE_BOUNDARY);
@@ -307,7 +314,7 @@ function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, fro
     const raw = rawSentences.length === sentences.length ? rawSentences[i]?.split(CLAUSE_BOUNDARY) : undefined;
     return clauses.map((clause, index) => {
       const notices: AutoNumberFinding[] = [];
-      const text = clauseOf(clause, exempt, target, planSteps, researchOrdinals ? notices : undefined);
+      const text = clauseOf(clause, exempt, target, rules, rules.researchOrdinals ? notices : undefined);
       return { raw: raw?.length === clauses.length ? raw[index] : undefined, text, notices };
     });
   }).filter((sentence) => sentence.some((clause) => clause.text.length > 0));
@@ -357,31 +364,42 @@ function planStep(clause: string, offset: number): boolean {
   return !RESULT.test(clause.slice(result.index + method[0].length));
 }
 
+function metricOwnsOrdinal(before: string): boolean {
+  return RANK_PLACE_BEFORE.test(before.replace(RESEARCH_RANK_CONNECTOR, ""));
+}
+
+function maskLexicalOrdinals(clause: string): string {
+  // In “位列第一时间很短” the metric takes 第一; 时间 belongs to the next phrase.
+  return clause.replace(LEXICAL_ORDINAL, (word, offset: number) => metricOwnsOrdinal(clause.slice(0, offset)) ? word : GAP);
+}
+
 /** v15–v16 reads each ordinal on its own. A plan elsewhere is not proof, and a nearby metric owns its place. */
-function researchOrdinalRole(clause: string, ordinal: string, offset: number): "rank" | "plan" | "work" | "uncertain" | "legacy" {
+function researchOrdinalRole(clause: string, ordinal: string, offset: number, contextual: boolean): "rank" | "plan" | "work" | "uncertain" | "legacy" {
   const before = clause.slice(0, offset);
   const after = clause.slice(offset + ordinal.length);
-  if (RANK_PLACE_BEFORE.test(before.replace(RESEARCH_RANK_CONNECTOR, "")) || /^(?:名|位)/u.test(after)) return "rank";
+  if (metricOwnsOrdinal(before) || /^(?:名|位)/u.test(after)) return "rank";
   // Typological 第N类 / 第N种 is a creative category label (第二类矛盾), never a market place — even beside 人气/热度.
   if (TYPOLOGICAL_UNIT.test(after)) return "work";
   const step = PLAN_STEP_UNIT.test(after);
   if (step && planStep(clause, offset)) return "plan";
-  if (EXPLICIT_RANK_CONTEXT.test(clause) || SAMPLE_DONE.test(clause) || RESULT.test(clause) || SETTLED.test(clause)) return "legacy";
-  const work = WORK_ORDER_UNIT.exec(after)?.[0];
-  if (work && (WORK_ORDER_OWNER.test(before) || WORK_ORDER_ACTION.test(after.slice(work.length)))) return "work";
-  if ((step || work) && CREATIVE_ORDER_WORD.test(clause)) return "uncertain";
-  return "legacy";
+  if (EXPLICIT_RANK_CONTEXT.test(clause)) return "legacy";
+  if (!SAMPLE_DONE.test(clause) && !RESULT.test(clause) && !SETTLED.test(clause)) {
+    const work = WORK_ORDER_UNIT.exec(after)?.[0];
+    if (work && (WORK_ORDER_OWNER.test(before) || WORK_ORDER_ACTION.test(after.slice(work.length)))) return "work";
+    if ((step || work) && CREATIVE_ORDER_WORD.test(clause)) return "uncertain";
+  }
+  return contextual && !RANK_MARKERS.test(clause) && !MARKET_CLAUSE.test(clause) ? "uncertain" : "legacy";
 }
 
 function markRank(ordinal: string): string {
   return `${GAP}${RANK_PREFIX}${ordinal}${GAP}`;
 }
 
-function readResearchOrdinals(clause: string, notices: AutoNumberFinding[]): string {
+function readResearchOrdinals(clause: string, notices: AutoNumberFinding[], contextual: boolean): string {
   const structural = RANK_MARKERS.test(clause) ? null : MARKET_CLAUSE.test(clause) ? STRUCTURAL_ORDINAL_IN_MARKET : STRUCTURAL_ORDINAL;
   const legacyStructural = new Set(structural ? Array.from(clause.matchAll(structural), (match) => match.index) : []);
   return clause.replace(ORDINAL, (ordinal: string, offset: number) => {
-    const role = researchOrdinalRole(clause, ordinal, offset);
+    const role = researchOrdinalRole(clause, ordinal, offset, contextual);
     if (role === "plan" || role === "work") return GAP;
     const wasStructural = legacyStructural.has(offset);
     // Keep known episode/scene positions as before (e.g. 计划试读第三集). Workflow units with only a weak creative cue
@@ -394,17 +412,18 @@ function readResearchOrdinals(clause: string, notices: AutoNumberFinding[]): str
   });
 }
 
-function clausesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = ""): string[] {
-  return sentencesOf(value, exempt, frozenAudience).flatMap((sentence) => sentence.map((clause) => clause.text));
+function clausesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, contextualOrdinals = false): string[] {
+  return sentencesOf(value, exempt, "", { contextualOrdinals }).flatMap((sentence) => sentence.map((clause) => clause.text));
 }
 
-function clauseOf(raw: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience: string, planSteps: boolean, notices?: AutoNumberFinding[]): string {
+function clauseOf(raw: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience: string, rules: OrdinalReading, notices?: AutoNumberFinding[]): string {
   return [raw]
     .map((clause) => clause.replace(/\s+/gu, "").replace(ORDINARY_WORDS, GAP))
     .map((clause) => (restatesTarget(clause, frozenAudience) ? clause.split(frozenAudience).join(GAP) : clause))
-    .map((clause) => (planSteps && !notices ? clause.replace(PLAN_STEP_ORDINAL, (ordinal, offset: number) => (planStep(clause, offset) ? GAP : ordinal)) : clause))
+    .map((clause) => rules.contextualOrdinals ? maskLexicalOrdinals(clause) : clause)
+    .map((clause) => (rules.planSteps && !notices ? clause.replace(PLAN_STEP_ORDINAL, (ordinal, offset: number) => (planStep(clause, offset) ? GAP : ordinal)) : clause))
     // In a ranking clause no ordinal is a position; in a viewing clause 第 30 秒 is a viewing moment, not the story's.
-    .map((clause) => (notices ? readResearchOrdinals(clause, notices)
+    .map((clause) => (notices ? readResearchOrdinals(clause, notices, rules.contextualOrdinals === true)
       : (RANK_MARKERS.test(clause) ? clause : clause.replace(MARKET_CLAUSE.test(clause) ? STRUCTURAL_ORDINAL_IN_MARKET : STRUCTURAL_ORDINAL, GAP)).replace(ORDINAL, markRank)))
     .map((clause) => {
       if (MARKET_CLAUSE.test(clause)) return clause;
@@ -466,8 +485,8 @@ function hitsOf(clause: string, market = MARKET_CLAUSE.test(clause)): NumberHit[
  * whole number, after the run's own settings and structural ordinals are removed. A cited text's tokens must each be
  * found whole among its sources' tokens; this is also how a source's numbers are read.
  */
-export function numberTokens(value: string, exempt: ReadonlyArray<AutoExemptNumber> = []): string[] {
-  return clausesOf(value, exempt).flatMap((clause) => hitsOf(clause).map((hit) => hit.token));
+export function numberTokens(value: string, exempt: ReadonlyArray<AutoExemptNumber> = [], contextualOrdinals = false): string[] {
+  return clausesOf(value, exempt, contextualOrdinals).flatMap((clause) => hitsOf(clause).map((hit) => hit.token));
 }
 
 /** The kind of a refused number, for diagnosis without the text: rank, percent, Chinese numeral, full-width or plain digits. */
@@ -857,12 +876,14 @@ function designEpisodeScope(clause: string, clauses: readonly string[], before: 
  * on the raw text; a ranking clause keeps its ordinals as places, and a cited text (a fact, a quote) is never read so.
  */
 function designOrdinalRefusal(text: string, frame: AutoNumberFrame, researchOrdinals: boolean): AutoNumberFinding | null {
-  for (const clause of text.replace(INVISIBLE, "").replace(/\s+/gu, "").split(/(?<=[，,。；;！？!?\n])/u)) {
+  const compact = text.replace(INVISIBLE, "").replace(/\s+/gu, "");
+  const design = frame.contextualOrdinals ? maskLexicalOrdinals(compact) : compact;
+  for (const clause of design.split(/(?<=[，,。；;！？!?\n])/u)) {
     const containsRankMarker = RANK_MARKERS.test(clause);
     if (containsRankMarker && !researchOrdinals) continue;
     for (const match of clause.matchAll(EPISODE_ORDINAL)) {
       if (researchOrdinals) {
-        const role = researchOrdinalRole(clause, match[0].slice(0, -1), match.index);
+        const role = researchOrdinalRole(clause, match[0].slice(0, -1), match.index, frame.contextualOrdinals === true);
         if (role === "rank" || (containsRankMarker && role === "legacy")) continue;
       }
       const value = numberValue(match[1]!);
@@ -1133,7 +1154,7 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame,
   // A plan's sample keeps its own refusal; any other position outside the work is a range outside it.
   const outside = (verificationPlan ? sampleOrdinalRefusal(text, frame) : null) ?? (structureDesign ? designOrdinalRefusal(text, frame, researchOrdinals) : null);
   if (outside) return { refusal: outside, unverified };
-  for (const parts of sentencesOf(text, frame.exempt, frame.frozenAudience, verificationPlan, researchOrdinals)) {
+  for (const parts of sentencesOf(text, frame.exempt, frame.frozenAudience, { planSteps: verificationPlan, researchOrdinals, contextualOrdinals: frame.contextualOrdinals })) {
     const clauses = parts.map((part) => part.text);
     // Viewers, the market and a measured result named anywhere in the sentence carry over its commas (数据显示，三个人里…).
     const sentence = clauses.join("");

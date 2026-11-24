@@ -543,10 +543,12 @@ async function main() {
     await stage("compose-off-state", async () => {
       // Episode compose is off on this API: step 5 says so per its own switch, and nothing is called done.
       await stepButton("出成片");
-      await page.getByText(/当前环境没有开启集级合成/).waitFor({ timeout: 20_000 });
+      await page.getByText(/集级合成由平台统一开启，目前还没开/).waitFor({ timeout: 20_000 });
+      await page.getByText("已确认单镜进度 0/2").waitFor({ timeout: 20_000 });
       await page.getByRole("tab", { name: /第 1 集 · — 尚未确认/ }).waitFor({ timeout: 20_000 });
       if (await page.getByRole("button", { name: "查看并下载成片" }).count()) throw new Error("compose-off final step claimed done");
       await stepButton("试一段");
+      await page.getByText("至少确认 2 个镜头才能出单集。").waitFor();
       if (await page.getByRole("button", { name: "继续下一步" }).count()) throw new Error("compose-off sample step offered 继续下一步");
       if (await page.getByRole("button", { name: /第 4 步 试一段：已完成/ }).count()) throw new Error("sample marked done");
       // Issue #52 item 3: the closed state comes from the server capability; no action the server would reject.
@@ -593,7 +595,7 @@ async function main() {
       if (capabilityOn?.shot !== true || capabilityOn?.episode !== true) throw new Error(`capability on ${JSON.stringify(capabilityOn)}`);
       if (Object.values(capabilityOn).some((value) => typeof value !== "boolean")) throw new Error("capability carries more than booleans");
       evidence.checks.composeOpen = capabilityOn;
-      return { message: "当前环境没有开启集级合成", episode1: "尚未确认", studioStage: "第 2 步 看剧本" };
+      return { message: "集级合成由平台统一开启，目前还没开", episode1: "尚未确认", studioStage: "第 2 步 看剧本" };
     });
 
     await stage("step3-cast", async () => {
@@ -731,7 +733,7 @@ async function main() {
       const preflight = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes(`/shot-revisions/${world.shot1Revision}/compose-preflight`));
       await panel.getByRole("button", { name: "预检合成输入" }).click();
       if ((await preflight).status() !== 200) throw new Error("single-shot preflight failed");
-      await panel.getByText("合成尚未执行").waitFor({ timeout: 20_000 });
+      await panel.getByText("合成输入已通过预检").waitFor({ timeout: 20_000 });
       const composeResponse = page.waitForResponse((response) => response.request().method() === "POST"
         && response.url().endsWith(`/shot-revisions/${world.shot1Revision}/compose`));
       await panel.getByRole("button", { name: "开始合成" }).click();
@@ -740,6 +742,7 @@ async function main() {
       await panel.getByText("合成任务已受理").waitFor({ timeout: 20_000 });
       const composeJob = await pollJob((await composeAccepted.json()).jobId, 240_000);
       if (composeJob.state !== "SUCCEEDED") throw new Error(`compose ${composeJob.state} ${composeJob.errorCode ?? ""} ${composeJob.errorMessage ?? ""}`);
+      await panel.getByText("最近一次合成：已完成").waitFor({ timeout: 20_000 });
       const composite = (await sql(`SELECT id::text AS id, project_id::text AS project_id, checksum_sha256, review_status, status, kind
         FROM asset WHERE source_generation_job_id = $1`, [composeJob.id]))[0];
       if (composite?.kind !== "COMPOSITE" || composite.project_id !== world.projectId || composite.review_status !== "DRAFT") {

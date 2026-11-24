@@ -1,3 +1,4 @@
+import { isCreatorRequest } from "../auth/creator-access";
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Query, Res } from "@nestjs/common";
 import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { AUTO_CREATION_SERVICE } from "./tokens";
@@ -30,7 +31,7 @@ export class AutoCreationController {
 
   @Get("writing/auto-runs/options")
   options(@Res({ passthrough: true }) response: StatusResponse) {
-    return this.send(response, (service) => service.options());
+    return this.send(response, (service) => service.options(isCreatorRequest()));
   }
 
   @Post("projects/:projectId/auto-runs")

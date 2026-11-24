@@ -299,3 +299,38 @@
   .workCheck li { padding: 10px 14px; }
   .workDialog .dialogActions { margin-top: 24px; }
 }
+
+.planPicker { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.membershipGrid {
+  display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 16px; align-items: start; margin-top: 16px;
+}
+.membershipCard, .membershipList { padding: 20px; min-width: 0; overflow-wrap: anywhere; }
+.membershipCard { display: grid; gap: 12px; margin: 0; }
+.membershipCard h2, .membershipList h2 { margin: 0; font-size: 18px; line-height: 26px; }
+.membershipCard .field { margin: 0; font-size: 14px; min-width: 0; }
+.membershipCard .field input, .membershipCard select, .quotaInput {
+  width: 100%; min-width: 0; box-sizing: border-box; min-height: 40px;
+}
+.membershipCard select, .quotaInput {
+  padding: 0 12px; border: 1px solid var(--admin-line); border-radius: 8px;
+  background: white; color: var(--admin-ink); font: inherit; font-size: 14px;
+}
+.membershipCard button { justify-self: start; }
+.planCard { grid-row: span 2; }
+.planFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.quotaList { min-width: 0; margin: 0; padding: 0; border: 0; }
+.quotaList legend { padding: 4px 0 8px; font-size: 14px; font-weight: 600; }
+.quotaRow { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--admin-line); }
+.quotaToggle { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 14px; cursor: pointer; }
+.quotaToggle input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; accent-color: var(--admin-blue); }
+.quotaInput:disabled { background: var(--admin-soft); color: var(--admin-muted); }
+.membershipList .table { margin-top: 12px; }
+@media (max-width: 1023px) {
+  .membershipGrid { grid-template-columns: minmax(0, 1fr); }
+  .planCard { grid-row: auto; }
+  .membershipCard, .membershipList { padding: 16px; }
+  .membershipCard input, .membershipCard select, .membershipCard button { min-height: 44px; }
+  .quotaToggle input { min-height: 0; }
+  .membershipList .card { margin: 12px 0 0; }
+}

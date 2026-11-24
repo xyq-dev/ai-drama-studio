@@ -5,7 +5,7 @@ import {
   sampleVideoRequestIdFromSnapshot,
   type SampleVideoFixtureId,
 } from "@ai-drama/contracts";
-import { mockMediaFixture } from "./mock-media-fixtures";
+import { mockDialogueSubtitle, mockMediaFixture } from "./mock-media-fixtures";
 import { sampleVideoBytes } from "./sample-video";
 import {
   MEDIA_CAPABILITIES,
@@ -91,12 +91,12 @@ export class MockMediaAdapter implements MediaProviderAdapter {
     return {
       kind: "succeeded",
       providerRequestId,
-      outputs: [mockOutput(input, providerRequestId)],
+      outputs: [outputFor(input.capability, providerRequestId, input.inputSnapshot)],
       accounting: actualAccounting(providerRequestId),
     };
   }
 
-  async inspect(providerRequestId: string): Promise<MediaProviderObservation> {
+  async inspect(providerRequestId: string, inputSnapshot?: unknown): Promise<MediaProviderObservation> {
     if (this.pending.delete(providerRequestId)) {
       const accounting = estimatedAccounting(providerRequestId);
       const responseHash = observationHash(providerRequestId, "ACTIVE", undefined, accounting);
@@ -141,7 +141,7 @@ export class MockMediaAdapter implements MediaProviderAdapter {
     const parsed = parseRequestId(providerRequestId);
     if (parsed) {
       const outputs: [MediaProviderOutput, ...MediaProviderOutput[]] = [
-        outputFor(parsed.capability, providerRequestId),
+        outputFor(parsed.capability, providerRequestId, inputSnapshot),
       ];
       const accounting = actualAccounting(providerRequestId, !parsed.sync);
       const responseHash = observationHash(providerRequestId, "SUCCEEDED", outputs, accounting);
@@ -197,10 +197,6 @@ function observationHash(
     .digest("hex");
 }
 
-function mockOutput(input: MediaGenerationRequest, providerRequestId: string): MediaProviderOutput {
-  return outputFor(input.capability, providerRequestId);
-}
-
 function parseRequestId(providerRequestId: string): { capability: MediaCapability; sync: boolean } | null {
   const parts = providerRequestId.split("|");
   if (parts[0] !== "mock-media") return null;
@@ -219,7 +215,15 @@ function sampleOutput(providerRequestId: string, fixtureId: SampleVideoFixtureId
   };
 }
 
-function outputFor(capability: MediaCapability, providerRequestId: string): MediaProviderOutput {
+function outputFor(capability: MediaCapability, providerRequestId: string, inputSnapshot?: unknown): MediaProviderOutput {
+  if (capability === "subtitle.generate" && inputSnapshot !== undefined) {
+    const bytes = mockDialogueSubtitle(inputSnapshot);
+    return {
+      kind: "SUBTITLE",
+      mimeTypeHint: "text/vtt",
+      retrieval: { kind: "URI", uri: `data:text/vtt;base64,${bytes.toString("base64")}` },
+    };
+  }
   const digest = createHash("sha256").update(providerRequestId).digest("hex");
   const kind =
     capability === "image.generate"

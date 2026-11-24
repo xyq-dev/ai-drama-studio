@@ -162,7 +162,7 @@ export class AutoCreationService {
     setImmediate(() => { void work().catch(() => undefined); });
   }
 
-  async options(): Promise<AutoCreationResult> {
+  async options(viewerIsCreator = false): Promise<AutoCreationResult> {
     const storageReady = await this.deps.store.storageReady();
     const providers = TITLE_WRITING_PROVIDER_KEYS.map((providerKey) => {
       const config = this.deps.providers[providerKey];
@@ -189,6 +189,7 @@ export class AutoCreationService {
       code,
       storageReady,
       operatorTokenRequired: this.deps.siteOperator !== true,
+      viewerIsCreator,
       defaultProvider: this.deps.defaultProvider ?? firstReady,
       providers,
       configurationPending: pending,

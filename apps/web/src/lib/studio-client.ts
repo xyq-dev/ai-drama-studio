@@ -15,7 +15,7 @@ export interface WriteRequest {
   body: unknown;
   idempotencyKey: string;
   ifMatch?: number;
-  method?: "POST" | "PUT";
+  method?: "POST" | "PUT" | "PATCH";
   operatorToken?: string;
 }
 
@@ -36,6 +36,7 @@ export class StudioClient {
   async get<T>(path: string, options?: { signal?: AbortSignal }): Promise<T> {
     const response = await this.request(`${this.prefix}${path}`, {
       method: "GET",
+      cache: "no-store",
       headers: { Accept: "application/json" },
       ...(options?.signal ? { signal: options.signal } : {}),
     });

@@ -8,7 +8,7 @@ import {
   sessionAllowsStaffPermission,
 } from "@ai-drama/domain";
 import { CREATOR_PLAN_LEDGER_STORE, AUTH_WORKSPACE_ID } from "../auth/auth.tokens";
-import { MEMBERSHIP_STORE, type MembershipStore } from "../membership/membership-store";
+import { MEMBERSHIP_STORE, writingPreflight, type MembershipStore } from "../membership/membership-store";
 import { MEMBERSHIP_FEATURES, MEMBERSHIP_FEATURE_LABELS, membershipStatusLabel } from "@ai-drama/domain";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import { requireOperatorAccess, type CreatorAccessScope } from "../auth/creator-access";
@@ -147,9 +147,13 @@ export class AccountController {
   }
 
   @Get("membership")
-  async membershipView(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AccountResponse) {
+  async membershipView(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AccountResponse,
+    @Query("preflight") preflight?: string) {
     response.setHeader("Cache-Control", "private, no-store");
     const session = this.requireSession(headers);
+    if (preflight === "writing") {
+      return { denial: session.role === "creator" ? await writingPreflight(this.membership, this.workspaceId, session.accountId) : null };
+    }
     if (!this.membership || session.role === "operator" && session.accountId === "open") {
       response.status(200);
       return { status: "none", statusLabel: "未开通", planName: null, startsAt: null, endsAt: null, features: [], ledger: [] };

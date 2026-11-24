@@ -63,6 +63,7 @@ import {
   type SeriesWritingEngine,
   type WritingProviderConfig,
 } from "@ai-drama/providers";
+import { installedCreatorMembership, requireWritingForNewProject } from "../membership/creator-task-guard";
 import { asProof, platformCreationAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import type { StudioContext } from "./studio.service";
 import type { RuntimeStore } from "@ai-drama/database";
@@ -175,7 +176,7 @@ export class SeriesWritingService {
     setImmediate(() => { void work().catch(() => undefined); });
   }
 
-  async options(): Promise<SeriesWritingResult> {
+  async options(viewerIsCreator = false): Promise<SeriesWritingResult> {
     const storageReady = await this.deps.store.storageReady();
     const providers = TITLE_WRITING_PROVIDER_KEYS.map((providerKey) => {
       const config = this.deps.providers[providerKey];
@@ -195,6 +196,7 @@ export class SeriesWritingService {
     const readableMarket = snapshot.filter((source) => source.topic === "market" && source.status === "read").length;
     return { status: 200, body: {
       enabled: this.deps.enabled, code, storageReady, operatorTokenRequired: this.deps.siteOperator !== true,
+      viewerIsCreator,
       defaultProvider: this.deps.defaultProvider ?? firstReady, providers, configurationPending: pending,
       maxCallsPerDay: this.deps.maxCallsPerDay, maxActiveRuns: this.deps.maxActiveRuns, billing: "unknown",
       episodes: { min: SERIES_MIN_EPISODES, max: SERIES_MAX_EPISODES, secondsChoices: [...SERIES_SECONDS_CHOICES], defaultSeconds: SERIES_DEFAULT_SECONDS,
@@ -254,7 +256,8 @@ export class SeriesWritingService {
       series.input.researchContract = previous.input.researchContract;
       series.inputHash = hashSeriesInput(series.title, series.input);
     }
-    const created = await this.deps.store.createSeries(series, { title: request.title, premise: request.idea });
+    const created = await this.deps.store.createSeries(series, { title: request.title, premise: request.idea },
+      transaction => requireWritingForNewProject(this.deps.workspaceId, context.actorId, transaction, installedCreatorMembership()?.store));
     if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "plan_unavailable") return failure(503, "SERIES_EPISODE_PLAN_UNAVAILABLE");
     const snapshot = await this.deps.store.snapshot(this.deps.workspaceId, created.series.projectId);

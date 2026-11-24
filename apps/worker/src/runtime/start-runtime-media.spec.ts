@@ -153,7 +153,7 @@ function bind(kind: "MEDIA_IMAGE" | "MEDIA_VIDEO" | "MEDIA_TTS" | "MEDIA_SUBTITL
     inputHash: "ab".repeat(32),
     inputSnapshot: kind === "MEDIA_IMAGE"
       ? { schema: "m3.mock.image.v1", shotRevisionId: "shot", seed: null, outcome: "success", bypassCache: false }
-      : { outcome: "success", executionMode: "sync", capability },
+      : { outcome: "success", executionMode: "sync", capability, sourceText: "已有对白" },
     state: "RUNNING", cancelRequested,
   });
 }

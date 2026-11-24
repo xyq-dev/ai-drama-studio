@@ -99,6 +99,21 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
+describe("creator preflight", () => {
+  it("checks a nonmember before creating a title-writing project", async () => {
+    const { calls } = server(() => json({ denial: "MEMBERSHIP_REQUIRED" }), { options: options({ viewerIsCreator: true }) });
+    render(<TitleWritingStart />);
+    await screen.findByText("还没有开通会员，请联系管理员开通。");
+    expect(screen.getByText("调用权限由你的登录账号确认，会按你的会员写作额度计次，模型密钥只在服务端。")).toBeTruthy();
+    expect(screen.queryByLabelText("操作者令牌")).toBeNull();
+    const button = screen.getByRole("button", { name: "AI 一键创作" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(projectPosts(calls)).toEqual([]);
+    expect(runPosts(calls)).toEqual([]);
+  });
+});
+
 describe("an unconfirmed start", () => {
   it("non-default settings, a lost run receipt and a reload: the form shows the frozen request and the retry replays it", async () => {
     let lose = true;
@@ -377,7 +392,7 @@ describe("the site login authorizes the call", () => {
     const button = await screen.findByRole("button", { name: "AI 一键创作" });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     expect(screen.queryByLabelText("操作者令牌")).toBeNull();
-    expect(screen.getByText("调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。")).toBeTruthy();
+    expect(screen.getByText("调用权限由你的登录账号确认，模型密钥只在服务端。")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
     fireEvent.click(button);
     await waitFor(() => expect(runPosts(calls)).toHaveLength(1));

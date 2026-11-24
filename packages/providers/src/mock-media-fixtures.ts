@@ -50,7 +50,7 @@ export const MOCK_AUDIO_FIXTURE = {
   durationMs: 100,
 };
 
-/** Fixed WebVTT used by subtitle.generate. The cue does not follow the saved dialogue. */
+/** Historical 100 ms asset; keep it readable for previously saved projects. */
 export const MOCK_SUBTITLE_FIXTURE = {
   mimeType: "text/vtt" as const,
   bytes: subtitleBytes,
@@ -60,6 +60,33 @@ export const MOCK_SUBTITLE_FIXTURE = {
   height: null,
   durationMs: 100,
 };
+
+export const MOCK_SUBTITLE_DURATION_MS = 1000;
+const subtitleHeader = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n";
+const subtitleLineLength = 40;
+// An escaped ampersand takes at most five UTF-8 bytes per input code point.
+export const MAX_MOCK_SUBTITLE_BYTES = Buffer.byteLength(subtitleHeader) + 2 * subtitleLineLength * 5 + 2;
+
+export function mockDialogueSubtitle(snapshot: unknown): Buffer {
+  const source = (snapshot as { sourceText?: unknown } | null)?.sourceText;
+  if (typeof source !== "string" || !source.trim()) throw new Error("Mock subtitle canonical fixture requires saved dialogue");
+  const clean = source.replaceAll("-->", " ").replace(/[\s\p{Cc}]+/gu, " ").trim();
+  const chars = Array.from(clean).slice(0, 2 * subtitleLineLength);
+  const lines = [chars.slice(0, subtitleLineLength).join(""), chars.slice(subtitleLineLength).join("")];
+  const body = lines.filter(Boolean).join("\n").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return Buffer.from(subtitleHeader + body + "\n");
+}
+
+export function isMockDialogueSubtitle(bytes: Buffer): boolean {
+  if (bytes.length > MAX_MOCK_SUBTITLE_BYTES) return false;
+  const text = bytes.toString("utf8");
+  if (!text.startsWith(subtitleHeader) || !text.endsWith("\n")) return false;
+  const lines = text.slice(subtitleHeader.length, -1).split("\n");
+  return lines.length <= 2 && lines.every(line =>
+    !/[<>\p{Cc}]|&(?!amp;|lt;|gt;)/u.test(line)
+    && Array.from(line.replace(/&(?:amp|lt|gt);/g, "x")).length <= subtitleLineLength)
+    && Buffer.from(text).equals(bytes);
+}
 
 export function mockMediaFixture(mimeType: string): Buffer {
   switch (mimeType) {

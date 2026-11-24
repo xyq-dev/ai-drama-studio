@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ComposeJobPanel } from "./compose-job-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
+import type { WorkflowJob } from "../lib/project-base";
 
 interface ListedAsset {
   id: string;
@@ -46,6 +47,7 @@ export function ComposePreflight(props: {
   revisionId: string;
   refreshEpoch: number;
   client?: StudioClient;
+  composeJobs?: readonly WorkflowJob[];
   onChanged?: () => void;
   /** Why a new compose cannot start now; preflight and submit stay closed, selections and results are kept. */
   blocked?: string | null;
@@ -158,7 +160,7 @@ export function ComposePreflight(props: {
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       {result ? (
         <div className="creator-preflight-result mt-3 text-sm">
-          <p>合成尚未执行</p>
+          <p>合成输入已通过预检</p>
           <p>计划尺寸 {result.manifest.plan.width}×{result.manifest.plan.height} · {result.manifest.plan.frameRate}fps · {result.manifest.plan.container.toUpperCase()}</p>
           <p>计划时长 {result.manifest.plan.durationMs} ms</p>
           <ul className="mt-2 space-y-1">
@@ -173,6 +175,7 @@ export function ComposePreflight(props: {
         </div>
       ) : null}
       <ComposeJobPanel
+        history={props.composeJobs}
         revisionId={props.revisionId}
         client={client}
         onChanged={props.onChanged}

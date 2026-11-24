@@ -185,6 +185,13 @@ describe("limited research for a single episode", () => {
 
   const fourthStatement = (statement: string) => answer("limited", [...FOUR.slice(0, 3), { ...FOUR[3], statement }]);
 
+  it("replays v18 single-episode research with v18 counting and its original audit version", () => {
+    const frozen = { ...current, checksVersion: "ads.auto-creation.checks.v18" } as const;
+    const replay = (statement: string) => validateAutoStageOutput("research", fourthStatement(statement), frozen, limitedContext());
+    expect(replay(label)).toMatchObject({ ok: true, output: { unverified: [], serverRecord: { executedWith: { checksVersion: frozen.checksVersion } } } });
+    expect(replay("是否比加入旁白或第三方叙述更适合竖屏短时长表达。")).toMatchObject({ ok: false, code: "unsourced_number", rule: "ranking" });
+  });
+
   it.each([
     label, "1 集、约 1 分钟", "本剧共 1 集，每集约 1 分钟", "待验证：用 1 集和约 60 秒的剧本能否让观众理解结局？",
   ])("keeps the work’s format as written in the fourth hypothesis: %s", (statement) => {

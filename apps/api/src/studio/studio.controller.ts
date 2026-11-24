@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Head, Headers, Inject, Optional, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
+import { Body, Controller, Get, Head, Headers, Inject, Optional, Param, Patch, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
 import { PersistenceError, RuntimeStore, storeActorId, storeOwnerAccountFilter } from "@ai-drama/database";
 import { SITE_AUTH, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
+import { opsViewRequested } from "../auth/site-auth.middleware";
 import { RUNTIME_STORE, STUDIO_SERVICE } from "./tokens";
 import { attachmentDisposition } from "./episode-export";
 import { StudioService, createTraceId, type StudioContext } from "./studio.service";
@@ -65,6 +66,17 @@ export class StudioController {
   @Get("projects/:projectId")
   getProject(@Param("projectId", UUID_PARAM_PIPE) projectId: string) {
     return this.studio.getProject(projectId);
+  }
+
+  @Patch("projects/:projectId")
+  renameProject(
+    @Req() request: Parameters<typeof opsViewRequested>[0],
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Body() body: unknown,
+    @Headers("if-match") ifMatch?: string,
+  ) {
+    if (opsViewRequested(request)) throw new PersistenceError("VALIDATION_ERROR", "运营视图仅供查阅");
+    return this.studio.renameProject(projectId, body, ifMatch);
   }
 
   @Get("projects/:projectId/cost-summary")

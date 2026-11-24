@@ -7,6 +7,7 @@ import {
   writingMembershipOutcome,
   seriesBatchRange,
   seriesStageEpisodeNo,
+  type WritingQuotaTransaction,
   type SeriesAdmission,
   type SeriesCallFinish,
   type SeriesCallRecord,
@@ -39,9 +40,10 @@ import {
   type TitleWritingStepKey,
   type TitleWritingUsageView,
 } from "@ai-drama/contracts";
-import { seriesCurrentPlan, seriesGrantRemainingSends, seriesJobNormalSends, seriesJobSends, seriesJobUpstreamChange } from "@ai-drama/domain";
+import { creatorAccountIdFromActor, seriesCurrentPlan, seriesGrantRemainingSends, seriesJobNormalSends, seriesJobSends, seriesJobUpstreamChange } from "@ai-drama/domain";
 import type { DatabasePool } from "./job-service";
 import { settleCreatorQuotaHold } from "./creator-quota-settle";
+import { projectOwnerColumnReady } from "./creator-access-context";
 import { episodePlanReadyIn } from "./episode-plan";
 import { SERIES_WRITING_MIGRATION } from "./migrations";
 import type { TextChainService } from "./text-chain";
@@ -204,17 +206,21 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
     return this.storageReady();
   }
 
-  async createSeries(series: SeriesRecord, project: { title: string; premise: string }): Promise<{ kind: "created" | "existing"; series: SeriesRecord } | { kind: "conflict" } | { kind: "plan_unavailable" }> {
+  async createSeries(series: SeriesRecord, project: { title: string; premise: string }, checkNewProject?: (transaction?: WritingQuotaTransaction) => Promise<void>): Promise<{ kind: "created" | "existing"; series: SeriesRecord } | { kind: "conflict" } | { kind: "plan_unavailable" }> {
     return this.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [runLockKey(series.workspaceId)]);
       const existing = (await client.query<Row>(`SELECT ${SERIES_COLUMNS} FROM series_writing_series WHERE workspace_id = $1 AND actor_id = $2 AND idempotency_key = $3`,
         [series.workspaceId, series.actorId, series.idempotencyKey])).rows[0];
       if (existing) return String(existing.input_hash) === series.inputHash ? { kind: "existing", series: toSeries(existing) } : { kind: "conflict" };
       if (!await episodePlanReadyIn(client)) return { kind: "plan_unavailable" };
+      if (checkNewProject) await checkNewProject(client);
+      const owner = creatorAccountIdFromActor(series.actorId);
+      const stampOwner = owner !== null && await projectOwnerColumnReady(client);
+      const projectValues = [series.projectId, series.workspaceId, project.title, project.premise, series.input.episodeCount, series.input.episodeSeconds];
       await client.query(
-        `INSERT INTO project (id, workspace_id, title, premise, episode_count, target_episode_seconds, writing_mode)
-         VALUES ($1, $2, $3, $4, $5, $6, 'series')`,
-        [series.projectId, series.workspaceId, project.title, project.premise, series.input.episodeCount, series.input.episodeSeconds]);
+        `INSERT INTO project (id, workspace_id, title, premise, episode_count, target_episode_seconds, writing_mode${stampOwner ? ", owner_account_id" : ""})
+         VALUES ($1, $2, $3, $4, $5, $6, 'series'${stampOwner ? ", $7" : ""})`,
+        stampOwner ? [...projectValues, owner] : projectValues);
       const inserted = await client.query<Row>(
         `INSERT INTO series_writing_series (id, workspace_id, project_id, actor_id, idempotency_key, input_hash, input_json, title, episode_count, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $10) RETURNING ${SERIES_COLUMNS}`,

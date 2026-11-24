@@ -18,11 +18,18 @@ interface ReadableStorage {
   getItem(key: string): string | null;
 }
 
-function isDraftRecord(raw: string | null): boolean {
+function isDraftRecord(entityKey: string, raw: string | null): boolean {
   if (!raw) return false;
   try {
-    const parsed = JSON.parse(raw) as { fingerprint?: unknown; idempotencyKey?: unknown };
-    return typeof parsed.fingerprint === "string" && typeof parsed.idempotencyKey === "string";
+    const parsed = JSON.parse(raw) as {
+      fingerprint?: unknown; idempotencyKey?: unknown; payload?: { name?: unknown; content?: { text?: unknown } };
+    };
+    if (typeof parsed.fingerprint !== "string" || typeof parsed.idempotencyKey !== "string") return false;
+    if (entityKey === "character:new" || entityKey === "location:new") {
+      const { name, content } = parsed.payload ?? {};
+      if (name === "" && content?.text === "") return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -49,11 +56,11 @@ export function listUnsavedDrafts(storage: ReadableStorage, projectId: string, e
   const drafts: UnsavedDraft[] = [];
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
-    if (!key?.startsWith(prefix) || !isDraftRecord(storage.getItem(key))) continue;
+    if (!key?.startsWith(prefix)) continue;
     const rest = key.slice(prefix.length);
     // The last segment is the base revision; the entity key itself may contain a colon.
     const entityKey = rest.slice(0, rest.lastIndexOf(":"));
-    drafts.push({ key, entityKey, label: draftLabel(entityKey, episodes) });
+    if (isDraftRecord(entityKey, storage.getItem(key))) drafts.push({ key, entityKey, label: draftLabel(entityKey, episodes) });
   }
   return drafts.sort((left, right) => left.key.localeCompare(right.key));
 }

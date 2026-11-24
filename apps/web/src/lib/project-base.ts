@@ -145,6 +145,26 @@ const IDLE_BASE_RETRIES = 5;
 
 export type EntityPageKind = "stories" | "characters" | "locations";
 
+/** A save must wait for the winning reread even when a background refresh supersedes its request. */
+export function useRevisionRefresh(scope: string, fetchPage: () => Promise<boolean>) {
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+  const latest = useRef<Promise<boolean> | null>(null);
+  const load = useCallback(() => {
+    const request = fetchPage();
+    latest.current = request;
+    return request;
+  }, [fetchPage]);
+  const reloadAfterWrite = useCallback(async () => {
+    if (currentScope.current !== scope) return;
+    let request = load();
+    while (!await request && currentScope.current === scope && latest.current && latest.current !== request) {
+      request = latest.current;
+    }
+  }, [scope, load]);
+  return { load, reloadAfterWrite };
+}
+
 export function useProjectBase(projectId: string, failureText: string) {
   const [project, setProject] = useState<ProjectRecord | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeRecord[]>([]);
@@ -208,7 +228,7 @@ export function useProjectBase(projectId: string, failureText: string) {
    * the loading, so a superseded request's end never closes a newer read. A reread after data is shown never turns
    * loading on and never clears what is shown. Resolves true when this read was applied, false when superseded.
    */
-  const loadBase = useCallback(async (): Promise<boolean> => {
+  const fetchBase = useCallback(async (): Promise<boolean> => {
     const request = ++baseToken.current;
     let loaded;
     try {
@@ -258,6 +278,8 @@ export function useProjectBase(projectId: string, failureText: string) {
     succeededRef.current();
     return true;
   }, [projectId, applyRuns]);
+
+  const { load: loadBase, reloadAfterWrite } = useRevisionRefresh(projectId, fetchBase);
 
   /** The public reread: same rules as loadBase, without the applied flag callers do not need. */
   const reloadBase = useCallback(async () => { await loadBase(); }, [loadBase]);
@@ -420,5 +442,5 @@ export function useProjectBase(projectId: string, failureText: string) {
   }, [projectId]);
 
   return { project, episodes, stories, characters, locations, workflows, allRuns, loading, error, setError, refreshEpoch,
-    imageEpoch, referenceEpoch, reloadBase, reloadForProject, more, keepScopedPages, refreshFailed, refreshPaused, retryNow };
+    imageEpoch, referenceEpoch, reloadBase, reloadAfterWrite, reloadForProject, more, keepScopedPages, refreshFailed, refreshPaused, retryNow };
 }

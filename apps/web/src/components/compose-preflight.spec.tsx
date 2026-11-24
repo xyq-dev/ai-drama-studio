@@ -56,6 +56,22 @@ function deferred() {
 afterEach(() => cleanup());
 
 describe("compose preflight selection", () => {
+  it("shows the latest actual compose task after reopening and keeps a new preflight separate from it", async () => {
+    const client = new StudioClient(async (url: string) => url.includes("/assets")
+      ? json({ items: [asset(VIDEO_A, REVISION_A)] }) : json(preflightBody(HASH_A)));
+    const job = { id: "last", state: "SUCCEEDED", kind: "MEDIA_COMPOSE", errorCode: null, errorMessage: null };
+    const props = { revisionId: REVISION_A, refreshEpoch: 0, client };
+    const view = render(createElement(ComposePreflight, { ...props, composeJobs: [job] }));
+    expect(screen.getByText("最近一次合成：已完成")).toBeTruthy();
+    fireEvent.change(await screen.findByLabelText("合成视频"), { target: { value: VIDEO_A } });
+    fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
+    await screen.findByText("合成输入已通过预检");
+    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect(screen.getByText("最近一次合成：已完成")).toBeTruthy();
+    view.rerender(createElement(ComposePreflight, { ...props, composeJobs: [{ ...job, id: "new", state: "FAILED" }, job] }));
+    expect(screen.getByText("最近一次合成：失败")).toBeTruthy();
+    expect(screen.queryByText("最近一次合成：已完成")).toBeNull();
+  });
   it("lists only the current revision and clears a result when the selection changes", async () => {
     const calls: Array<{ url: string; headers: HeadersInit | undefined; body: string | undefined }> = [];
     const fetchImpl = (input: string, init?: RequestInit) => {
@@ -93,7 +109,7 @@ describe("compose preflight selection", () => {
     expect(screen.getByRole("button", { name: "开始合成" }).hasAttribute("disabled")).toBe(true);
     fireEvent.change(video, { target: { value: VIDEO_A } });
     fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
-    expect(await screen.findByText("合成尚未执行")).toBeTruthy();
+    expect(await screen.findByText("合成输入已通过预检")).toBeTruthy();
     expect(screen.getByText(/1080×1920/)).toBeTruthy();
     expect(screen.getByText(/1000 ms/)).toBeTruthy();
     expect(screen.queryByText("已受理")).toBeNull();
@@ -104,7 +120,7 @@ describe("compose preflight selection", () => {
     expect(screen.getByRole("button", { name: "开始合成" }).hasAttribute("disabled")).toBe(false);
     fireEvent.change(screen.getByLabelText("合成音乐"), { target: { value: "" } });
     expect(screen.getByRole("button", { name: "开始合成" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect(screen.queryByText("合成输入已通过预检")).toBeNull();
     expect(screen.queryByText(HASH_A)).toBeNull();
   });
 
@@ -132,7 +148,7 @@ describe("compose preflight selection", () => {
       inputHash: HASH_A,
     }));
     await waitFor(() => expect(screen.queryByText(HASH_A)).toBeNull());
-    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect(screen.queryByText("合成输入已通过预检")).toBeNull();
 
     fireEvent.change(await screen.findByLabelText("合成视频"), { target: { value: VIDEO_A } });
     fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
@@ -143,7 +159,7 @@ describe("compose preflight selection", () => {
       inputHash: HASH_B,
     }));
     await waitFor(() => expect(screen.queryByText(HASH_B)).toBeNull());
-    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect(screen.queryByText("合成输入已通过预检")).toBeNull();
   });
 
   it("clears the previous result while a retry is waiting, shows only that error, and retries", async () => {
@@ -161,18 +177,18 @@ describe("compose preflight selection", () => {
     fireEvent.change(await screen.findByLabelText("合成视频"), { target: { value: VIDEO_A } });
     fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
     expect(await screen.findByText(HASH_A)).toBeTruthy();
-    expect(screen.getByText("合成尚未执行")).toBeTruthy();
+    expect(screen.getByText("合成输入已通过预检")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
     expect(screen.queryByText(HASH_A)).toBeNull();
-    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect(screen.queryByText("合成输入已通过预检")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
 
     rejected.resolve(json({ error: { code: "COMPOSE_INPUT_INVALID", message: "本次预检没有通过" } }, 400));
     expect(await screen.findByText("本次预检没有通过")).toBeTruthy();
     expect(screen.queryByText(HASH_A)).toBeNull();
-    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect(screen.queryByText("合成输入已通过预检")).toBeNull();
     expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
 
     fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
@@ -181,7 +197,7 @@ describe("compose preflight selection", () => {
     expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
     retried.resolve(json(preflightBody(HASH_B)));
     expect(await screen.findByText(HASH_B)).toBeTruthy();
-    expect(screen.getByText("合成尚未执行")).toBeTruthy();
+    expect(screen.getByText("合成输入已通过预检")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
   });
@@ -206,7 +222,7 @@ describe("compose preflight selection", () => {
     older.resolve(json({ error: { code: "COMPOSE_INPUT_INVALID", message: "旧预检失败" } }, 400));
     await waitFor(() => expect(screen.queryByText("旧预检失败")).toBeNull());
     expect(screen.getByText(HASH_B)).toBeTruthy();
-    expect(screen.getByText("合成尚未执行")).toBeTruthy();
+    expect(screen.getByText("合成输入已通过预检")).toBeTruthy();
     expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
   });
 
@@ -224,7 +240,7 @@ describe("compose preflight selection", () => {
     items = [asset(VIDEO_A, REVISION_A, "VIDEO", "video/mp4", "REJECTED")];
     view.rerender(createElement(ComposePreflight, { revisionId: REVISION_A, refreshEpoch: 1, client }));
     await waitFor(() => expect(screen.queryByText(HASH_A)).toBeNull());
-    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect(screen.queryByText("合成输入已通过预检")).toBeNull();
     expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe("");
   });
 });

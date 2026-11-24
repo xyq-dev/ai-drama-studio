@@ -172,9 +172,9 @@ describe("compose job panel", () => {
     };
     render(panel(fetchImpl));
     fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
-    await vi.waitFor(() => expect(document.body.textContent).toContain("合成任务 RUNNING"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("最近一次合成：进行中"));
     await vi.advanceTimersByTimeAsync(1000);
-    await vi.waitFor(() => expect(document.body.textContent).toContain("合成任务 SUCCEEDED"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("最近一次合成：已完成"));
     const jobsAfterTerminal = jobGets;
     const assetsAfterTerminal = assetGets;
     await vi.advanceTimersByTimeAsync(3000);
@@ -216,7 +216,7 @@ describe("compose job panel", () => {
     view.rerender(panel(fetchImpl, REVISION));
     releaseCancel(json({ id: JOB_A, state: "CANCELED", errorCode: null, errorMessage: null }));
     await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(screen.queryByText("合成任务 CANCELED")).toBeNull();
+    expect(screen.queryByText("最近一次合成：已取消")).toBeNull();
     expect(screen.queryByText(JOB_A)).toBeNull();
     expect(document.querySelector("[data-compose-job]")).toBeNull();
   });
@@ -241,7 +241,7 @@ describe("compose job panel", () => {
     expect(jobReads.length).toBe(jobsBeforeWait);
     jobReads[0]?.(json({ id: JOB_A, state: "SUCCEEDED", errorCode: null, errorMessage: null }));
     assetReads[assetReads.length - 1]?.(json({ items: [composite("DRAFT")] }));
-    await vi.waitFor(() => expect(document.body.textContent).toContain("合成任务 SUCCEEDED"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("最近一次合成：已完成"));
     expect(document.body.textContent).toContain("审核 DRAFT · 当前有效");
     expect(document.querySelector(`[data-composite-id="${ASSET}"]`)).toBeTruthy();
   });

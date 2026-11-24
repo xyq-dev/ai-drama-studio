@@ -15,10 +15,12 @@ import {
   optionsUnavailableReason,
   providerTarget,
   tokenRequired,
+  writingSessionNotice,
   type StartBody,
   type TitleWritingOptionsView,
 } from "../lib/title-writing-client";
 import { EpisodeWritingGuidance } from "./episode-writing-guidance";
+import { useCreatorWritingAccess } from "../lib/creator-writing-access";
 import styles from "./title-writing.module.css";
 
 const studio = new StudioClient();
@@ -163,6 +165,7 @@ function startError(caught: unknown, projectCreated: boolean): string {
 /** "AI 一键创作": the title is the only required creative input. Keys, tokens and budgets stay in their own section. */
 export function TitleWritingStart() {
   const [options, setOptions] = useState<TitleWritingOptionsView | null>(null);
+  const access = useCreatorWritingAccess(options?.viewerIsCreator === true);
   const [optionsLoaded, setOptionsLoaded] = useState(false);
   const [title, setTitle] = useState("");
   const [episodeCount, setEpisodeCount] = useState(3);
@@ -248,7 +251,7 @@ export function TitleWritingStart() {
    * Sends the frozen request with its own keys. Every key is saved before the write that uses it. Only a receipt that
    * proves the result (a project id, then a run of that project) confirms the start; anything else keeps the keys.
    */
-  async function send(draft: PendingStart) {
+  async function send(draft: PendingStart, fresh = false) {
     const mine = {};
     operation.current = mine;
     const live = () => operation.current === mine;
@@ -257,9 +260,16 @@ export function TitleWritingStart() {
     let current = draft;
     try {
       if (!current.projectId) {
+        if (!await access.check() || !live()) {
+          if (fresh && live()) {
+            clearPendingStart(current);
+            showPending(null);
+          }
+          return;
+        }
         // The work carries the plan; a record from the earlier page creates the work exactly as it would have then.
         const body = current.version === 3 ? { title: current.request.title, premise: "", ...current.plan } : { title: current.request.title, premise: "" };
-        const created = await studio.write<unknown>({ path: "/projects", body, idempotencyKey: current.projectKey });
+        const created = await studio.write<unknown>({ path: "/projects", body: { ...body, ...(options?.viewerIsCreator && { writingStart: true }) }, idempotencyKey: current.projectKey });
         if (!live()) return;
         const id = created.body && typeof created.body === "object" ? (created.body as { id?: unknown }).id : undefined;
         if (!isEntityId(id)) throw new TitleWritingUnconfirmedError(created.status);
@@ -283,7 +293,13 @@ export function TitleWritingStart() {
       showPending(null);
       window.location.assign(`/projects/${projectId}/writing`);
     } catch (caught) {
-      if (live()) setError(startError(caught, current.projectId !== null));
+      if (!live()) return;
+      if (access.recordRefusal(caught)) {
+        if (!current.projectId) {
+          clearPendingStart(current);
+          showPending(null);
+        }
+      } else setError(startError(caught, current.projectId !== null));
     } finally {
       if (live()) {
         operation.current = null;
@@ -293,7 +309,7 @@ export function TitleWritingStart() {
   }
 
   function checkReady(draft: PendingStart | null): boolean {
-    if (!optionsLoaded) return false;
+    if (!optionsLoaded || access.blocked) return false;
     if (unavailable) {
       setError(unavailable);
       return false;
@@ -344,7 +360,7 @@ export function TitleWritingStart() {
       return;
     }
     showPending(draft);
-    await send(draft);
+    await send(draft, true);
   }
 
   /** Replays the unconfirmed request exactly: same body, same project key, same run key. */
@@ -369,7 +385,7 @@ export function TitleWritingStart() {
       <p className={styles.cardIntro}>只填剧名，选好集数和每集时长。AI 会补全题材、人物、梗概、故事走向、分集大纲和每一集剧本，结果存为可修改的草稿。</p>
       {pending && !busy ? (
         <div className={styles.notice} role="status">
-          <p>上次的启动请求还没有确认结果。下面是当时提交的剧名和设置，重试会原样重放它，使用同一个请求标识。</p>
+          {!access.blocked && <p>上次的启动请求还没有确认结果。下面是当时提交的剧名和设置，重试会原样重放它，使用同一个请求标识。</p>}
           <p className={styles.actions}>
             {pending.projectId ? <a className={styles.secondary} href={`/projects/${pending.projectId}/writing`}>查看进度</a> : null}
             <button className={styles.textLink} type="button" onClick={abandon}>放弃上次请求，重新填写</button>
@@ -441,12 +457,13 @@ export function TitleWritingStart() {
       </details>
       <EpisodeWritingGuidance />
       <div className={styles.actions}>
-        <button className={styles.primary} type="button" disabled={busy || !optionsLoaded} onClick={() => void start()}>
-          {busy ? "正在启动…" : pending ? "重试上次请求" : "AI 一键创作"}
+        <button className={styles.primary} type="button" disabled={busy || access.blocked || !optionsLoaded} onClick={() => void start()}>
+          {busy ? "正在启动…" : pending && !access.blocked ? "重试上次请求" : "AI 一键创作"}
         </button>
         <a className={styles.textLink} href="#manual-start">改为手动写想法</a>
       </div>
       {busy ? <p className={styles.helper} role="status">正在创建作品并启动创作。剧名和设置已锁定，完成前不能修改。</p> : null}
+      {access.reason ? <p className={styles.warning} role="status">{access.reason}</p> : null}
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
 
       <section className={styles.config} aria-labelledby="ai-config-title">
@@ -476,7 +493,7 @@ export function TitleWritingStart() {
             <p className={styles.helper}>只保存在本页内存，用来确认这次可能计费的调用由你发起；不写入浏览器存储，也不进入故事内容。模型密钥只在服务端。</p>
           </>
         ) : (
-          <p className={styles.helper}>调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。</p>
+          <p className={styles.helper}>{writingSessionNotice(options?.viewerIsCreator === true)}</p>
         )}
       </section>
     </section>

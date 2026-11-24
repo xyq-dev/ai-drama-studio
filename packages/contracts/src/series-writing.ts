@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { WritingQuotaTransaction } from "./title-writing-store";
 import {
   AUTO_CREATION_CHECKS_V17,
   AUTO_CREATION_PROMPT_MAX_CHARS,
@@ -1131,7 +1132,7 @@ export interface SeriesWritingStore {
   storageReady(): Promise<boolean>;
   providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean>;
   /** Creates the project (series mode, N episodes) and its series in one transaction; a replayed key returns them. */
-  createSeries(series: SeriesRecord, project: { title: string; premise: string }): Promise<{ kind: "created" | "existing"; series: SeriesRecord } | { kind: "conflict" } | { kind: "plan_unavailable" }>;
+  createSeries(series: SeriesRecord, project: { title: string; premise: string }, checkNewProject?: (transaction?: WritingQuotaTransaction) => Promise<void>): Promise<{ kind: "created" | "existing"; series: SeriesRecord } | { kind: "conflict" } | { kind: "plan_unavailable" }>;
   findSeriesByKey(workspaceId: string, actorId: string, idempotencyKey: string): Promise<SeriesRecord | null>;
   snapshot(workspaceId: string, projectId: string): Promise<SeriesSnapshot | null>;
   findGrantByKey(workspaceId: string, actorId: string, idempotencyKey: string): Promise<SeriesGrantRecord | null>;

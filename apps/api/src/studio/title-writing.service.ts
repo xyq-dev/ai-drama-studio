@@ -186,7 +186,7 @@ export class TitleWritingService {
     setImmediate(() => { void work().catch(() => undefined); });
   }
 
-  async options(): Promise<TitleWritingResult> {
+  async options(viewerIsCreator = false): Promise<TitleWritingResult> {
     const storageReady = await this.deps.store.storageReady();
     // start() prefers this lock for new tasks. The page must see the same choice, including DeepSeek.
     const binding = storageReady ? await this.enabledWritingBinding() : null;
@@ -231,6 +231,7 @@ export class TitleWritingService {
       code,
       storageReady,
       operatorTokenRequired: this.deps.siteOperator !== true,
+      viewerIsCreator,
       defaultProvider: reportedDefault,
       providers,
       configurationPending: await this.configurationPending(),

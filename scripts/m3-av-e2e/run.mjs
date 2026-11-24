@@ -50,12 +50,12 @@ const apiOrigin = "http://127.0.0.1:3001";
 const webOrigin = "http://127.0.0.1:3000";
 const workerOrigin = "http://127.0.0.1:3002";
 const promptText = "fixed black frame for audit";
-const dialogueText = "fixed silence for audit";
+const dialogueText = "小杰：师傅！等等！";
 const draftMarker = "unsaved-draft-m3-av-e2e";
 const videoSha = "6cbb357d0c5429c415430d0596dfc04417b9fa967eeb34e55186b0a3a9f590e3";
 const audioSha = "c726d333dd159a31423f3480dbb1c5c4a9dfcd30efe1f7e12ade390dc92e8908";
-const subtitleText = "WEBVTT\n\n00:00:00.000 --> 00:00:00.100\nMock subtitle\n";
-const subtitleSha = "a374db4ab7ea2f4479a245bb738ec75bb7ffdd1378db5f79f00f068b16f2ad8b";
+const subtitleText = `WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n${dialogueText}\n`;
+const subtitleSha = createHash("sha256").update(subtitleText).digest("hex");
 
 const databaseUrl = `postgresql://${dbUser}:${dbPassword}@127.0.0.1:${postgresPort}/${dbName}`;
 const redisUrl = `redis://127.0.0.1:${redisPort}`;
@@ -1108,7 +1108,7 @@ async function main() {
     }
     const subtitleLedger = await jobLedger(subtitlePost.body.jobId);
     const musicLedger = await jobLedger(musicPost.body.jobId);
-    const subtitle = assertLedger(subtitleLedger, "MEDIA_SUBTITLE", state.world.shotRevisionId, dialogueText, "text/vtt", 52, subtitleSha, 100, null);
+    const subtitle = assertLedger(subtitleLedger, "MEDIA_SUBTITLE", state.world.shotRevisionId, dialogueText, "text/vtt", Buffer.byteLength(subtitleText), subtitleSha, 1000, null);
     const music = assertLedger(musicLedger, "MEDIA_MUSIC", state.world.shotRevisionId, promptText, "audio/wav", 1644, audioSha, 100, null);
     if (subtitle.requestId === music.requestId) throw new Error("subtitle and music share a provider request");
     const subtitleUrl = `${webOrigin}/api/v1/assets/${subtitle.assetId}/content`;
@@ -1130,7 +1130,7 @@ async function main() {
     }
     const musicRange = await fetch(musicUrl, { headers: { Range: "bytes=0-10" }, signal: AbortSignal.timeout(15_000) });
     if (musicRange.status !== 200) throw new Error(`music range status ${musicRange.status}`);
-    await page.getByText("Mock subtitle").waitFor({ timeout: 20_000 });
+    await page.locator("pre").filter({ hasText: dialogueText }).waitFor({ timeout: 20_000 });
     const mediaSection = (name) => page.getByRole("heading", { name, exact: true }).locator("xpath=ancestor::section[1]");
     const musicPlayer = mediaSection("Mock 音乐").locator("audio");
     await musicPlayer.waitFor({ state: "attached", timeout: 20_000 });

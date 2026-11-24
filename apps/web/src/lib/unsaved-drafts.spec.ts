@@ -26,6 +26,17 @@ describe("unsaved drafts per object (review)", () => {
       ["character:c1", "角色"], ["script:e2", "第 2 集剧本"], ["story", "故事"]]);
   });
 
+  it("ignores an old empty new-character form while preserving edited fields and other drafts", () => {
+    const restored = (name: string, text: string) => JSON.stringify({ fingerprint: "f", idempotencyKey: "k",
+      payload: { name, sourceScriptRevisionId: "approved", content: { text } } });
+    const found = listUnsavedDrafts(storage({
+      "ads-draft:p1:character:new:new": restored("", ""),
+      "ads-draft:p1:location:new:new": restored("", "雨夜的车站"),
+      "ads-draft:p1:character:c1:rev-2": draft,
+    }), "p1", EPISODES);
+    expect(found.map(item => item.label)).toEqual(["角色", "新建场地"]);
+  });
+
   it("keeps the story's unsaved draft visible after the script reports 已保存", () => {
     const remaining = listUnsavedDrafts(storage({ "ads-draft:p1:story:rev-1": draft }), "p1", EPISODES);
     expect(saveText(remaining, "已保存")).toEqual({ text: "有未保存修改（本标签页草稿）：故事", unsaved: true });

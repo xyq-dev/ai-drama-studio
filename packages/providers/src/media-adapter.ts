@@ -127,7 +127,7 @@ export interface MediaProviderAdapter {
   readonly providerKey: string;
   capabilities(): readonly MediaCapability[];
   submit(input: MediaGenerationRequest): Promise<MediaSubmitResult>;
-  inspect(providerRequestId: string): Promise<MediaProviderObservation>;
+  inspect(providerRequestId: string, inputSnapshot?: unknown): Promise<MediaProviderObservation>;
   resolveOutput(output: MediaProviderOutput): Promise<MediaResolvedOutput>;
   cancel?(providerRequestId: string): Promise<void>;
 }

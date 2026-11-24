@@ -1,3 +1,5 @@
+import { EPISODE_COMPOSE_JOB_SCHEMA, EPISODE_COMPOSE_OUTPUT_SCHEMA } from "@ai-drama/domain";
+import { ADMIN_JOB_TYPES, episodeSourceClassSql, generationJobDemoSql, generationJobTypeSql, type AdminJobType } from "./admin-production";
 import { Buffer } from "node:buffer";
 import type { QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
@@ -33,7 +35,9 @@ export interface WorkSignalRow {
   openImageJobs: number;
   openVoiceJobs: number;
   openVideoJobs: number;
-  latestKind: string | null;
+  completedEpisodeCount: number;
+  latestType: AdminJobType | null;
+  latestDemo: boolean;
   latestState: string | null;
   latestError: string | null;
   latestSource: "generation" | "writing" | null;
@@ -51,12 +55,15 @@ export interface AssetSignalRow {
   shotOrdinal: number | null;
   metadataName: string | null;
   jobId: string | null;
-  jobKind: string | null;
+  jobType: AdminJobType | null;
+  isDemo: boolean;
 }
 
 export interface JobSignalRow {
   id: string;
   code: string;
+  jobType: AdminJobType;
+  isDemo: boolean;
   source: "generation" | "writing";
   kind: string;
   state: string;
@@ -332,23 +339,11 @@ export class AdminOpsStore {
       }
       if (projectId) where.push(`a.project_id = ${sql.add(projectId)}::uuid`);
       if (cursor) where.push(`(a.created_at, a.id) < (${sql.add(cursor.at)}::timestamptz, ${sql.add(cursor.id)}::uuid)`);
-      const shotJoin = flags.shots
-        ? `LEFT JOIN shot_revision sr ON sr.id = a.source_shot_revision_id AND sr.workspace_id = a.workspace_id
-           LEFT JOIN shot sh ON sh.id = sr.shot_id AND sh.workspace_id = a.workspace_id
-           LEFT JOIN episode e ON e.id = sh.episode_id AND e.workspace_id = a.workspace_id`
-        : "";
-      const jobJoin = flags.jobs ? "LEFT JOIN generation_job j ON j.id = a.source_generation_job_id AND j.workspace_id = a.workspace_id" : "";
+      const asset = this.assetShape(flags);
       const rows = await client.query<QueryResultRow>(`
-        SELECT a.id::text AS id, a.kind, a.mime_type, a.created_at, p.id::text AS project_id, p.title AS project_title,
-               ${flags.shots ? "e.episode_no" : "NULL::int"} AS episode_no,
-               ${flags.shots ? "sr.ordinal" : "NULL::int"} AS shot_ordinal,
-               NULLIF(btrim(COALESCE(a.metadata_json->>'name', a.metadata_json->>'title', a.metadata_json->>'label', '')), '') AS metadata_name,
-               ${flags.jobs ? "j.id::text" : "NULL::text"} AS job_id,
-               ${flags.jobs ? "j.kind" : "NULL::text"} AS job_kind
-          FROM asset a
-          JOIN project p ON p.id = a.project_id AND p.workspace_id = a.workspace_id
-          ${shotJoin}
-          ${jobJoin}
+        SELECT ${asset.columns}
+          FROM asset a JOIN project p ON p.id=a.project_id AND p.workspace_id=a.workspace_id
+          ${asset.joins}
          WHERE ${where.join(" AND ")}
          ORDER BY a.created_at DESC, a.id DESC
          LIMIT ${sql.add(limit + 1)}`, sql.values());
@@ -393,22 +388,11 @@ export class AdminOpsStore {
     return this.read(async (client) => {
       const flags = await this.flags(client);
       if (!flags.assets) return null;
-      const shotJoin = flags.shots
-        ? `LEFT JOIN shot_revision sr ON sr.id = a.source_shot_revision_id AND sr.workspace_id = a.workspace_id
-           LEFT JOIN shot sh ON sh.id = sr.shot_id AND sh.workspace_id = a.workspace_id
-           LEFT JOIN episode e ON e.id = sh.episode_id AND e.workspace_id = a.workspace_id`
-        : "";
+      const asset = this.assetShape(flags);
       const result = await client.query<QueryResultRow>(`
-        SELECT a.id::text AS id, a.kind, a.mime_type, a.created_at, p.id::text AS project_id, p.title AS project_title,
-               ${flags.shots ? "e.episode_no" : "NULL::int"} AS episode_no,
-               ${flags.shots ? "sr.ordinal" : "NULL::int"} AS shot_ordinal,
-               NULLIF(btrim(COALESCE(a.metadata_json->>'name', a.metadata_json->>'title', a.metadata_json->>'label', '')), '') AS metadata_name,
-               ${flags.jobs ? "j.id::text" : "NULL::text"} AS job_id,
-               ${flags.jobs ? "j.kind" : "NULL::text"} AS job_kind
-          FROM asset a
-          JOIN project p ON p.id = a.project_id AND p.workspace_id = a.workspace_id
-          ${shotJoin}
-          ${flags.jobs ? "LEFT JOIN generation_job j ON j.id = a.source_generation_job_id AND j.workspace_id = a.workspace_id" : ""}
+        SELECT ${asset.columns}
+          FROM asset a JOIN project p ON p.id=a.project_id AND p.workspace_id=a.workspace_id
+          ${asset.joins}
          WHERE a.workspace_id = $1::uuid AND a.id = $2::uuid
            AND a.status = 'ACTIVE' AND a.review_status <> 'REJECTED' AND a.source_kind <> 'UPLOAD'
            AND a.kind IN ('IMAGE','AUDIO','VIDEO','COMPOSITE')`, [workspaceId, id]);
@@ -417,13 +401,32 @@ export class AdminOpsStore {
     });
   }
 
+  private assetShape(flags: SchemaFlags) {
+    const joins = [
+      flags.jobs ? "LEFT JOIN generation_job j ON j.id=a.source_generation_job_id AND j.workspace_id=a.workspace_id AND j.project_id=a.project_id" : "",
+      flags.shots ? `LEFT JOIN shot_revision sr ON sr.id=a.source_shot_revision_id AND sr.workspace_id=a.workspace_id
+        LEFT JOIN shot sh ON sh.id=sr.shot_id AND sh.workspace_id=a.workspace_id
+        LEFT JOIN episode e ON e.id=sh.episode_id AND e.workspace_id=a.workspace_id` : "",
+      flags.episodes ? `LEFT JOIN episode ep ON ep.workspace_id=a.workspace_id AND ep.project_id=a.project_id
+        AND a.metadata_json->>'schema'='${EPISODE_COMPOSE_OUTPUT_SCHEMA}' AND ep.id::text=a.metadata_json->>'episodeId'` : "",
+    ].join(" ");
+    const columns = `a.id::text AS id, a.kind, a.mime_type, a.created_at, p.id::text AS project_id, p.title AS project_title,
+      COALESCE(${flags.shots ? "e.episode_no" : "NULL::int"}, ${flags.episodes ? "ep.episode_no" : "NULL::int"}) AS episode_no,
+      ${flags.shots ? "sr.ordinal" : "NULL::int"} AS shot_ordinal,
+      NULLIF(btrim(COALESCE(a.metadata_json->>'name', a.metadata_json->>'title', a.metadata_json->>'label', '')), '') AS metadata_name,
+      ${flags.jobs ? "j.id::text" : "NULL::text"} AS job_id,
+      ${flags.jobs ? generationJobTypeSql : "NULL::text"} AS job_type,
+      (a.storage_provider='mock-object-store' OR ${flags.jobs ? generationJobDemoSql(true) : "FALSE"}) AS is_demo`;
+    return { joins, columns };
+  }
+
   async listJobs(workspaceId: string, input: AdminPageQuery = {}): Promise<{ items: JobSignalRow[]; total: number; nextCursor: string | null }> {
     const limit = pageLimit(input.limit);
     const q = (input.q ?? "").trim();
     if (q.length > 200) throw new PersistenceError("VALIDATION_ERROR", "任务查询参数无效。");
     const type = input.type && input.type !== "all" ? input.type : "";
     const status = input.status && input.status !== "all" ? input.status : "";
-    if (type && !["writing", "image", "voice", "video"].includes(type)) throw new PersistenceError("VALIDATION_ERROR", "任务查询参数无效。");
+    if (type && !ADMIN_JOB_TYPES.some((entry) => entry === type)) throw new PersistenceError("VALIDATION_ERROR", "任务查询参数无效。");
     if (status && !["succeeded", "running", "failed", "unknown", "canceled", "queued"].includes(status)) {
       throw new PersistenceError("VALIDATION_ERROR", "任务查询参数无效。");
     }
@@ -453,7 +456,7 @@ export class AdminOpsStore {
       const parts = this.jobUnions(flags);
       if (parts.length === 0) return null;
       const result = await client.query<QueryResultRow>(`
-        SELECT id, code, source, kind, state, error_code, updated_at, project_title, episode_no
+        SELECT id, code, source, kind, state, error_code, updated_at, project_title, episode_no, is_demo, job_type
           FROM (${parts.join(" UNION ALL ")}) jobs
          WHERE id = $2::uuid`, [workspaceId, id]);
       const row = result.rows[0];
@@ -481,7 +484,7 @@ export class AdminOpsStore {
     if (input.cursor) where.push(`(updated_at, id) < (${sql.add(input.cursor.at)}::timestamptz, ${sql.add(input.cursor.id)}::uuid)`);
     const order = input.limit === null ? "" : ` ORDER BY updated_at DESC, id DESC LIMIT ${sql.add(input.limit)}`;
     return {
-      sql: `SELECT id, code, source, kind, state, error_code, updated_at, project_title, episode_no, job_type, display_status
+      sql: `SELECT id, code, source, kind, state, error_code, updated_at, project_title, episode_no, is_demo, job_type, display_status
               FROM (${parts.join(" UNION ALL ")}) jobs
              WHERE ${where.join(" AND ")}${order}`,
       values: sql.values(),
@@ -501,7 +504,7 @@ export class AdminOpsStore {
     END`;
     const parts: string[] = [];
     if (flags.jobs) {
-      const episode = flags.shots ? "e.episode_no" : "NULL::int";
+      const episode = `COALESCE(${flags.shots ? "e.episode_no" : "NULL::int"}, ${flags.episodes ? "ep.episode_no" : "NULL::int"})`;
       const shot = flags.shots
         ? `LEFT JOIN shot_revision sr ON sr.id = j.source_shot_revision_id AND sr.workspace_id = j.workspace_id
            LEFT JOIN shot sh ON sh.id = sr.shot_id AND sh.workspace_id = j.workspace_id
@@ -510,21 +513,17 @@ export class AdminOpsStore {
       parts.push(`
         SELECT j.id, j.id::text AS id_src, 'generation'::text AS source, j.kind, j.state, j.error_code, j.updated_at,
                p.title AS project_title, ${episode} AS episode_no,
-               CASE
-                 WHEN j.kind IN ('MEDIA_IMAGE','MEDIA_CHARACTER_REFERENCE') THEN 'image'
-                 WHEN j.kind = 'MEDIA_TTS' THEN 'voice'
-                 WHEN j.kind IN ('MEDIA_VIDEO','MEDIA_COMPOSE') THEN 'video'
-                 WHEN j.kind IN ('SCENES','SHOTS','STORY','SCRIPT') THEN 'writing'
-                 ELSE 'other'
-               END AS job_type
+               ${generationJobTypeSql} AS job_type, ${generationJobDemoSql(flags.assets)} AS is_demo
           FROM generation_job j
           JOIN project p ON p.id = j.project_id AND p.workspace_id = j.workspace_id
           ${shot}
+          ${flags.episodes ? `LEFT JOIN episode ep ON ep.project_id=j.project_id AND ep.workspace_id=j.workspace_id
+            AND ep.id::text=j.input_snapshot #>> '{input,episodeId}'` : ""}
          WHERE j.workspace_id = ${workspaceRef}`);
     }
     const writing = (table: string) => `
       SELECT r.id, r.id::text AS id_src, 'writing'::text AS source, 'WRITING'::text AS kind, r.state, r.error_code, r.updated_at,
-             p.title AS project_title, NULL::int AS episode_no, 'writing'::text AS job_type
+             p.title AS project_title, NULL::int AS episode_no, 'writing'::text AS job_type, FALSE AS is_demo
         FROM ${table} r
         JOIN project p ON p.id = r.project_id AND p.workspace_id = r.workspace_id
        WHERE r.workspace_id = ${workspaceRef}`;
@@ -534,35 +533,59 @@ export class AdminOpsStore {
     // Keep id as uuid. Detail and cursor predicates compare it with ::uuid; casting to text makes PostgreSQL reject `text = uuid`.
     return parts.map((part) => `
       SELECT id, ${code.replaceAll("id_src", "id_src")} AS code, source, kind, state, error_code, updated_at,
-             project_title, episode_no, job_type, ${display} AS display_status
+             project_title, episode_no, job_type, is_demo, ${display} AS display_status
         FROM (${part}) raw`);
   }
 
   private workShape(flags: SchemaFlags): { columns: string; join: string; statusSql: string } {
-    const statusSql = this.productionCase(flags);
     const script = flags.scripts
-      ? `(SELECT count(*) FROM script_revision s WHERE s.project_id = p.id AND s.workspace_id = p.workspace_id AND COALESCE(to_jsonb(s)->>'deleted_at','') = '')`
+      ? "(SELECT count(*) FROM script_revision s WHERE s.project_id=p.id AND s.workspace_id=p.workspace_id AND COALESCE(to_jsonb(s)->>'deleted_at','')='')"
       : "0";
-    const asset = (kindSql: string) => flags.assets
-      ? `(SELECT count(*) FROM asset a WHERE a.project_id = p.id AND a.workspace_id = p.workspace_id AND a.status = 'ACTIVE' AND a.review_status <> 'REJECTED' AND a.source_kind <> 'UPLOAD' AND ${kindSql})`
-      : "0";
-    const open = (kindSql: string) => flags.jobs
-      ? `(SELECT count(*) FROM generation_job j WHERE j.project_id = p.id AND j.workspace_id = p.workspace_id AND j.state IN ('PENDING','QUEUED','RUNNING','WAITING_EXTERNAL') AND ${kindSql})`
-      : "0";
+    const assets = flags.assets ? `LEFT JOIN LATERAL (
+      SELECT count(*) FILTER (WHERE a.kind='IMAGE') AS images, count(*) FILTER (WHERE a.kind='AUDIO') AS audio,
+             count(*) FILTER (WHERE a.kind IN ('VIDEO','COMPOSITE')) AS videos,
+             ${flags.episodes && flags.jobs ? `count(DISTINCT ep.episode_no) FILTER (WHERE a.kind='COMPOSITE'
+               AND a.metadata_json->>'schema'='${EPISODE_COMPOSE_OUTPUT_SCHEMA}'
+               AND a.source_kind='LOCAL_JOB' AND a.storage_provider='local-compose' AND a.source_shot_revision_id IS NULL
+               AND j.state='SUCCEEDED' AND j.kind='MEDIA_COMPOSE'
+               AND j.input_snapshot->>'schema'='${EPISODE_COMPOSE_JOB_SCHEMA}' AND ${episodeSourceClassSql}='real')` : "0"} AS completed
+        FROM asset a
+        ${flags.episodes && flags.jobs ? `LEFT JOIN generation_job j ON j.id=a.source_generation_job_id AND j.workspace_id=a.workspace_id AND j.project_id=a.project_id
+          LEFT JOIN episode ep ON ep.workspace_id=p.workspace_id AND ep.project_id=p.id AND ep.episode_no BETWEEN 1 AND p.episode_count
+            AND ep.id::text=a.metadata_json->>'episodeId' AND ep.id::text=j.input_snapshot #>> '{input,episodeId}'` : ""}
+       WHERE a.project_id=p.id AND a.workspace_id=p.workspace_id AND a.status='ACTIVE'
+         AND a.review_status<>'REJECTED' AND a.source_kind<>'UPLOAD'
+    ) media ON TRUE` : "";
+    const jobs = flags.jobs ? `LEFT JOIN LATERAL (
+      SELECT count(*) FILTER (WHERE j.kind IN ('MEDIA_IMAGE','MEDIA_CHARACTER_REFERENCE')) AS images,
+             count(*) FILTER (WHERE j.kind='MEDIA_TTS') AS voice,
+             count(*) FILTER (WHERE j.kind IN ('MEDIA_VIDEO','MEDIA_COMPOSE','MEDIA_SUBTITLE','MEDIA_MUSIC')) AS video
+        FROM generation_job j WHERE j.project_id=p.id AND j.workspace_id=p.workspace_id
+         AND j.state IN ('PENDING','QUEUED','RUNNING','WAITING_EXTERNAL')
+    ) active_jobs ON TRUE` : "";
+    const [image, audio, video, completed] = flags.assets ? ["media.images","media.audio","media.videos","media.completed"] : ["0","0","0","0"];
+    const [openImage, openVoice, openVideo] = flags.jobs ? ["active_jobs.images","active_jobs.voice","active_jobs.video"] : ["0","0","0"];
+    const planned = flags.episodes ? "p.episode_count" : "NULL::int";
+    const statusSql = `CASE
+      WHEN ${planned} > 0 AND ${completed} = ${planned} AND ${openImage} + ${openVoice} + ${openVideo} = 0 THEN 'finished'
+      WHEN ${openVoice} > 0 OR ${openVideo} > 0 OR ${audio} > 0 OR ${video} > 0 THEN 'producing'
+      WHEN ${image} > 0 OR ${openImage} > 0 THEN 'storyboard'
+      WHEN ${script} > 0 THEN 'script_review'
+      WHEN length(btrim(p.title)) > 0 THEN 'draft' ELSE 'unknown' END`;
     const latestParts: string[] = [];
     if (flags.jobs) {
-      latestParts.push(`SELECT j.kind, j.state, j.error_code, j.updated_at, 'generation'::text AS source
+      latestParts.push(`SELECT ${generationJobTypeSql} AS job_type, ${generationJobDemoSql(flags.assets)} AS is_demo, j.state, j.error_code, j.updated_at, 'generation'::text AS source
         FROM generation_job j WHERE j.project_id = p.id AND j.workspace_id = p.workspace_id`);
     }
     for (const [enabled, table] of [[flags.autoRuns, "auto_creation_run"], [flags.titleRuns, "title_writing_run"], [flags.seriesRuns, "series_writing_run"]] as const) {
       if (enabled) {
-        latestParts.push(`SELECT 'WRITING'::text, r.state, r.error_code, r.updated_at, 'writing'::text
+        latestParts.push(`SELECT 'writing'::text AS job_type, FALSE AS is_demo, r.state, r.error_code, r.updated_at, 'writing'::text AS source
           FROM ${table} r WHERE r.project_id = p.id AND r.workspace_id = p.workspace_id`);
       }
     }
     const join = latestParts.length
       ? `LEFT JOIN LATERAL (
-           SELECT kind, state, error_code, source FROM (${latestParts.join(" UNION ALL ")}) u
+           SELECT job_type, is_demo, state, error_code, source FROM (${latestParts.join(" UNION ALL ")}) u
             ORDER BY updated_at DESC LIMIT 1
          ) latest ON TRUE`
       : "";
@@ -588,48 +611,16 @@ export class AdminOpsStore {
       ${flags.episodes ? "p.episode_count" : "NULL::int"} AS episode_count,
       ${episode} AS episode_no,
       ${script}::int AS script_count,
-      ${asset("a.kind = 'IMAGE'")}::int AS image_count,
-      ${asset("a.kind = 'AUDIO'")}::int AS audio_count,
-      ${asset("a.kind IN ('VIDEO','COMPOSITE')")}::int AS video_count,
-      ${open("j.kind = 'MEDIA_IMAGE'")}::int AS open_image_jobs,
-      ${open("j.kind = 'MEDIA_TTS'")}::int AS open_voice_jobs,
-      ${open("j.kind IN ('MEDIA_VIDEO','MEDIA_COMPOSE')")}::int AS open_video_jobs,
-      ${latestParts.length ? "latest.kind" : "NULL::text"} AS latest_kind,
+      ${image}::int AS image_count, ${audio}::int AS audio_count, ${video}::int AS video_count,
+      ${completed}::int AS completed_episode_count,
+      ${openImage}::int AS open_image_jobs, ${openVoice}::int AS open_voice_jobs, ${openVideo}::int AS open_video_jobs,
+      ${latestParts.length ? "latest.job_type" : "NULL::text"} AS latest_type,
+      ${latestParts.length ? "latest.is_demo" : "FALSE"} AS latest_demo,
       ${latestParts.length ? "latest.state" : "NULL::text"} AS latest_state,
       ${latestParts.length ? "latest.error_code" : "NULL::text"} AS latest_error,
       ${latestParts.length ? "latest.source" : "NULL::text"} AS latest_source,
       ${statusSql} AS production_status`;
-    return { columns, join, statusSql };
-  }
-
-  private productionCase(flags: SchemaFlags): string {
-    const image = flags.assets
-      ? `(SELECT count(*) FROM asset a WHERE a.project_id = p.id AND a.workspace_id = p.workspace_id AND a.status = 'ACTIVE' AND a.review_status <> 'REJECTED' AND a.source_kind <> 'UPLOAD' AND a.kind = 'IMAGE')`
-      : "0";
-    const audio = flags.assets
-      ? `(SELECT count(*) FROM asset a WHERE a.project_id = p.id AND a.workspace_id = p.workspace_id AND a.status = 'ACTIVE' AND a.review_status <> 'REJECTED' AND a.source_kind <> 'UPLOAD' AND a.kind = 'AUDIO')`
-      : "0";
-    const video = flags.assets
-      ? `(SELECT count(*) FROM asset a WHERE a.project_id = p.id AND a.workspace_id = p.workspace_id AND a.status = 'ACTIVE' AND a.review_status <> 'REJECTED' AND a.source_kind <> 'UPLOAD' AND a.kind IN ('VIDEO','COMPOSITE'))`
-      : "0";
-    const script = flags.scripts
-      ? `(SELECT count(*) FROM script_revision s WHERE s.project_id = p.id AND s.workspace_id = p.workspace_id AND COALESCE(to_jsonb(s)->>'deleted_at','') = '')`
-      : "0";
-    const open = (kindSql: string) => flags.jobs
-      ? `(SELECT count(*) FROM generation_job j WHERE j.project_id = p.id AND j.workspace_id = p.workspace_id AND j.state IN ('PENDING','QUEUED','RUNNING','WAITING_EXTERNAL') AND ${kindSql})`
-      : "0";
-    const openImage = open("j.kind = 'MEDIA_IMAGE'");
-    const openVoice = open("j.kind = 'MEDIA_TTS'");
-    const openVideo = open("j.kind IN ('MEDIA_VIDEO','MEDIA_COMPOSE')");
-    const openSum = `(${openImage} + ${openVoice} + ${openVideo})`;
-    return `CASE
-      WHEN ${video} > 0 AND ${openSum} = 0 THEN 'finished'
-      WHEN ${openVoice} > 0 OR ${openVideo} > 0 OR ${audio} > 0 OR (${video} > 0 AND ${openSum} > 0) THEN 'producing'
-      WHEN ${image} > 0 OR ${openImage} > 0 THEN 'storyboard'
-      WHEN ${script} > 0 THEN 'script_review'
-      WHEN length(btrim(p.title)) > 0 THEN 'draft'
-      ELSE 'unknown'
-    END`;
+    return { columns, join: `${assets} ${jobs} ${join}`, statusSql };
   }
 
   private async flags(client: Queryable): Promise<SchemaFlags> {
@@ -706,7 +697,9 @@ function mapWork(row: QueryResultRow): WorkSignalRow {
     openImageJobs: num(row.open_image_jobs),
     openVoiceJobs: num(row.open_voice_jobs),
     openVideoJobs: num(row.open_video_jobs),
-    latestKind: row.latest_kind == null ? null : String(row.latest_kind),
+    completedEpisodeCount: num(row.completed_episode_count),
+    latestType: row.latest_type ?? null,
+    latestDemo: row.latest_demo === true,
     latestState: row.latest_state == null ? null : String(row.latest_state),
     latestError: row.latest_error == null ? null : String(row.latest_error),
     latestSource: row.latest_source === "writing" || row.latest_source === "generation" ? row.latest_source : null,
@@ -726,7 +719,8 @@ function mapAsset(row: QueryResultRow): AssetSignalRow {
     shotOrdinal: nullableNumber(row.shot_ordinal),
     metadataName: row.metadata_name == null ? null : String(row.metadata_name),
     jobId: row.job_id == null ? null : String(row.job_id),
-    jobKind: row.job_kind == null ? null : String(row.job_kind),
+    jobType: row.job_type ?? null,
+    isDemo: row.is_demo === true,
   };
 }
 
@@ -737,6 +731,8 @@ function mapJob(row: QueryResultRow): JobSignalRow {
     code: String(row.code),
     source,
     kind: String(row.kind),
+    jobType: row.job_type,
+    isDemo: row.is_demo === true,
     state: String(row.state),
     errorCode: row.error_code == null ? null : String(row.error_code),
     updatedAt: iso(row.updated_at as Date),

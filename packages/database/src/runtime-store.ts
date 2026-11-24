@@ -271,6 +271,31 @@ export class RuntimeStore {
     }
   }
 
+  async renameProject(workspaceId: string, projectId: string, title: string, version: number | null): Promise<ProjectRecord> {
+    const client = await this.pool.connect();
+    try {
+      // The UPDATE checks ownership, archive state and the caller's version on the row it actually writes.
+      const visible = `id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE'
+        AND ($3::text IS NULL OR to_jsonb(project)->>'owner_account_id' = $3)`;
+      const identity = [projectId, workspaceId, storeOwnerAccountFilter()];
+      const result = await client.query<QueryResultRow>(
+        `UPDATE project SET title = $4,
+             version = CASE WHEN title = $4 THEN version ELSE version + 1 END,
+             updated_at = CASE WHEN title = $4 THEN updated_at ELSE now() END
+           WHERE ${visible} AND ($5::integer IS NULL OR version = $5 OR title = $4)
+           RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`,
+        [...identity, title, version],
+      );
+      if (result.rows[0]) return mapProject(result.rows[0]);
+      if ((await client.query(`SELECT id FROM project WHERE ${visible}`, identity)).rows.length === 0) {
+        throw new PersistenceError("NOT_FOUND", "Project not found");
+      }
+      throw new PersistenceError("REVISION_CONFLICT", "Project version did not match");
+    } finally {
+      client.release();
+    }
+  }
+
   readProjectCostSummary(workspaceId: string, projectId: string) {
     return queryProjectCostSummary(this.pool, workspaceId, projectId);
   }

@@ -13,6 +13,7 @@ import {
   type SeriesCreateBody,
   type SeriesOptionsView,
 } from "../lib/series-writing-client";
+import { useCreatorWritingAccess } from "../lib/creator-writing-access";
 import styles from "./title-writing.module.css";
 import series from "./series-writing.module.css";
 
@@ -48,6 +49,7 @@ function whole(value: string, min: number, max: number): number | null | "invali
  */
 export function SeriesWritingStart() {
   const [options, setOptions] = useState<SeriesOptionsView | null>(null);
+  const access = useCreatorWritingAccess(options?.viewerIsCreator === true);
   const [loaded, setLoaded] = useState(false);
   const [title, setTitle] = useState("");
   const [episodes, setEpisodes] = useState("60");
@@ -90,7 +92,7 @@ export function SeriesWritingStart() {
   const n = pending ? pending.body.episodeCount : typeof count === "number" ? count : 60;
 
   async function create() {
-    if (acting.current) return;
+    if (acting.current || access.blocked) return;
     setError(null);
     let request = pending;
     if (!request) {
@@ -112,11 +114,21 @@ export function SeriesWritingStart() {
     acting.current = true;
     setBusy(true);
     try {
+      if (!await access.check()) {
+        if (!pending) {
+          clearPendingSeries(SCOPE, request.key);
+          setPending(null);
+        }
+        return;
+      }
       const created = await client.create(request.body, { token: tokenRequired(options) ? token.trim() : "", idempotencyKey: request.key });
       clearPendingSeries(SCOPE, request.key);
       window.location.assign(`/projects/${created.projectId}/series`);
     } catch (caught) {
-      if (seriesRefused(caught)) {
+      if (access.recordRefusal(caught)) {
+        clearPendingSeries(SCOPE, request.key);
+        setPending(null);
+      } else if (seriesRefused(caught)) {
         clearPendingSeries(SCOPE, request.key);
         setPending(null);
         setError(caught instanceof TitleWritingError ? caught.detail : "没有创建。");
@@ -150,7 +162,7 @@ export function SeriesWritingStart() {
         先做全剧规划，再每 3 集一批写正文并逐批全文审阅，最后做全剧结构与连续性总检。创建作品不会调用模型；每一步都要在作品的系列页面确认授权后才会开始。
       </p>
       {problem ? <p className={styles.warning} role="status">{problem}</p> : null}
-      {shown ? <p className={styles.notice} role="status">上次的创建请求没有确认结果：重试会原样发送同一个请求（《{shown.title}》，{shown.episodeCount} 集）。</p> : null}
+      {shown && !access.blocked ? <p className={styles.notice} role="status">上次的创建请求没有确认结果：重试会原样发送同一个请求（《{shown.title}》，{shown.episodeCount} 集）。</p> : null}
       <div className={series.formGrid}>
         <label className={styles.label} htmlFor="series-title">系列作品名称
           <input id="series-title" className={styles.input} maxLength={60} value={shown?.title ?? title} disabled={busy || shown !== undefined} onChange={(event) => setTitle(event.target.value)} />
@@ -189,10 +201,11 @@ export function SeriesWritingStart() {
           <input id="series-token" className={styles.input} type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} />
         </label>
       ) : null}
+      {access.reason ? <p className={styles.warning} role="status">{access.reason}</p> : null}
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
       <div className={styles.actions}>
-        <button className={styles.primary} type="button" disabled={busy || !loaded || problem !== null} onClick={() => { void create(); }}>
-          {shown ? "重试创建" : "创建系列作品"}
+        <button className={styles.primary} type="button" disabled={busy || access.blocked || !loaded || problem !== null} onClick={() => { void create(); }}>
+          {shown && !access.blocked ? "重试创建" : "创建系列作品"}
         </button>
         {shown ? <button className={styles.secondary} type="button" disabled={busy} onClick={() => { clearPendingSeries(SCOPE, shown ? pending!.key : ""); setPending(null); }}>放弃这次请求</button> : null}
       </div>

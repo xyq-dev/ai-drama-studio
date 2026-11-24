@@ -18,6 +18,14 @@ const shot: StoryboardShot = {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("storyboard editing overview", () => {
+  it("shows a loading state until the list count is known", () => {
+    const props = { projectId: "project", currentId: null, hasMore: false, onOpen: vi.fn(), onArchive: vi.fn(), onDispatched: vi.fn(), onMore: vi.fn() };
+    const view = render(<StoryboardRows {...props} items={[]} loading />);
+    expect(screen.getAllByText("正在读取分镜…")).toHaveLength(1);
+    expect(screen.queryByText("已加载 0 个分镜")).toBeNull();
+    view.rerender(<StoryboardRows {...props} items={[shot]} loading={false} />);
+    expect(screen.getByText("已加载 1 个分镜")).toBeTruthy();
+  });
   it("renders bounded server facts and switches views without choosing a candidate", () => {
     const onOpen = vi.fn();
     const onArchive = vi.fn();

@@ -374,6 +374,59 @@ async function membershipStorageReady(client: WritingQuotaTransaction): Promise<
   return result.rows[0]?.present === true;
 }
 
+async function readQuotaDecision(client: WritingQuotaTransaction, workspaceId: string, accountId: string,
+  featureName: MembershipFeature, now: Date, units: number, existing: { status: QuotaHoldStatus } | null) {
+  const membership = await client.query<{ status: "active" | "disabled"; starts_at: Date; ends_at: Date; plan_id: string }>(
+    `SELECT status, starts_at, ends_at, plan_id FROM creator_membership
+      WHERE workspace_id = $1 AND account_id = $2
+      ORDER BY (status = 'active' AND starts_at <= $3 AND ends_at > $3) DESC, ends_at DESC
+      LIMIT 1`,
+    [workspaceId, accountId, now],
+  );
+  const planId = membership.rows[0]?.plan_id;
+  const feature = planId
+    ? await client.query<{ enabled: boolean }>(
+      `SELECT enabled FROM usage_plan_feature WHERE workspace_id = $1 AND plan_id = $2 AND feature = $3`,
+      [workspaceId, planId, featureName],
+    )
+    : { rows: [] as { enabled: boolean }[] };
+  const balance = await client.query<{ remaining_units: string }>(
+    `SELECT remaining_units::text FROM creator_feature_balance
+      WHERE workspace_id = $1 AND account_id = $2 AND feature = $3 FOR UPDATE`,
+    [workspaceId, accountId, featureName],
+  );
+  const row = membership.rows[0];
+  return decideReserve({
+    now: now.getTime(),
+    membership: row ? { status: row.status, startsAt: row.starts_at.getTime(), endsAt: row.ends_at.getTime() } : null,
+    featureEnabled: feature.rows[0]?.enabled === true,
+    remaining: Number(balance.rows[0]?.remaining_units ?? 0),
+    units,
+    existing,
+  });
+}
+
+/** The creation transaction shares the reservation's balance lock until the new work is committed, without debiting a unit. */
+export async function writingPreflight(store: MembershipStore | null | undefined, workspaceId: string, accountId: string,
+  transaction?: WritingQuotaTransaction) {
+  if (transaction) {
+    if (!await membershipStorageReady(transaction)) return "MEMBERSHIP_REQUIRED" as const;
+    const decision = await readQuotaDecision(transaction, workspaceId, accountId, "writing", new Date(), 1, null);
+    return decision.action === "deny" ? decision.code : null;
+  }
+  if (!store) return "MEMBERSHIP_REQUIRED" as const;
+  const now = new Date();
+  const current = await store.currentMembership(workspaceId, accountId, now);
+  if (!current) return "MEMBERSHIP_REQUIRED" as const;
+  const [balances, plans] = await Promise.all([store.balances(workspaceId, accountId), store.listPlans(workspaceId)]);
+  const decision = decideReserve({
+    now: now.getTime(), membership: { status: current.status, startsAt: Date.parse(current.startsAt), endsAt: Date.parse(current.endsAt) },
+    featureEnabled: plans.find(plan => plan.id === current.planId)?.features.some(item => item.feature === "writing" && item.enabled) === true,
+    remaining: balances.writing, units: 1, existing: null,
+  });
+  return decision.action === "deny" ? decision.code : null;
+}
+
 export class PostgresMembershipStore implements MembershipStore {
   constructor(private readonly pool: DatabasePool) {}
 
@@ -710,34 +763,8 @@ export class PostgresMembershipStore implements MembershipStore {
     if (existing.rows.length === 0 && input.replayOnly) {
       return { ok: true, skipped: true };
     }
-    const membership = await client.query<{ status: "active" | "disabled"; starts_at: Date; ends_at: Date; plan_id: string }>(
-      `SELECT status, starts_at, ends_at, plan_id FROM creator_membership
-        WHERE workspace_id = $1 AND account_id = $2
-        ORDER BY (status = 'active' AND starts_at <= $3 AND ends_at > $3) DESC, ends_at DESC
-        LIMIT 1`,
-      [workspaceId, input.accountId, now],
-    );
-    const planId = membership.rows[0]?.plan_id;
-    const feature = planId
-      ? await client.query<{ enabled: boolean }>(
-        `SELECT enabled FROM usage_plan_feature WHERE workspace_id = $1 AND plan_id = $2 AND feature = $3`,
-        [workspaceId, planId, input.feature],
-      )
-      : { rows: [] as { enabled: boolean }[] };
-    const balance = await client.query<{ remaining_units: string }>(
-      `SELECT remaining_units::text FROM creator_feature_balance
-        WHERE workspace_id = $1 AND account_id = $2 AND feature = $3 FOR UPDATE`,
-      [workspaceId, input.accountId, input.feature],
-    );
-    const row = membership.rows[0];
-    const decision = decideReserve({
-      now: now.getTime(),
-      membership: row ? { status: row.status, startsAt: row.starts_at.getTime(), endsAt: row.ends_at.getTime() } : null,
-      featureEnabled: feature.rows[0]?.enabled === true,
-      remaining: Number(balance.rows[0]?.remaining_units ?? 0),
-      units,
-      existing: existing.rows[0] ? { status: existing.rows[0].status } : null,
-    });
+    const decision = await readQuotaDecision(client, workspaceId, input.accountId, input.feature, now, units,
+      existing.rows[0] ? { status: existing.rows[0].status } : null);
     if (decision.action === "deny") {
       return { ok: false, code: decision.code, message: membershipDenialMessage(decision.code, input.feature) };
     }

@@ -1,3 +1,4 @@
+import { isCreatorRequest } from "../auth/creator-access";
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Res } from "@nestjs/common";
 import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { TITLE_WRITING_SERVICE } from "./tokens";
@@ -30,7 +31,7 @@ export class TitleWritingController {
 
   @Get("writing/title-runs/options")
   options(@Res({ passthrough: true }) response: StatusResponse) {
-    return this.send(response, this.writing.options());
+    return this.send(response, this.writing.options(isCreatorRequest()));
   }
 
   @Post("projects/:projectId/title-runs")

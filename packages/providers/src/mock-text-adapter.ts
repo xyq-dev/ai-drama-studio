@@ -11,8 +11,8 @@ export class MockTextAdapter implements TextGenerationAdapter {
       output = { schema: "m2.text.scenes.output.v1", scenes: request.sources.map((source) => ({
         projectId: request.projectId, episodeId: source.episodeId, episodeNo: source.episodeNo,
         sourceScriptRevisionId: source.scriptRevisionId, ordinal: 1,
-        heading: `Episode ${source.episodeNo} · Opening`,
-        summary: `Mock draft based on approved Script revision ${source.scriptRevisionId}.`,
+        heading: `第 ${source.episodeNo} 集 · 开场`,
+        summary: "演示草稿：根据已通过的剧本版本生成",
       })) };
     } else {
       output = { schema: "m2.text.shots.output.v1", shots: request.sources.map((source) => ({
