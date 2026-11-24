@@ -931,9 +931,10 @@ export class StudioService {
       if (shotOutput && !this.localComposeEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
       }
-      if ((!episodeOutput && !shotOutput) || !this.composeObjectDir) {
+      if (!episodeOutput && !shotOutput) {
         throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
       }
+      if (!this.composeObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Composite storage is unavailable");
       return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
     }
     return this.readMockMediaBytes(asset);

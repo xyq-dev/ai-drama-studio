@@ -187,11 +187,12 @@ export class StudioRuntime implements OnModuleDestroy {
     const mockImageEnabled = nonProduction && env.M3_MOCK_IMAGE_ENABLED && Boolean(absoluteDir);
     const mockAvEnabled = nonProduction && env.M3_MOCK_AV_ENABLED && Boolean(absoluteDir);
     const mockSmEnabled = nonProduction && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && Boolean(absoluteDir);
-    const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : null;
     const realComposeAllowed = realAccessAllowed && Boolean(realRuntime.receiptCipher);
-    const composeSwitch = (nonProduction || realComposeAllowed) && env.M4_LOCAL_COMPOSE_ENABLED;
-    const localComposeEnabled = composeSwitch && Boolean(composeObjectDir && (absoluteDir || realComposeAllowed));
-    const episodeComposeEnabled = (nonProduction || realComposeAllowed) && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
+    const configuredComposeDir = env.M4_COMPOSE_OBJECT_DIR;
+    const composeObjectDir = (nonProduction || realComposeAllowed) && configuredComposeDir && isAbsolute(configuredComposeDir)
+      ? configuredComposeDir : null;
+    const localComposeEnabled = env.M4_LOCAL_COMPOSE_ENABLED && Boolean(composeObjectDir && (absoluteDir || realComposeAllowed));
+    const episodeComposeEnabled = env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
     const titleStore = new PostgresTitleWritingStore(pool, textChain);
     const candidateStore = new PostgresWritingCandidateStore(pool);
     let adminModels: AdminModelsService | null;

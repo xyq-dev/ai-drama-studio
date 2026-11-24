@@ -149,15 +149,19 @@ export async function episodeExportGates(ctx) {
     for (const port of [3042, 3043, 3044, 3045, 3046]) {
       await ctx.waitHttp(`http://127.0.0.1:${port}/api/v1/health/ready`, (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
     }
-    for (const base of ["http://127.0.0.1:3043", "http://127.0.0.1:3044", "http://127.0.0.1:3045"]) {
-      ctx.expectStatus(await ctx.callApi(base, "GET", path), 400, "CONFIGURATION_ERROR");
+    // Stored output is readable without a generation switch or a mock input directory.
+    for (const port of [3042, 3043, 3045]) {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1${path}`);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (response.status !== 200 || response.headers.get("content-type") !== "video/mp4" || bytes.length !== saved.byteSize
+        || createHash("sha256").update(bytes).digest("hex") !== saved.checksum) {
+        throw new Error(`Stored episode export on port ${port}: HTTP ${response.status}, ${bytes.length} bytes`);
+      }
     }
+    const production = "http://127.0.0.1:3044";
+    ctx.expectStatus(await ctx.callApi(production, "GET", path), 400, "CONFIGURATION_ERROR");
+    ctx.expectStatus(await ctx.callApi(production, "GET", `/assets/${saved.assetId}/content`), 400, "CONFIGURATION_ERROR");
     ctx.expectStatus(await ctx.callApi("http://127.0.0.1:3046", "GET", path), 404, "NOT_FOUND");
-    const nomock = await fetch(`http://127.0.0.1:3042/api/v1${path}`);
-    const nomockBody = Buffer.from(await nomock.arrayBuffer());
-    if (nomock.status !== 200 || createHash("sha256").update(nomockBody).digest("hex") !== saved.checksum) {
-      throw new Error(`export without mock object dir failed ${nomock.status} ${nomockBody.length}`);
-    }
   } finally {
     for (const name of names) await ctx.stopApp(name);
   }
