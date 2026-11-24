@@ -137,6 +137,15 @@ describe("beginner step states come from server facts", () => {
     expect(episodeFinalState({ ...closed, media: { 1: media(2, { read: "failed" }) } }, 1)).toBe("unknown");
   });
 
+  it("keeps a historical draft blocked until episode compose reopens, while an approved cut stays done", () => {
+    const closed = facts({ episodeCount: 1, episodes: [episode(1, "APPROVED")], episodeComposeDisabled: true,
+      media: { 1: media(2, { draftActive: true }) } });
+    expect(episodeFinalState(closed, 1)).toBe("compose_disabled");
+    expect(primaryAction("final", stepStates(closed).final).target).toBe("reload");
+    expect(stepStates({ ...closed, episodeComposeDisabled: false }).final).toBe("needs_confirmation");
+    expect(stepStates({ ...closed, media: { 1: media(2, { draftActive: true, approvedActive: true }) } }).final).toBe("done");
+  });
+
   it("keeps history after a script change: STALE + APPROVED is 来源已更新 even when the script is DRAFT (review)", () => {
     const changed = [episode(1, "DRAFT", "CURRENT", false), episode(2, "APPROVED"), episode(3, "APPROVED")];
     const state = episodeFinalState(facts({ story: story("APPROVED"), episodes: changed, media: { 1: media(0, { staleApproved: true }) } }), 1);

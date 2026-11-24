@@ -16,7 +16,7 @@ export interface EpisodeComposeJobPanelProps {
   onReviewed?: () => void;
   /** Called when a compose is accepted, reaches a terminal state, or a composite is reviewed. */
   onChanged?: () => void;
-  /** A new compose (or a resend of an unconfirmed one) cannot start now; the list, review and downloads stay. */
+  /** New renders and review decisions require an open episode compose gate. */
   startBlocked?: boolean;
 }
 
@@ -420,6 +420,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   }
 
   async function review(item: CompositeItem, action: "APPROVE" | "REJECT") {
+    if (props.startBlocked) return;
     const token = epoch.current;
     const listToken = listEpoch.current;
     listGen.current += 1;
@@ -483,7 +484,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
               </div>
             ) : null}
             {downloadErrors[item.assetId] !== undefined ? <p className="mt-2" role="alert">{downloadErrors[item.assetId]}</p> : null}
-            {item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
+            {!props.startBlocked && item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "APPROVE")}>批准成片</button>
                 <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "REJECT")}>退回成片</button>

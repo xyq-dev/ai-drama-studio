@@ -900,6 +900,19 @@ async function main() {
       if (!JSON.stringify(asset.input_snapshot).includes(world.episode.id)) throw new Error("frozen input does not name this episode");
       const card = page.locator(`[data-composite-id="${asset.id}"]`);
       await card.waitFor({ timeout: 60_000 });
+      await stopProcess("api");
+      await startApi({ ...env, M4_COMPOSE_OBJECT_DIR: composeObjectDir });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByRole("tab", { name: /第 1 集.*还不能完成/ }).click();
+      await playVideo(card.locator("video"), 1000);
+      if (await card.getByRole("button", { name: /批准成片|退回成片|下载 MP4|下载来源清单/ }).count()) {
+        throw new Error("A draft episode must be read-only while episode compose is disabled");
+      }
+      evidence.checks.draftEpisodeWhileClosed = { playback: true, reviewOffered: false, downloadOffered: false };
+      await stopProcess("api");
+      await startApi(mediaEnv(env));
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByRole("tab", { name: /第 1 集.*待确认/ }).click();
       // From here on, approval must update the page in place.
       await page.evaluate(() => { window.__beginnerNoReload = "step5"; });
       // Not approved yet: no download button, and the export route refuses.

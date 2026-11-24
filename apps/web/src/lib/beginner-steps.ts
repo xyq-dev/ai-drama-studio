@@ -192,12 +192,13 @@ export function episodeFinalState(facts: BeginnerFacts, episodeNo: number): Step
   if (composites.approvedActive) return "done";
   if (composites.read === "failed") return "unknown";
   if (episodeComposeRunning(facts.runs, episode.id)) return "in_progress";
-  if (composites.draftActive) return "needs_confirmation";
+  const disabled = facts.episodeComposeDisabled || composites.read === "unavailable";
+  if (composites.draftActive) return disabled ? "compose_disabled" : "needs_confirmation";
   if (composites.rejectedActive) return "needs_attention";
   // History survives a script change: an approved result made stale by an upstream edit is still a fact.
   if (composites.staleApproved) return "source_updated";
   if (composites.read === "incomplete") return "unknown";
-  if (facts.episodeComposeDisabled || composites.read === "unavailable") return "compose_disabled";
+  if (disabled) return "compose_disabled";
   if (media.candidates.count >= 2) return "needs_input";
   return media.candidates.read === "ok" || scriptState(episode) !== "done" ? "not_started" : "unknown";
 }
