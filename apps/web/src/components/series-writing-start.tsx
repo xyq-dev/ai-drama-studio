@@ -13,6 +13,7 @@ import {
   type SeriesCreateBody,
   type SeriesOptionsView,
 } from "../lib/series-writing-client";
+import { WritingStartReceipt } from "./writing-start-receipt";
 import { useCreatorWritingAccess } from "../lib/creator-writing-access";
 import styles from "./title-writing.module.css";
 import series from "./series-writing.module.css";
@@ -207,6 +208,8 @@ export function SeriesWritingStart() {
         <button className={styles.primary} type="button" disabled={busy || access.blocked || !loaded || problem !== null} onClick={() => { void create(); }}>
           {shown && !access.blocked ? "重试创建" : "创建系列作品"}
         </button>
+        {pending && access.reason ? <WritingStartReceipt key={pending.key} target={{ kind: "series" }} requestKey={pending.key}
+          onRecovered={() => clearPendingSeries(SCOPE, pending.key)} /> : null}
         {shown ? <button className={styles.secondary} type="button" disabled={busy} onClick={() => { clearPendingSeries(SCOPE, shown ? pending!.key : ""); setPending(null); }}>放弃这次请求</button> : null}
       </div>
     </section>

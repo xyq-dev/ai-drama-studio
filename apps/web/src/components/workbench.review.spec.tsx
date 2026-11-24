@@ -1198,6 +1198,60 @@ describe("workbench review interactions against a simulated API", () => {
     expect(postsEnding(sim, "/stories")).toHaveLength(1);
   });
 
+  it("rereads after REVIEW_CONFLICT and keeps the note until the user decides on the new review state", async () => {
+    const sim = createSim();
+    const fallback = sim.fetch;
+    const project = `/api/v1/projects/${PROJECT}`;
+    const writes: Call[] = [];
+    let canRead = false;
+    let release!: () => void;
+    const reread = new Promise<void>(resolve => { release = resolve; });
+    sim.fetch = async (url, init) => {
+      if (url === project) return json({ id: PROJECT, title: "末班车", premise: "", version: writes.length + 2, status: "ACTIVE" });
+      if (url === `${project}/stories`) {
+        if (writes.length) {
+          await reread;
+          if (!canRead) return fail(503, "UNAVAILABLE", "读取暂不可用");
+        }
+        return json({ items: [{ ...storyRevision("雨夜归还照片"), reviewVersion: writes.length + 1,
+          reviewStatus: ["DRAFT", "IN_REVIEW", "APPROVED"][writes.length] }], nextCursor: null });
+      }
+      if (url === `${project}/stories/story-1/review` && init?.method === "POST") {
+        const headers = new Headers(init.headers);
+        writes.push({ url, method: "POST", body: JSON.parse(String(init.body)),
+          ifMatch: headers.get("if-match"), key: headers.get("idempotency-key") });
+        return writes.length === 1 ? fail(409, "REVIEW_CONFLICT", "Review version did not match") : json({ rowVersion: 4, reviewVersion: 3 });
+      }
+      return fallback(url, init);
+    };
+    install(sim);
+    renderAt("focus=story");
+    const submit = await screen.findByRole("button", { name: "提交审核" });
+    fireEvent.change(screen.getByLabelText("备注"), { target: { value: "请保留结尾的对白" } });
+    fireEvent.click(submit);
+    await screen.findByText("内容已更新，正在载入最新版本…");
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(submit);
+    release();
+    await screen.findByText("未能载入最新版本，审核备注已保留。");
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(writes).toHaveLength(1);
+    canRead = true;
+    fireEvent.click(screen.getByRole("button", { name: "重新载入" }));
+    await screen.findByText("内容已更新，已载入最新版本，请确认后再保存");
+    expect(writes).toHaveLength(1);
+    expect((screen.getByLabelText("备注") as HTMLTextAreaElement).value).toBe("请保留结尾的对白");
+    fireEvent.click(screen.getByRole("button", { name: "通过" }));
+    await waitFor(() => expect(screen.queryByText("内容已更新，已载入最新版本，请确认后再保存")).toBeNull());
+    expect(writes.map(({ ifMatch, body }) => ({ ifMatch, body }))).toEqual([
+      { ifMatch: "2", body: { to: "IN_REVIEW", expectedReviewVersion: 1, reviewNote: "请保留结尾的对白" } },
+      { ifMatch: "3", body: { to: "APPROVED", expectedReviewVersion: 2, reviewNote: "请保留结尾的对白" } },
+    ]);
+    expect(writes[1]?.key).toBeTruthy();
+    expect(writes[1]?.key).not.toBe(writes[0]?.key);
+  });
+
   it("refreshes character history after save and lets review continue on the new baseline", async () => {
     const sim = createSim();
     install(sim);

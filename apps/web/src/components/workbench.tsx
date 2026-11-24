@@ -1473,7 +1473,7 @@ function EntityScope(props: EntityPaneProps) {
 const RELOADED_REVISION = "内容已更新，已载入最新版本，请确认后再保存";
 
 function isRevisionConflict(error: unknown): boolean {
-  return error instanceof ApiError && (error.code === "REVISION_CONFLICT" || error.code === "CONFLICT");
+  return error instanceof ApiError && (error.code === "REVISION_CONFLICT" || error.code === "REVIEW_CONFLICT" || error.code === "CONFLICT");
 }
 
 function usePendingWrite() {
@@ -2454,6 +2454,8 @@ function RevisionColumn(props: {
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const pendingReview = useRef<DraftRecord | null>(null);
+  const [needsReviewReload, setNeedsReviewReload] = useState(false);
+  const pending = usePendingWrite();
   const left = props.items.find((item) => item.id === leftId) ?? latest ?? null;
   const right = props.items.find((item) => item.id === rightId) ?? previous ?? null;
   const current = props.items.find((item) => item.id === props.currentId) ?? null;
@@ -2469,6 +2471,18 @@ function RevisionColumn(props: {
     setLeftId(latestId);
     setRightId(previousId);
   }, [latestId, previousId]);
+
+  async function reloadReview() {
+    setError("内容已更新，正在载入最新版本…");
+    try {
+      await props.onSaved();
+      setNeedsReviewReload(false);
+      setError(RELOADED_REVISION);
+    } catch {
+      setNeedsReviewReload(true);
+      setError("未能载入最新版本，审核备注已保留。");
+    }
+  }
 
   async function review(to: string) {
     if (!current || props.readOnly) return;
@@ -2488,13 +2502,7 @@ function RevisionColumn(props: {
     } catch (caught) {
       if (isRevisionConflict(caught)) {
         pendingReview.current = null;
-        setError("内容已更新，正在载入最新版本…");
-        try {
-          await props.onSaved();
-          setError(RELOADED_REVISION);
-        } catch {
-          setError("未能载入最新版本，审核备注已保留。");
-        }
+        await reloadReview();
         return;
       }
       setError(caught instanceof ApiError ? `${caught.code}：${caught.detail}。再次提交将复用同一幂等键。` : "审核失败。再次提交将复用同一幂等键。");
@@ -2541,12 +2549,14 @@ function RevisionColumn(props: {
           <textarea id={`note-${current.id}`} className="w-full rounded border px-2 py-1" maxLength={LIMITS.reviewNote} value={note} onChange={(event) => setNote(event.target.value)} />
           <div className="mt-2 flex flex-wrap gap-2">
             {actions.map((action) => (
-              <button key={action.to} className="rounded border px-2 py-1 disabled:opacity-50" type="button" disabled={!action.enabled} onClick={() => void review(action.to)}>
+              <button key={action.to} className="rounded border px-2 py-1 disabled:opacity-50" type="button" disabled={!action.enabled || pending.busy || needsReviewReload} onClick={() => void pending.run(() => review(action.to))}>
                 {action.label}{action.enabled ? "" : `（${action.reason}）`}
               </button>
             ))}
           </div>
           {error ? <p role="alert">{error}</p> : null}
+          {needsReviewReload ? <button className="rounded border px-2 py-1" type="button" disabled={pending.busy}
+            onClick={() => void pending.run(reloadReview)}>重新载入</button> : null}
         </div>
       ) : null}
     </aside>

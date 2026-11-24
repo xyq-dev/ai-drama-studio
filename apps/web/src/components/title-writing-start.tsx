@@ -20,6 +20,7 @@ import {
   type TitleWritingOptionsView,
 } from "../lib/title-writing-client";
 import { EpisodeWritingGuidance } from "./episode-writing-guidance";
+import { WritingStartReceipt } from "./writing-start-receipt";
 import { useCreatorWritingAccess } from "../lib/creator-writing-access";
 import styles from "./title-writing.module.css";
 
@@ -387,6 +388,8 @@ export function TitleWritingStart() {
         <div className={styles.notice} role="status">
           {!access.blocked && <p>上次的启动请求还没有确认结果。下面是当时提交的剧名和设置，重试会原样重放它，使用同一个请求标识。</p>}
           <p className={styles.actions}>
+            {pending.projectId && access.reason ? <WritingStartReceipt key={pending.runKey} target={{ kind: "writing", projectId: pending.projectId }}
+              requestKey={pending.runKey} onRecovered={() => clearPendingStart(pending)} /> : null}
             {pending.projectId ? <a className={styles.secondary} href={`/projects/${pending.projectId}/writing`}>查看进度</a> : null}
             <button className={styles.textLink} type="button" onClick={abandon}>放弃上次请求，重新填写</button>
           </p>

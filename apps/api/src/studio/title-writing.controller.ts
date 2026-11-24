@@ -47,6 +47,12 @@ export class TitleWritingController {
       { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
+  @Get("projects/:projectId/title-runs/start-receipt")
+  startReceipt(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string) {
+    return this.send(response, this.writing.startReceipt(projectId, storeActorId(), key));
+  }
+
   @Get("projects/:projectId/title-runs/latest")
   latest(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Res({ passthrough: true }) response: StatusResponse) {
     return this.send(response, this.writing.latest(projectId));

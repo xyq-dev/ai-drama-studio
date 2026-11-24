@@ -58,6 +58,12 @@ describe("series writing service", () => {
       expect(concurrent.map(result => result.status).sort()).toEqual([200, 201]);
       await member.membership.reserve(WS, { accountId: member.accountId, feature: "writing", idempotencyKey: "competing-task" });
       await expect(make("new-project")).rejects.toMatchObject({ code: "QUOTA_EXHAUSTED" });
+      const ledger = await member.membership.ledger(WS, member.accountId);
+      const actor = member.actor("allowed").actorId;
+      expect((await service.startReceipt(actor, "allowed")).body).toEqual({ receipt: { projectId: viewOf(concurrent[0]!.body).projectId } });
+      expect((await service.startReceipt(actor, "not-received")).body).toEqual({ receipt: null });
+      expect((await service.startReceipt("another-account", "allowed")).body).toEqual({ receipt: null });
+      expect(await member.membership.ledger(WS, member.accountId)).toEqual(ledger);
       expect((await make("allowed")).status).toBe(200);
       expect(store.projects.size).toBe(1);
       expect(seen).toHaveLength(0);

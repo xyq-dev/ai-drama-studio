@@ -435,6 +435,15 @@ export class TitleWritingService {
     return { version: 2, settings: { episodeCount: plan.episodeCount, episodeSeconds: plan.targetEpisodeSeconds, style: (sent?.style ?? "").trim() } };
   }
 
+  async startReceipt(projectId: string, actorId: string, key?: string): Promise<TitleWritingResult> {
+    if (!key?.trim() || key.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
+    const refused = await this.readable(projectId);
+    if (refused) return refused;
+    const bundle = await this.deps.store.findRunByKey(this.deps.workspaceId, actorId, key);
+    const receipt = bundle?.run.projectId === projectId && !isScriptBreakdownRun(bundle.run) ? { projectId, runId: bundle.run.id } : null;
+    return { status: 200, body: { receipt } };
+  }
+
   async latest(projectId: string): Promise<TitleWritingResult> {
     const refused = await this.readable(projectId);
     if (refused) return refused;

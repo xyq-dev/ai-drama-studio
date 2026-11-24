@@ -47,6 +47,12 @@ export class AutoCreationController {
       { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
+  @Get("projects/:projectId/auto-runs/start-receipt")
+  startReceipt(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string) {
+    return this.send(response, (service) => service.startReceipt(projectId, storeActorId(), key));
+  }
+
   @Get("projects/:projectId/auto-runs/latest")
   latest(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Res({ passthrough: true }) response: StatusResponse, @Headers() headers: RequestHeaders) {
     return this.send(response, (service) => service.latest(projectId, this.canReadRejectionDiagnostic(headers)));

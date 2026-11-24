@@ -264,6 +264,15 @@ export class SeriesWritingService {
     return this.viewOf(snapshot!, created.kind === "created" ? 201 : 200);
   }
 
+  async startReceipt(actorId: string, key?: string): Promise<SeriesWritingResult> {
+    if (!key?.trim() || key.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
+    if (!await this.deps.store.storageReady()) return failure(503, "SERIES_WRITING_STORAGE_UNAVAILABLE");
+    const series = await this.deps.store.findSeriesByKey(this.deps.workspaceId, actorId, key);
+    if (!series) return { status: 200, body: { receipt: null } };
+    await this.deps.projects.getProject(this.deps.workspaceId, series.projectId);
+    return { status: 200, body: { receipt: { projectId: series.projectId } } };
+  }
+
   async get(projectId: string): Promise<SeriesWritingResult> {
     const snapshot = await this.snapshotOf(projectId);
     return "status" in snapshot ? snapshot : this.viewOf(snapshot);

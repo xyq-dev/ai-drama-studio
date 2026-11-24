@@ -130,7 +130,7 @@ function OutlineView({ outline, episodeCount, guided }: { outline: EpisodeOutlin
  * Progress and results of the latest title-driven run of one work. Everything shown comes from the server: the page
  * polls while the run is running, survives a reload, and never claims a step finished before the server says so.
  */
-export function TitleWritingRun({ projectId, client = defaultClient }: { projectId: string; client?: TitleWritingClient }) {
+export function TitleWritingRun({ projectId, selectedRunId, client = defaultClient }: { projectId: string; selectedRunId?: string; client?: TitleWritingClient }) {
   const [run, setRun] = useState<TitleWritingRunView | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
@@ -190,7 +190,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
           let latest: TitleWritingRunView | null = null;
           let failure: unknown = null;
           try {
-            latest = await client.latest(projectId);
+            latest = selectedRunId ? await client.get(projectId, selectedRunId) : await client.latest(projectId);
           } catch (caught) {
             failure = caught ?? new Error("read failed");
           }
@@ -213,7 +213,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
         scope.inFlight = false;
       }
     })();
-  }, [client, projectId, show, schedule]);
+  }, [client, projectId, selectedRunId, show, schedule]);
 
   useEffect(() => {
     // A new work starts clean: nothing shown, typed or confirmed for the previous one carries over.

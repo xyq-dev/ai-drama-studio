@@ -41,6 +41,11 @@ export class SeriesWritingController {
     return this.send(response, (service) => service.options(isCreatorRequest()));
   }
 
+  @Get("writing/series/start-receipt")
+  startReceipt(@Res({ passthrough: true }) response: StatusResponse, @Headers("idempotency-key") key?: string) {
+    return this.send(response, (service) => service.startReceipt(storeActorId(), key));
+  }
+
   @Post("writing/series")
   create(@Body() body: unknown, @Res({ passthrough: true }) response: StatusResponse, @Headers() headers: RequestHeaders,
     @Headers("idempotency-key") idempotencyKey?: string, @Headers("x-trace-id") traceHeader?: string) {

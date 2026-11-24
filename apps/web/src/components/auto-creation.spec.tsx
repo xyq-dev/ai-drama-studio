@@ -73,6 +73,41 @@ afterEach(() => {
 });
 
 describe("AI 自动创作 start card", () => {
+  it("recovers an accepted run after the lost response and last quota without submitting again", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    let sentKey: string | null = null;
+    const writes: string[] = [];
+    const reads: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/options")) return json(options({ viewerIsCreator: true }));
+      if (url.includes("preflight=writing")) return json({ denial: sentKey ? "QUOTA_EXHAUSTED" : null });
+      const key = new Headers(init?.headers).get("Idempotency-Key");
+      if (init?.method === "POST") {
+        writes.push(url);
+        if (url.endsWith("/projects")) return json({ id: P1 }, 201);
+        sentKey = key;
+        throw new TypeError("lost response");
+      }
+      reads.push(url);
+      expect(key).toBe(sentKey);
+      return json({ receipt: { projectId: P1, runId: RUN } });
+    }));
+    const first = render(<AutoCreationStart />);
+    const start = screen.getByRole("button", { name: "AI 自动创作" }) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+    await screen.findByRole("alert");
+    first.unmount();
+    render(<AutoCreationStart />);
+    const lookup = await screen.findByRole("button", { name: "查询上次请求" });
+    expect((screen.getByRole("button", { name: "AI 自动创作" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(lookup);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto?run=${RUN}`));
+    expect(reads).toEqual([`/api/v1/projects/${P1}/auto-runs/start-receipt`]);
+    expect(writes).toEqual(["/api/v1/projects", `/api/v1/projects/${P1}/auto-runs`]);
+  });
+
   it("does not create a project for a nonmember or ask a signed-in creator for an operator token", async () => {
     const calls = server(options({ viewerIsCreator: true, operatorTokenRequired: true }), () => json({ denial: "MEMBERSHIP_REQUIRED" }));
     render(<AutoCreationStart />);

@@ -343,11 +343,11 @@ beforeAll(async () => {
   await waitFor("the web app", async () => (await fetch(`${WEB}/login`)).ok);
   // Anonymous: the API refuses both paid routes and the candidate reads; nothing is written.
   const id = randomUUID();
-  for (const [method, path] of [["GET", "/writing/candidates/options"], ["POST", `/projects/${id}/writing/candidates`], ["POST", `/projects/${id}/title-runs`]] as const) {
+  for (const [method, path] of [["GET", "/writing/candidates/options"], ["GET", `/projects/${id}/title-runs/start-receipt`], ["GET", `/projects/${id}/auto-runs/start-receipt`], ["GET", "/writing/series/start-receipt"], ["POST", `/projects/${id}/writing/candidates`], ["POST", `/projects/${id}/title-runs`]] as const) {
     const response = await fetch(`${WEB}/api/v1${path}`, { method, headers: { origin: WEB, "content-type": "application/json" }, ...(method === "POST" ? { body: "{}" } : {}) });
     expect(response.status, `${method} ${path} without a login`).toBe(401);
   }
-  (evidence.checks as Record<string, unknown>).anonymous = "401 for options, candidate start and title start";
+  (evidence.checks as Record<string, unknown>).anonymous = "401 for options, starts and receipt lookups";
 
   browser = await chromium.launch({ headless: true, channel: "chrome" });
   // No trace and no HAR are recorded: they could hold request headers. Screenshots only.
@@ -428,6 +428,19 @@ describe("online writing in a real browser with the site login, real web and API
     expect(calls.every((call) => call.provider_key === "deepseek" && call.model === "deepseek-flash" && call.state === "completed"
       && call.billing_status === "unknown" && call.usage.includes("\"totalTokens\": 300"))).toBe(true);
     expect(pageWrites.filter((write) => write.token)).toEqual([]);
+
+    // A read can confirm exactly the keyed start, without sending a second POST or another provider call.
+    const submitted = pageWrites.filter(write => write.path.endsWith("/title-runs"));
+    expect(submitted).toHaveLength(1);
+    const receiptUrl = `${WEB}/api/v1/projects/${projectId}/title-runs/start-receipt`;
+    const expectedRun = (await q<{ id: string }>("SELECT id FROM title_writing_run WHERE project_id=$1", [projectId]))[0]!.id;
+    const receipt = await page.request.get(receiptUrl, { headers: { "Idempotency-Key": submitted[0]!.key! } });
+    expect(receipt.status()).toBe(200);
+    expect(receipt.headers()["cache-control"]).toContain("no-store");
+    expect(await receipt.json()).toEqual({ receipt: { projectId, runId: expectedRun } });
+    const notSent = await page.request.get(receiptUrl, { headers: { "Idempotency-Key": randomUUID() } });
+    expect(await notSent.json()).toEqual({ receipt: null });
+    expect(sends("title:")).toBe(5);
 
     // The person reviews the story, then places the scripts (the existing human gates are unchanged).
     await page.getByRole("link", { name: "查看和修改故事草稿" }).click();

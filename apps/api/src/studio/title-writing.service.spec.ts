@@ -220,6 +220,34 @@ describe("who may start a paid run", () => {
 });
 
 describe("starting a run", () => {
+  it("recovers only this account's exact start receipt with zero quota and no new writes or dispatch", async () => {
+    const member = await oneWritingUnit(WS);
+    const key = "lost-receipt";
+    const { actorId } = member.actor(key);
+    const { service, store, seen, settle } = setup({ creatorMembership: member.membership });
+    const start = await service.start(P1, { title: "末班车" }, TOKEN, member.actor(key));
+    expect(start.status).toBe(201);
+    await settle();
+    const sent = seen.length;
+    expect(sent).toBeGreaterThan(0);
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(0);
+    const ledger = await member.membership.ledger(WS, member.accountId);
+    const create = vi.spyOn(store, "createRun");
+    const reserve = vi.spyOn(member.membership, "reserve");
+    const receipt = { projectId: P1, runId: store.runs[0]!.id };
+    expect((await service.startReceipt(P1, actorId, key)).body).toEqual({ receipt });
+    expect((await service.startReceipt(P1, actorId, key)).body).toEqual({ receipt });
+    expect((await service.startReceipt(P1, actorId, "not-sent")).body).toEqual({ receipt: null });
+    expect((await service.startReceipt(P1, "another-account", key)).body).toEqual({ receipt: null });
+    expect((await service.startReceipt(P1, actorId)).status).toBe(400);
+    expect((await service.startReceipt(P2, actorId, key)).body).toEqual({ receipt: null });
+    expect(await member.membership.ledger(WS, member.accountId)).toEqual(ledger);
+    expect(create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(store.runs).toHaveLength(1);
+    expect(seen).toHaveLength(sent);
+  });
+
   it.each(["duplicate", "different input", "another project"])("keeps only the winning task's writing unit after a racing %s", async (kind) => {
     const member = await oneWritingUnit(WS);
     const context = member.actor("same-submission");

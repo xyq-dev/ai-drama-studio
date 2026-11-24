@@ -34,6 +34,7 @@ import {
   type AutoCreationOptionsView,
   type AutoStartBody,
 } from "../lib/auto-creation-client";
+import { WritingStartReceipt } from "./writing-start-receipt";
 import { useCreatorWritingAccess } from "../lib/creator-writing-access";
 import styles from "./title-writing.module.css";
 import autoStyles from "./auto-creation.module.css";
@@ -353,6 +354,8 @@ export function AutoCreationStart() {
         <div className={styles.notice} role="status">
           {!access.blocked && <p>上次的启动请求还没有确认结果。重试会原样重放，使用同一个请求标识，不会重复创建或收费。</p>}
           <p className={styles.actions}>
+            {pending.projectId && access.reason ? <WritingStartReceipt key={pending.runKey} target={{ kind: "auto", projectId: pending.projectId }}
+              requestKey={pending.runKey} onRecovered={() => clearPending(pending)} /> : null}
             {pending.projectId ? <a className={styles.secondary} href={`/projects/${pending.projectId}/auto`}>查看进度</a> : null}
             <button className={styles.textLink} type="button" onClick={abandon}>放弃上次请求，重新填写</button>
           </p>

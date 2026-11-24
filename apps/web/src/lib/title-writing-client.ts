@@ -101,6 +101,11 @@ export class TitleWritingClient {
       { method: "GET", headers: { Accept: "application/json" }, ...(signal ? { signal } : {}) })).body.run;
   }
 
+  async get(projectId: string, runId: string): Promise<TitleWritingRunView> {
+    return (await this.call<{ run: TitleWritingRunView }>(`/projects/${projectId}/title-runs/${runId}`,
+      { method: "GET", headers: { Accept: "application/json" } })).body.run;
+  }
+
   async cancel(projectId: string, runId: string): Promise<TitleWritingRunView> {
     return (await this.call<{ run: TitleWritingRunView }>(`/projects/${projectId}/title-runs/${runId}/cancel`,
       { method: "POST", headers: { Accept: "application/json" } })).body.run;

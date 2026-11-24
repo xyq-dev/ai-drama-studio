@@ -69,6 +69,24 @@ function server(handler: (method: string, url: string, body: unknown) => Respons
 }
 
 describe("series creation eligibility", () => {
+  it("recovers only the stored series key when another task used the remaining unit", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    window.sessionStorage.setItem("series-writing:create", JSON.stringify({ version: 1, scope: "create", key: "lost-series",
+      body: { title: "末班车", episodeCount: 3, episodeSeconds: 60, idea: "", constraints: { forbiddenThemes: [] } } }));
+    const calls = server((_method, url) => url.endsWith("/options") ? json({ ...OPTIONS, viewerIsCreator: true })
+      : url.includes("preflight=writing") ? json({ denial: "QUOTA_EXHAUSTED" }) : json({ receipt: { projectId: P1 } }));
+    render(<SeriesWritingStart />);
+    const lookup = await screen.findByRole("button", { name: "查询上次请求" });
+    expect((screen.getByRole("button", { name: "创建系列作品" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(lookup);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/series`));
+    expect(calls.filter(call => call.url.endsWith("/start-receipt"))).toEqual([
+      { method: "GET", url: "/api/v1/writing/series/start-receipt", body: null, key: "lost-series" },
+    ]);
+    expect(calls.filter(call => call.method === "POST")).toHaveLength(0);
+  });
+
   it.each(["MEMBERSHIP_REQUIRED", "FEATURE_NOT_INCLUDED"])("refuses %s before creating a series", async denial => {
     const calls = server((_method, url) => url.endsWith("/options") ? json({ ...OPTIONS, viewerIsCreator: true })
       : url.includes("membership?preflight=writing") ? json({ denial }) : undefined);
