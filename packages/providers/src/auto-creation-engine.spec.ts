@@ -300,6 +300,9 @@ describe("automatic creation engine", () => {
 
   it.each([
     { name: "no market hypothesis", hypotheses: [] },
+    { name: "a third-party narrator", hypotheses: [{
+      id: "H1", statement: "是否比加入旁白或第三方叙述更适合竖屏短时长表达。", howToVerify: "请试看者复述归还照片的经过。",
+    }] },
     { name: "the project's creative parameters", hypotheses: [{
       id: "H1", statement: "待验证：1 集、约 1 分钟的故事是否能让观众理解司机的选择？",
       howToVerify: "请试看者复述司机收到照片后的反应。",
@@ -388,7 +391,7 @@ describe("automatic creation engine", () => {
     expect(seen[0]!.stage).toBe("research");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v18" });
+    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v19" });
   });
 
   it.each([
@@ -455,7 +458,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application).toEqual({ pattern: "模型替身样例：用前两集建立主角与对手的冲突。", why: "模型替身样例：每两集推进一个阶段目标。" });
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v18" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v19" });
     const directions = result.stages.find((stage) => stage.stageKey === "directions")!.output as AutoDirections;
     expect(directions.candidates[0]!.difficultyNote).toBe("模型替身样例：本剧每两集设置一个小高潮。");
     expect(directions.unverified).toEqual([]);
@@ -511,7 +514,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划在第一轮试读后比较角色人气。");
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v18" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v19" });
     expect(seen[1]!.stage).toBe("directions");
   });
 
@@ -575,7 +578,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application.why).toBe("模型替身样例：前3秒让主角陷入危机，待验证观众是否因此想继续看。");
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v18" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v19" });
   });
 
   it.each([
@@ -695,7 +698,7 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v18", researchSchema: "ads.auto-creation.research.v4",
+      executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v19", researchSchema: "ads.auto-creation.research.v4",
         answerContract: "limited" },
       marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },
@@ -1318,6 +1321,14 @@ describe("automatic creation engine", () => {
     expect(json.revisions).toHaveLength(1);
     expect(json.production.shots.length).toBeGreaterThan(0);
     const markdown = autoPackageMarkdown(meta, bundle.stages);
+    expect(markdown).toContain("已包含：地点设定、人物设定、文字镜头设计、计划秒数、素材需求");
+    const bibleOnly = autoPackageMarkdown(meta, bundle.stages.filter(({ stageKey }) => stageKey === "bible"));
+    expect(bibleOnly).toContain("已生成：地点设定、人物设定");
+    expect(bibleOnly).toContain("尚缺：文字镜头设计、计划秒数、素材需求");
+    expect(bibleOnly).not.toContain("已包含");
+    const empty = autoPackageMarkdown(meta, []);
+    expect(empty).toContain("尚缺：地点设定、人物设定、文字镜头设计、计划秒数、素材需求");
+    expect(empty).not.toContain("已包含");
     for (const heading of ["## 研究资料与限制", "## AI 创作策划（受众待验证·市场证据不可用）", "## 选题比较与最终方向", "## 故事、人物、地点与分集大纲", "## 逐集剧本", "## 检查与修改记录", "## 生产准备"]) {
       expect(markdown).toContain(heading);
     }

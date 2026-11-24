@@ -140,6 +140,31 @@ describe("useProjectBase follows compose runs it did not submit (final review 1)
 });
 
 describe("useProjectBase ignores answers of superseded loads (final review 3)", () => {
+  it("holds the next write until a superseding reread has installed the current project version", async () => {
+    const server: Server = { runs: [], calls: [], project: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+
+    let finishSaveRead!: () => void;
+    let finishBackgroundRead!: () => void;
+    const project = (version: number) => json({ id: P1, title: "作品", premise: "", version, status: "ACTIVE" });
+    server.project.push(
+      () => new Promise(resolve => { finishSaveRead = () => resolve(project(2)); }),
+      () => new Promise(resolve => { finishBackgroundRead = () => resolve(project(3)); }),
+    );
+    const resumed = vi.fn();
+    act(() => { void result.current.reloadAfterWrite().then(resumed); });
+    act(() => { void result.current.reloadBase(); });
+    finishSaveRead();
+    await settle();
+    expect(resumed).not.toHaveBeenCalled();
+    finishBackgroundRead();
+    await settle();
+    expect(resumed).toHaveBeenCalledOnce();
+    expect(result.current.project?.version).toBe(3);
+  });
+
   it("does not let an old load's late failure overwrite a newer success", async () => {
     let failOld!: () => void;
     const server: Server = { runs: [], calls: [], project: [

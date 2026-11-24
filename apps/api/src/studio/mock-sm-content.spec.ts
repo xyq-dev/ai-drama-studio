@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -42,6 +43,24 @@ describe("mock subtitle and music content", () => {
   afterEach(async () => {
     const { rm } = await import("node:fs/promises");
     await rm(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["小杰：师傅！等等！", true],
+    ["甲 &amp; &lt;乙&gt;\n🚌", true],
+    ["甲 --> 乙", false],
+    ["<b>强行插入字幕标签</b>", false],
+    ["第一行\n第二行\n第三行", false],
+    ["长".repeat(81), false],
+  ])("checks the recorded bytes and format for dialogue %s", async (body, valid) => {
+    const bytes = Buffer.from(`WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n${body}\n`);
+    const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
+    const objectKey = `mock-subtitles/${projectId}/${jobId}/${checksumSha256}.vtt`;
+    await mkdir(join(root, "mock-subtitles", projectId, jobId), { recursive: true });
+    await writeFile(join(root, objectKey), bytes);
+    const subtitle = asset("SUBTITLE", { durationMs: 1000, byteSize: bytes.length, checksumSha256, objectKey });
+    if (valid) await expect(readBoundedMockSm(root, subtitle)).resolves.toEqual(bytes);
+    else await expect(readBoundedMockSm(root, subtitle)).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
   });
 
   it("reads the fixed vtt and wav and rejects kind, path, damage, and oversize mismatches", async () => {

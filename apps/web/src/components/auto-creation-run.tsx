@@ -371,7 +371,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
                   || (selectedFindings.length === 0 && reviseInstruction.trim().length === 0)}
                 onClick={() => void act(async () => {
                   const quoted = await client.userRevise(projectId, run.runId, {
-                    findingIds: selectedFindings, instruction: reviseInstruction, confirm: false, token,
+                    findingIds: selectedFindings, instruction: reviseInstruction, confirm: false, token: needsToken ? token.trim() : "",
                   });
                   setRun(quoted.run);
                   setReviseQuote(quoted.quote ? {

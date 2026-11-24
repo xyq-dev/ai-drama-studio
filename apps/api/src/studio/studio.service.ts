@@ -1,3 +1,4 @@
+import { requireWritingForNewProject } from "../membership/creator-task-guard";
 import { assertComposeSourcesEnabled } from "./compose-access";
 import { createHash, randomUUID } from "node:crypto";
 import { SAMPLE_VIDEO_FIXTURE_IDS, SAMPLE_VIDEO_SCHEMA, sampleVideoDescription, type SampleVideoFixtureId } from "@ai-drama/contracts";
@@ -44,6 +45,7 @@ import { episodeExportBody, exportIdentity, holdEpisodeExportLatch, parseExpecte
 const projectBodySchema = z.object({
   title: z.string().min(1).max(200),
   premise: z.string().max(4000).default(""),
+  writingStart: z.literal(true).optional(),
   episodeCount: z.number().int().min(1).max(6).optional(),
   targetEpisodeSeconds: z.union([z.literal(60), z.literal(90)]).optional(),
 }).superRefine((value, context) => {
@@ -51,6 +53,8 @@ const projectBodySchema = z.object({
     context.addIssue({ code: "custom", path: ["episodeCount"], message: "episodeCount and targetEpisodeSeconds are set together" });
   }
 });
+
+const renameProjectSchema = z.object({ title: z.string().trim().min(1).max(200) }).strict();
 
 const mockWorkflowSchema = z.object({
   outcome: z.enum(["success", "retryable_failure", "terminal_failure", "cancel", "delayed"]).default("success"),
@@ -180,13 +184,14 @@ export class StudioService {
     if (plan && !await this.store.episodePlanReady()) {
       throw new PersistenceError("EPISODE_PLAN_UNAVAILABLE", "Episode plan storage is not migrated; nothing was created");
     }
-    return this.jobs.runIdempotent(this.scope(context, "POST", "/projects", identity), 201, (client) =>
-      insertProject(client, {
+    return this.jobs.runIdempotent(this.scope(context, "POST", "/projects", identity), 201, async (client) => {
+      if (input.writingStart) await requireWritingForNewProject(this.workspaceId, context.actorId, client);
+      return insertProject(client, {
         workspaceId: this.workspaceId, title: input.title, premise: input.premise,
         ...(plan ? { plan } : {}),
         ...(context.ownerAccountId ? { ownerAccountId: context.ownerAccountId } : {}),
-      }),
-    );
+      });
+    });
   }
 
   async listProjects(cursor?: string, ownerAccountId?: string | null) {
@@ -197,6 +202,12 @@ export class StudioService {
   async getProject(projectId: string, ownerAccountId?: string | null) {
     const project = await this.store.getProject(this.workspaceId, projectId, ownerAccountId);
     return { ...project, ...await this.store.getProjectEpisodePlan(this.workspaceId, projectId) };
+  }
+
+  async renameProject(projectId: string, body: unknown, ifMatch?: string) {
+    const { title } = parse(renameProjectSchema, body);
+    const version = ifMatch === undefined ? null : parseAggregateVersion(ifMatch);
+    return this.store.renameProject(this.workspaceId, projectId, title, version);
   }
 
   getProjectCostSummary(projectId: string, ownerAccountId?: string | null) {
@@ -1355,6 +1366,8 @@ export class StudioService {
         }
         const snapshot = {
           schema: kind === "MEDIA_SUBTITLE" ? "m3.mock.subtitle.v1" : "m3.mock.music.v1",
+          // Previous snapshots generated the fixed 100 ms VTT and must not satisfy a new subtitle request.
+          ...(kind === "MEDIA_SUBTITLE" ? { subtitleFormat: "saved-dialogue-v1" } : {}),
           shotRevisionId,
           seed: input.seed ?? null,
           outcome: "success",

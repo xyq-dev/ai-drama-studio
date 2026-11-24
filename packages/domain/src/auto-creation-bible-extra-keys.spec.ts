@@ -82,7 +82,7 @@ const check = (body: unknown, frozen = input()) => validateAutoStageOutput("bibl
 
 describe("checks.v17 bible unrecognized top-level keys", () => {
   it("names the current checks version", () => {
-    expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v18");
+    expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v19");
   });
 
   it("a legal bible still passes and is saved as written", () => {

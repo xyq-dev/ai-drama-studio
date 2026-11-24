@@ -620,6 +620,8 @@ export interface TitleWritingOptionsView {
    * server checks the session, origin and CSRF token instead. True only when the API runs without the site login.
    */
   operatorTokenRequired: boolean;
+  /** Authenticated creator requests require writing quota before creating a work. */
+  viewerIsCreator?: boolean;
   /**
    * The provider new tasks will use. An enabled, storage-writable feature-config binding is reported when it is a
    * process provider (DeepSeek included), so an unready process default does not block the creation page. Bailian

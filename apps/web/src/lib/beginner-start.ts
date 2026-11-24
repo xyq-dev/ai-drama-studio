@@ -1,12 +1,12 @@
+import { LIMITS } from "./studio-model";
 import { TITLE_WRITING_DEFAULT_EPISODE_COUNT, TITLE_WRITING_MAX_EPISODES } from "@ai-drama/contracts";
 
 /** Pure helpers for the beginner start page. Nothing here calls a model or the server. */
 
-/**
- * A title suggestion by rule: the first clause of the idea, at most 12 characters. It is offered for the user to
- * accept or edit, and the page says it was cut from their own words, not generated.
- */
+/** Prefer an explicit Chinese book title, otherwise suggest a short opening clause. */
 export function suggestTitle(idea: string): string {
+  const named = Array.from(idea.matchAll(/《([^《》\n]+)》/gu), (match) => match[1]!.trim()).find(Boolean);
+  if (named) return named.slice(0, LIMITS.title).replace(/[\uD800-\uDBFF]$/u, "");
   const first = idea.trim().split(/[。！？!?\n，,；;：:、]/u)[0]?.trim() ?? "";
   const characters = Array.from(first);
   return characters.length <= 12 ? first : `${characters.slice(0, 12).join("")}…`;

@@ -604,9 +604,12 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(await refused.textContent()).toContain("不是密钥或账户问题");
     const stop = await page.getByText(/^停在「/u).textContent();
     expect(stop).toContain("hypotheses[0].howToVerify");
+    expect(stop).toContain("数量或排名缺少可核实的依据");
+    expect(stop).toContain("百分比或成数");
     expect(stop).toContain("市场或受众统计");
     expect(stop).toContain("比例或成数");
-    expect(stop).toContain("不说明模型一定编造");
+    expect(stop).not.toContain("序数词");
+    expect(await page.getByTestId("auto-rejection-diagnostic").count()).toBe(0);
     expect(await refused.textContent()).toContain("不需要更换密钥");
     await viewports("04-auto-research-refused", refused, page.getByTestId("auto-headline"));
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -617,6 +620,30 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(stage).toEqual({ error_code: "unsourced_number@hypotheses[0].howToVerify:percent+market_statistic+proportion", output_json: null });
     plan = {};
     (evidence.flows as Record<string, unknown>).B3 = { stubSends: seen.length - before, stageError: stage.error_code };
+  }, 240_000);
+
+  it("B3b: explicit rankings identify the ordinal; a legacy refusal without a token reports only the missing evidence", async () => {
+    plan = { verificationSample: "ranking" };
+    const before = seen.length;
+    const projectId = await startZeroRounds();
+    const stop = page.getByText(/^停在「/u);
+    await expect.poll(() => stop.textContent(), { timeout: 90_000 }).toContain("序数词（如“第三”）被判为排名");
+    expect(await stop.textContent()).toContain("hypotheses[0].howToVerify");
+    expect(await page.getByTestId("auto-rejection-diagnostic").textContent()).toContain("计划在第一轮试读后比较排名第一的作品");
+    const [stage] = await q<{ run_id: string; error_code: string; output_json: unknown }>(
+      "SELECT s.run_id, s.error_code, s.output_json FROM auto_creation_stage s JOIN auto_creation_run r ON r.id = s.run_id WHERE r.project_id = $1 AND s.stage_key = 'research'", [projectId]);
+    expect(stage).toMatchObject({ error_code: "unsourced_number@hypotheses[0].howToVerify:rank+market_statistic+ranking", output_json: null });
+    expect(seen.slice(before).map((call) => call.stage)).toEqual(["research"]);
+
+    // Older stage records contain just the error code, without a field, token type or excerpt.
+    await q("UPDATE auto_creation_stage SET error_code = 'unsourced_number', depends_on_json = NULL WHERE run_id = $1 AND stage_key = 'research'", [stage!.run_id]);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect.poll(() => stop.textContent(), { timeout: 30_000 }).toContain("数量或排名缺少可核实的依据");
+    expect(await stop.textContent()).not.toMatch(/位置：|序数词|百分比或成数/u);
+    expect(await page.getByTestId("auto-rejection-diagnostic").count()).toBe(0);
+    expect(await page.getByTestId("auto-output-refused").textContent()).toContain("不需要更换密钥");
+    expect(seen.length - before).toBe(1);
+    plan = {};
   }, 240_000);
 
   it("B4: checks v5, numbers the checks cannot place: the run continues in the background, the notices and the server's record are shown apart and exported", async () => {

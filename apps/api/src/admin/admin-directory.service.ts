@@ -18,9 +18,8 @@ import {
   episodeProgress,
   jobAction,
   jobDisplayStatus,
-  jobType,
+  jobTypeLabel,
   JOB_STATUS_LABEL,
-  JOB_TYPE_LABEL,
   ownerPresentation,
   recentTaskLabel,
   shortJobCode,
@@ -386,8 +385,8 @@ export class AdminDirectoryService {
       productionLabel: PRODUCTION_LABEL[status],
       episodeProgress: episodeProgress({ episodeCount: row.episodeCount, episodeNo: row.episodeNo, status }),
       recentTask: recentTaskLabel({
-        kind: row.latestKind,
-        source: row.latestSource,
+        type: row.latestType,
+        demo: row.latestDemo,
         state: row.latestState,
         errorCode: row.latestError,
       }),
@@ -397,8 +396,8 @@ export class AdminDirectoryService {
 
   private asset(row: AssetSignalRow) {
     const type = assetType(row.kind);
-    const source = row.jobKind
-      ? `${JOB_TYPE_LABEL[jobType(row.jobKind, "generation")]} · ${row.jobId ? shortJobCode(row.jobId) : ""}`.trim()
+    const source = row.jobId && row.jobType
+      ? `${jobTypeLabel(row.jobType, row.isDemo)} · ${shortJobCode(row.jobId)}`
       : "制作任务产出";
     return {
       id: row.id,
@@ -417,12 +416,12 @@ export class AdminDirectoryService {
 
   private job(row: JobSignalRow) {
     const status = jobDisplayStatus(row.state, row.errorCode);
-    const type = jobType(row.kind, row.source);
+    const type = row.jobType;
     return {
       id: row.id,
       code: row.code || shortJobCode(row.id),
       type,
-      typeLabel: JOB_TYPE_LABEL[type],
+      typeLabel: jobTypeLabel(type, row.isDemo),
       subject: workEpisodeLabel(row.projectTitle, row.episodeNo),
       projectTitle: row.projectTitle,
       episodeNo: row.episodeNo,

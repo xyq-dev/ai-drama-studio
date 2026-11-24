@@ -78,6 +78,11 @@ function install(worlds: Record<string, World>) {
     const world = id ? worlds[id] : undefined;
     if (world?.hold && path === `/api/v1/projects/${id}`) await world.hold;
     if (!world) return json({ items: [], nextCursor: null });
+    if (path === `/api/v1/projects/${id}` && init?.method === "PATCH") {
+      const { title } = JSON.parse(String(init.body)) as { title: string };
+      world.title = title;
+      return json({ id, title, version: 4 });
+    }
     if (path === `/api/v1/projects/${id}`) {
       if (world.projectFailures && world.projectFailures > 0) {
         world.projectFailures -= 1;
@@ -137,6 +142,19 @@ afterEach(async () => {
 });
 
 describe("beginner flow", () => {
+  it("renames from the creator heading and displays the saved title after reopening", async () => {
+    const calls = install({ [P1]: { title: "旧名字", story: null, episodes: [] } });
+    const first = render(<BeginnerFlow projectId={P1} />);
+    fireEvent.click(await screen.findByRole("button", { name: "修改作品名" }));
+    fireEvent.change(screen.getByLabelText("作品名"), { target: { value: "最后一班车" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存作品名" }));
+    await screen.findByRole("heading", { name: "最后一班车" });
+    first.unmount();
+    render(<BeginnerFlow projectId={P1} />);
+    await screen.findByRole("heading", { name: "最后一班车" });
+    expect(calls.filter(call => call.startsWith("PATCH "))).toEqual([`PATCH /api/v1/projects/${P1}`]);
+  });
+
   it("opens the first step that needs the user and explains it", async () => {
     install({ [P1]: { title: "夜班", story: story("DRAFT"), episodes: [] } });
     render(<BeginnerFlow projectId={P1} />);
@@ -236,6 +254,41 @@ describe("beginner flow", () => {
     expect(screen.queryByRole("heading", { name: "旧作品" })).toBeNull();
   });
 
+  it("removes the saved character draft from the header after creation, approval and a reload", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=cast`);
+    const world = sceneWorld();
+    install({ [P1]: world });
+    const read = globalThis.fetch;
+    const writes: string[] = [];
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (init?.method === "POST" && (input.endsWith("/characters") || input.endsWith("/review"))) {
+        const body = JSON.parse(String(init.body));
+        const status = body.to ?? "DRAFT";
+        writes.push(status);
+        world.characters = [aggregate("driver", status, { name: "司机" })];
+        world.revisions = { driver: entityRevisions("driver", status, null) };
+        world.project = { version: 4 };
+        return json({ entityId: "driver" });
+      }
+      return read(input, init);
+    });
+    const page = render(<BeginnerFlow projectId={P1} />);
+    const form = (await screen.findByRole("heading", { name: "新建角色" })).closest("form")!;
+    fireEvent.change(within(form).getByLabelText("名称"), { target: { value: "司机" } });
+    expect(screen.getByText("保存状态：有未保存修改（本标签页草稿）：新建角色")).toBeTruthy();
+    fireEvent.click(within(form).getByRole("button", { name: "保存新版本" }));
+    fireEvent.click(await screen.findByRole("button", { name: /driver · 司机/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "提交审核" }));
+    fireEvent.click(await screen.findByRole("button", { name: "通过" }));
+    await waitFor(() => expect(writes).toEqual(["DRAFT", "IN_REVIEW", "APPROVED"]));
+    expect(window.sessionStorage.getItem(`ads-draft:${P1}:character:new:new`)).toBeNull();
+    expect(screen.queryByText(/有未保存修改.*新建角色/)).toBeNull();
+    page.unmount();
+    render(<BeginnerFlow projectId={P1} />);
+    await screen.findByRole("button", { name: /driver · 司机/ });
+    expect(screen.getByText("保存状态：没有未保存的修改")).toBeTruthy();
+  });
+
   it("reports a draft restored from this tab as unsaved and warns before leaving (review)", async () => {
     window.sessionStorage.setItem(`ads-draft:${P1}:story:story-1`, JSON.stringify({ fingerprint: "f", idempotencyKey: "k",
       payload: { text: "上次没保存的故事" }, ifMatch: 3 }));
@@ -259,7 +312,7 @@ describe("beginner flow", () => {
     const mediaHold = new Promise<void>((done) => { release = done; });
     const approved = [episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, "APPROVED")];
     install({ [P1]: { title: "夜班", story: story("APPROVED"), episodes: approved, mediaHold,
-      candidates: { "episode-1": [{}, {}], "episode-2": [{}, {}], "episode-3": [{}, {}] },
+      candidates: { "episode-1": [{ shotId: "one" }, { shotId: "two" }], "episode-2": [{ shotId: "one" }, { shotId: "two" }], "episode-3": [{ shotId: "one" }, { shotId: "two" }] },
       composites: { "episode-1": [{ status: "ACTIVE", reviewStatus: "APPROVED" }], "episode-2": [{ status: "ACTIVE", reviewStatus: "DRAFT" }] } } });
     render(<BeginnerFlow projectId={P1} />);
     await screen.findByRole("heading", { name: "夜班" });
@@ -348,6 +401,29 @@ function sceneRevisions() {
 }
 
 describe("beginner flow targets the right object (Issue #52)", () => {
+  it("reopens the chosen episode and scene on reload, only while it is still listed for the approved script", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    const world = sceneWorld({ episodes: [episode(1, "APPROVED"), episode(2, "APPROVED")] });
+    install({ [P1]: world });
+    const view = render(<BeginnerFlow projectId={P1} />);
+    fireEvent.click(await screen.findByRole("tab", { name: /第 2 集/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /场景 1/ }));
+    await screen.findByLabelText("场地");
+    expect(screen.getByText("至少确认 2 个镜头才能出单集。")).toBeTruthy();
+    const savedUrl = window.location.href;
+    view.unmount();
+    const reopened = render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("button", { name: /场景 1/, pressed: true })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /第 2 集/, selected: true })).toBeTruthy();
+    await screen.findByLabelText("场地");
+    reopened.unmount();
+    world.scenes = [];
+    window.history.replaceState(null, "", savedUrl);
+    render(<BeginnerFlow projectId={P1} />);
+    await screen.findByText(/这一集还没有场景/);
+    expect(new URL(window.location.href).searchParams.has("scene")).toBe(false);
+    expect(screen.queryByLabelText("场地")).toBeNull();
+  });
   it("item 1: after episode 1 is approved, 补齐剧本 opens the episode that still needs a script", async () => {
     window.history.replaceState(null, "", `/projects/${P1}/create?step=script`);
     const world: World = { title: "夜班", story: story("APPROVED"), episodes: [episode(1, "DRAFT"), episode(2, null), episode(3, null)] };
@@ -367,7 +443,7 @@ describe("beginner flow targets the right object (Issue #52)", () => {
     const approved = [episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, "APPROVED")];
     const done = [{ status: "ACTIVE", reviewStatus: "APPROVED" }];
     install({ [P1]: { title: "夜班", story: story("APPROVED"), episodes: approved,
-      characters: [aggregate("c1", "APPROVED", { name: "林夏" })], candidates: { "episode-1": [{}, {}], "episode-2": [{}, {}], "episode-3": [{}, {}] },
+      characters: [aggregate("c1", "APPROVED", { name: "林夏" })], candidates: { "episode-1": [{ shotId: "one" }, { shotId: "two" }], "episode-2": [{ shotId: "one" }, { shotId: "two" }], "episode-3": [{ shotId: "one" }, { shotId: "two" }] },
       composites: { "episode-1": done, "episode-2": done, "episode-3": done } } });
     render(<BeginnerFlow projectId={P1} />);
     fireEvent.click(await screen.findByRole("button", { name: "查看并下载成片" }));
@@ -456,7 +532,7 @@ describe("beginner flow targets the right object (Issue #52)", () => {
   it("item 5: a completed 试一段 opens the episode that has the approved sample, and 继续制作 opens one that still needs it", async () => {
     window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
     const approved = [episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, "APPROVED")];
-    install({ [P1]: sceneWorld({ episodes: approved, candidates: { "episode-2": [{}] } }) });
+    install({ [P1]: sceneWorld({ episodes: approved, candidates: { "episode-2": [{ shotId: "one" }] } }) });
     render(<BeginnerFlow projectId={P1} />);
     expect(await screen.findByRole("tab", { name: /第 2 集 · ✓ 已完成/, selected: true })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "继续制作第 1 集" }));
@@ -600,7 +676,8 @@ describe("compose capability gate (PR #53 review 2 and 3)", () => {
     capabilities = { compose: { shot: true, episode: false } };
     install({ [P1]: sceneWorld({ candidates: { "episode-1": [candidate("cut-a", 1), candidate("cut-b", 2)] } }) });
     render(<BeginnerFlow projectId={P1} />);
-    expect(await screen.findByText(/当前环境没有开启集级合成/)).toBeTruthy();
+    expect(await screen.findByText(/集级合成由平台统一开启，目前还没开/)).toBeTruthy();
+    expect(screen.getByText("已确认单镜进度 2/2")).toBeTruthy();
     const panel = await screen.findByRole("region", { name: "多镜编排" });
     for (const button of await within(panel).findAllByRole("button", { name: "加入" })) fireEvent.click(button);
     expect((within(panel).getByRole("button", { name: "预检编排" }) as HTMLButtonElement).disabled).toBe(true);
@@ -734,7 +811,7 @@ describe("a closed compose notice always offers a recheck (Issue #54 D)", () => 
     window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
     capabilities = { compose: { shot: false, episode: false } };
     const approved = [episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, null)];
-    install({ [P1]: sceneWorld({ episodes: approved, candidates: { "episode-1": [{}] } }) });
+    install({ [P1]: sceneWorld({ episodes: approved, candidates: { "episode-1": [{ shotId: "one" }] } }) });
     render(<BeginnerFlow projectId={P1} />);
     const notice = await screen.findByText(/当前环境没有开启单镜成片所需的功能/);
     // The step is done, so the primary action continues; the recheck lives in the notice.
@@ -755,11 +832,11 @@ describe("a closed compose notice always offers a recheck (Issue #54 D)", () => 
     const cut = (id: string) => ({ assetId: id, status: "ACTIVE", reviewStatus: "APPROVED", rowVersion: 2, durationMs: 2000,
       reviewedContentHash: "h", contentHash: "h", segments: [] }) as never;
     install({ [P1]: sceneWorld({ episodes: approved,
-      candidates: { "episode-1": [candidate("cut-a", 1), candidate("cut-b", 2)], "episode-2": [{}, {}], "episode-3": [{}, {}] },
+      candidates: { "episode-1": [candidate("cut-a", 1), candidate("cut-b", 2)], "episode-2": [{ shotId: "one" }, { shotId: "two" }], "episode-3": [{ shotId: "one" }, { shotId: "two" }] },
       composites: { "episode-1": [cut("e1-cut")], "episode-2": [cut("e2-cut")], "episode-3": [cut("e3-cut")] } }) });
     render(<BeginnerFlow projectId={P1} />);
     expect(await screen.findByRole("button", { name: "查看并下载成片" })).toBeTruthy();
-    const notice = await screen.findByText(/当前环境没有开启集级合成/);
+    const notice = await screen.findByText(/集级合成由平台统一开启，目前还没开/);
     const panel = await screen.findByRole("region", { name: "多镜编排" });
     for (const button of await within(panel).findAllByRole("button", { name: "加入" })) fireEvent.click(button);
     expect(await within(panel).findByRole("button", { name: "下载 MP4" })).toBeTruthy();

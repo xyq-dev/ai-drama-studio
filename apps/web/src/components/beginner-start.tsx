@@ -317,8 +317,8 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
                 <input id="work-title" className={styles.titleInput} maxLength={LIMITS.title} value={title}
                   aria-describedby="title-hint" disabled={creating} onChange={(event) => remember(event.target.value, idea)} />
                 <p id="title-hint" className="mt-1 text-sm text-[#5F5D66]">
-                  建议名称按规则截取自你的想法开头，不是 AI 生成，可以直接修改。
-                  <button className="ml-2 underline" type="button" disabled={creating} onClick={() => remember(suggestTitle(idea), idea)}>重新按想法截取</button>
+                  优先使用想法中《》里的作品名，也可以直接修改。
+                  <button className="ml-2 underline" type="button" disabled={creating} onClick={() => remember(suggestTitle(idea), idea)}>从想法提取作品名</button>
                 </p>
                 <label className="mt-4 block font-medium" htmlFor="work-episode-count">集数</label>
                 <select id="work-episode-count" className={styles.titleInput} value={episodeCount} disabled={creating}

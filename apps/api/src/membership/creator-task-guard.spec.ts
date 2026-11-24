@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openCreatorHold } from "./creator-task-guard";
 import { MemoryMembershipStore } from "./membership-store";
 
@@ -21,6 +21,21 @@ async function writingMembership() {
 }
 
 describe("creator task quota identity", () => {
+  it.each([undefined, "", " "])("rejects creator requests missing an idempotency key before the store is called (%s)", async key => {
+    const store = await writingMembership();
+    const reserve = vi.spyOn(store, "reserve");
+    await expect(openCreatorHold(store, workspace, { actorId: context.actorId, idempotencyKey: key }, "writing", projectId, "title-writing"))
+      .rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REQUIRED" });
+    expect(reserve).not.toHaveBeenCalled();
+    expect(await store.balances(workspace, accountId)).toMatchObject({ writing: 1 });
+  });
+
+  it("retains the quota-free operator/system path without an idempotency key", async () => {
+    const store = await writingMembership();
+    const hold = await openCreatorHold(store, workspace, { actorId: "server-owner" }, "writing", projectId, "title-writing");
+    expect(hold).toMatchObject({ denied: null, holdId: null });
+  });
+
   it("replays one writing operation but reserves separately for another operation with the same key", async () => {
     const store = await writingMembership();
     const title = await openCreatorHold(store, workspace, context, "writing", projectId, "title-writing");

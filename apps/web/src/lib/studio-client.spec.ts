@@ -78,6 +78,7 @@ describe("StudioClient.get optional signal (Issue #54 C)", () => {
     await client.get("/a");
     const controller = new AbortController();
     await client.get("/b", { signal: controller.signal });
+    expect(seen.map(request => request?.cache)).toEqual(["no-store", "no-store"]);
     expect(seen[0] && "signal" in seen[0]).toBe(false);
     expect(seen[1]?.signal).toBe(controller.signal);
   });

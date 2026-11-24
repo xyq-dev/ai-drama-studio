@@ -66,11 +66,11 @@ describe("mock subtitle and music routes", () => {
   });
 
   it("queues both routes and changes the idempotency hash when the body changes", async () => {
-    const calls: Array<{ routeKey: string; key: string; requestHash: string; kind: string; capability: string }> = [];
+    const calls: Array<{ routeKey: string; key: string; requestHash: string; kind: string; capability: string; subtitleFormat?: string }> = [];
     const jobs = {
-      createAndQueueWorkflowJob: vi.fn(async (scope: { routeKey: string; key: string; requestHash: string }, factory: (client: unknown) => Promise<{ kind: string; inputSnapshot: { capability: string } }>) => {
+      createAndQueueWorkflowJob: vi.fn(async (scope: { routeKey: string; key: string; requestHash: string }, factory: (client: unknown) => Promise<{ kind: string; inputSnapshot: { capability: string; subtitleFormat?: string } }>) => {
         const built = await factory({});
-        calls.push({ ...scope, kind: built.kind, capability: built.inputSnapshot.capability });
+        calls.push({ ...scope, kind: built.kind, ...built.inputSnapshot });
         return { status: 202, replayed: false, body: { jobId: built.kind, workflowRunId: "run", dispatchSeq: 1 } };
       }),
     };
@@ -82,6 +82,8 @@ describe("mock subtitle and music routes", () => {
     expect(music.status).toBe(202);
     expect(calls.map((call) => call.kind)).toEqual(["MEDIA_SUBTITLE", "MEDIA_MUSIC", "MEDIA_SUBTITLE"]);
     expect(calls[0]?.capability).toBe("subtitle.generate");
+    expect(calls[0]?.subtitleFormat).toBe("saved-dialogue-v1");
+    expect(calls[1]?.subtitleFormat).toBeUndefined();
     expect(calls[1]?.capability).toBe("audio.music");
     expect(calls[0]?.routeKey).toBe(`/shot-revisions/${revisionId}/generate-subtitle`);
     expect(calls[1]?.routeKey).toBe(`/shot-revisions/${revisionId}/generate-music`);

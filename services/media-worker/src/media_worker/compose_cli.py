@@ -231,21 +231,29 @@ def _probe(path: Path) -> dict[str, object]:
 
 
 def _safe_cues(path: Path) -> list[tuple[str, str, str]]:
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
     cues: list[tuple[str, str, str]] = []
     for block in re.split(r"\n\s*\n", text.strip()):
-        lines = [line.strip() for line in block.splitlines() if line.strip() and not line.startswith("WEBVTT") and not line.startswith("NOTE")]
-        timing = next((line for line in lines if "-->" in line), None)
-        if not timing:
+        lines = block.splitlines()
+        if not lines or re.match(r"^(?:WEBVTT|NOTE)(?:[ \t]|$)|^(?:STYLE|REGION)$", lines[0]):
             continue
-        start, end = [part.strip() for part in timing.split("-->", 1)]
-        body = " ".join(line for line in lines if "-->" not in line and not line.isdigit())
-        plain = re.sub(r"\{[^}]*\}", "", body)
-        plain = re.sub(r"<[^>]*>", "", plain)
+        # VTT identifiers and SRT sequence numbers may occupy the line before the timing.
+        index = 0 if "-->" in lines[0] else 1
+        if index >= len(lines) or "-->" not in lines[index]:
+            continue
+        start, end = lines[index].split("-->", 1)
+        # VTT cue settings follow the end time and never form part of the rendered text.
+        end_time = re.split(r"[ \t]", end.strip(), maxsplit=1)[0]
+        payload = []
+        for line in lines[index + 1:]:
+            if "-->" in line:
+                break
+            payload.append(line)
+        plain = re.sub(r"\{[^}]*\}|<[^>]*>", "", "\n".join(payload))
         plain = plain.replace("{", "").replace("}", "").replace("\\", "")
-        plain = " ".join(plain.split())
-        if plain:
-            cues.append((_timestamp(start), _timestamp(end), plain))
+        rows = [" ".join(line.split()) for line in plain.splitlines() if line.strip()]
+        if rows:
+            cues.append((_timestamp(start), _timestamp(end_time), "\n".join(rows)))
     return cues
 
 
@@ -257,7 +265,7 @@ def _srt(cues: list[tuple[str, str, str]]) -> str:
 
 
 def _timestamp(value: str) -> str:
-    match = re.match(r"(?:(\d+):)?(\d{2}):(\d{2})[.](\d{3})", value.strip())
+    match = re.fullmatch(r"(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{3})", value.strip())
     if not match:
         raise ComposeFailure("COMPOSE_MEDIA_INVALID", False)
     hours = int(match.group(1) or "0")

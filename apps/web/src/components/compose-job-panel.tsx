@@ -25,6 +25,11 @@ interface JobView {
   errorMessage: string | null;
 }
 
+const COMPOSE_STATE: Record<string, string> = {
+  PENDING: "待处理", QUEUED: "已排队", RUNNING: "进行中", WAITING_EXTERNAL: "等待结果",
+  SUCCEEDED: "已完成", FAILED: "失败", CANCELED: "已取消",
+};
+
 interface PendingSubmit {
   revisionId: string;
   bodyKey: string;
@@ -40,6 +45,8 @@ export function ComposeJobPanel(props: {
   eligible: boolean;
   body: { videoAssetId: string; audioAssetId: string | null; musicAssetId: string | null; subtitleAssetId: string | null; expectedInputHash: string } | null;
   client: StudioClient;
+  /** Jobs for this shot revision, newest first, from the project's workflow list. */
+  history?: readonly JobView[];
   /** Called when a compose is accepted, reaches a terminal state, or its result is reviewed. */
   onChanged?: () => void;
 }) {
@@ -207,6 +214,11 @@ export function ComposeJobPanel(props: {
     }
   }
 
+  const latest = props.history?.[0];
+  // Keep a just-submitted job while the project's list catches up. Once listed, a newer run wins.
+  const localPendingHistory = job && !props.history?.some(item => item.id === job.id);
+  const pollingLatest = latest && job?.id === latest.id && !terminalJob(latest.state);
+  const shown = localPendingHistory || pollingLatest ? job : latest ?? job;
   return (
     <div className="creator-compose-results mt-3 min-w-0">
       <button className="rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!props.eligible || busy} onClick={() => void start()}>
@@ -214,11 +226,11 @@ export function ComposeJobPanel(props: {
       </button>
       {notice ? <p className="mt-2 text-sm">{notice}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
-      {job ? (
-        <div className="mt-2 text-sm" data-compose-job={job.id}>
-          <p>合成任务 {job.state}</p>
-          {job.errorMessage ? <p>{job.errorMessage}</p> : null}
-          {job.state === "QUEUED" || job.state === "RUNNING" ? <button className="mt-1 rounded border px-2 py-1" type="button" onClick={() => void cancel()}>取消合成</button> : null}
+      {shown ? (
+        <div className="mt-2 text-sm" data-compose-job={shown.id}>
+          <p>最近一次合成：{COMPOSE_STATE[shown.state] ?? "状态待确认"}</p>
+          {shown.errorMessage ? <p>{shown.errorMessage}</p> : null}
+          {job?.id === shown.id && (shown.state === "QUEUED" || shown.state === "RUNNING") ? <button className="mt-1 rounded border px-2 py-1" type="button" onClick={() => void cancel()}>取消合成</button> : null}
         </div>
       ) : null}
       <ul className="mt-3 space-y-2">

@@ -16,6 +16,7 @@ import {
   stepStateText,
   targetText,
   tokenRequired,
+  writingSessionNotice,
   uncertainCallIds,
   type TitleWritingRunView,
 } from "../lib/title-writing-client";
@@ -129,14 +130,15 @@ function OutlineView({ outline, episodeCount, guided }: { outline: EpisodeOutlin
  * Progress and results of the latest title-driven run of one work. Everything shown comes from the server: the page
  * polls while the run is running, survives a reload, and never claims a step finished before the server says so.
  */
-export function TitleWritingRun({ projectId, client = defaultClient }: { projectId: string; client?: TitleWritingClient }) {
+export function TitleWritingRun({ projectId, selectedRunId, client = defaultClient }: { projectId: string; selectedRunId?: string; client?: TitleWritingClient }) {
   const [run, setRun] = useState<TitleWritingRunView | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<ActionMessage | null>(null);
   const [token, setToken] = useState("");
   // Until the server says otherwise a token is asked for; with the site login on the administrator's session suffices.
-  const [needsToken, setNeedsToken] = useState(true);
+  const [accessOptions, setAccessOptions] = useState<{ viewerIsCreator?: boolean; operatorTokenRequired?: boolean } | null>(null);
+  const needsToken = tokenRequired(accessOptions);
   // The uncertain calls the person confirmed, as a sorted id list. It only counts while it equals what is shown now.
   const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
   const resumeAction = useRef<ResumeAction | null>(null);
@@ -188,7 +190,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
           let latest: TitleWritingRunView | null = null;
           let failure: unknown = null;
           try {
-            latest = await client.latest(projectId);
+            latest = selectedRunId ? await client.get(projectId, selectedRunId) : await client.latest(projectId);
           } catch (caught) {
             failure = caught ?? new Error("read failed");
           }
@@ -211,7 +213,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
         scope.inFlight = false;
       }
     })();
-  }, [client, projectId, show, schedule]);
+  }, [client, projectId, selectedRunId, show, schedule]);
 
   useEffect(() => {
     // A new work starts clean: nothing shown, typed or confirmed for the previous one carries over.
@@ -291,7 +293,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
     if (!resumable) return;
     let alive = true;
     const reading = typeof client.options === "function" ? client.options() : null;
-    void reading?.then((value) => { if (alive) setNeedsToken(tokenRequired(value)); }).catch(() => undefined);
+    void reading?.then((value) => { if (alive) setAccessOptions(value); }).catch(() => undefined);
     return () => { alive = false; };
   }, [client, resumable]);
 
@@ -389,7 +391,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                       <input id="resume-token" className={styles.input} type="password" autoComplete="off" value={token}
                         onChange={(event) => setToken(event.target.value)} />
                     </>
-                  ) : <p className={styles.helper}>调用权限由当前管理员登录确认。</p>}
+                  ) : <p className={styles.helper}>{writingSessionNotice(accessOptions?.viewerIsCreator === true)}</p>}
                   <button className={styles.primary} type="button" disabled={busy || (needsToken && token.trim().length === 0) || (uncertain && !confirmUncertain)}
                     onClick={() => resume(run)}>
                     继续创作

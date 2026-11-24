@@ -343,11 +343,11 @@ beforeAll(async () => {
   await waitFor("the web app", async () => (await fetch(`${WEB}/login`)).ok);
   // Anonymous: the API refuses both paid routes and the candidate reads; nothing is written.
   const id = randomUUID();
-  for (const [method, path] of [["GET", "/writing/candidates/options"], ["POST", `/projects/${id}/writing/candidates`], ["POST", `/projects/${id}/title-runs`]] as const) {
+  for (const [method, path] of [["GET", "/writing/candidates/options"], ["GET", `/projects/${id}/title-runs/start-receipt`], ["GET", `/projects/${id}/auto-runs/start-receipt`], ["GET", "/writing/series/start-receipt"], ["POST", `/projects/${id}/writing/candidates`], ["POST", `/projects/${id}/title-runs`]] as const) {
     const response = await fetch(`${WEB}/api/v1${path}`, { method, headers: { origin: WEB, "content-type": "application/json" }, ...(method === "POST" ? { body: "{}" } : {}) });
     expect(response.status, `${method} ${path} without a login`).toBe(401);
   }
-  (evidence.checks as Record<string, unknown>).anonymous = "401 for options, candidate start and title start";
+  (evidence.checks as Record<string, unknown>).anonymous = "401 for options, starts and receipt lookups";
 
   browser = await chromium.launch({ headless: true, channel: "chrome" });
   // No trace and no HAR are recorded: they could hold request headers. Screenshots only.
@@ -404,10 +404,13 @@ describe("online writing in a real browser with the site login, real web and API
     await page.waitForURL(`${WEB}/create`, { timeout: 30_000 });
     await page.getByText(/服务端已配置：OpenAI、Claude、DeepSeek。/).waitFor({ timeout: 30_000 });
     expect(await page.getByText(/千问/).count()).toBe(0);
-    expect(await page.locator("#ai-token").count()).toBe(0);
-    await page.getByText("调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。").waitFor();
-    await page.locator("#ai-title").fill(TITLE);
-    await viewports("01-title-start", page.getByText("调用权限由当前管理员登录确认", { exact: false }), page.getByRole("button", { name: "AI 一键创作" }));
+    const titleCard = page.getByRole("region", { name: "AI 一键创作", exact: true });
+    const sessionNotice = titleCard.getByText("调用权限由你的登录账号确认，模型密钥只在服务端。", { exact: true });
+    await sessionNotice.waitFor();
+    expect(await titleCard.getByLabel("操作者令牌").count()).toBe(0);
+    expect(await titleCard.getByText(/按你的会员写作额度计次/).count()).toBe(0);
+    await titleCard.getByLabel("剧名", { exact: true }).fill(TITLE);
+    await viewports("01-title-start", sessionNotice, titleCard.getByRole("button", { name: "AI 一键创作" }));
     const navigated = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/writing$/, { timeout: 30_000 });
     await page.getByRole("button", { name: "AI 一键创作" }).click();
     await navigated;
@@ -425,6 +428,19 @@ describe("online writing in a real browser with the site login, real web and API
     expect(calls.every((call) => call.provider_key === "deepseek" && call.model === "deepseek-flash" && call.state === "completed"
       && call.billing_status === "unknown" && call.usage.includes("\"totalTokens\": 300"))).toBe(true);
     expect(pageWrites.filter((write) => write.token)).toEqual([]);
+
+    // A read can confirm exactly the keyed start, without sending a second POST or another provider call.
+    const submitted = pageWrites.filter(write => write.path.endsWith("/title-runs"));
+    expect(submitted).toHaveLength(1);
+    const receiptUrl = `${WEB}/api/v1/projects/${projectId}/title-runs/start-receipt`;
+    const expectedRun = (await q<{ id: string }>("SELECT id FROM title_writing_run WHERE project_id=$1", [projectId]))[0]!.id;
+    const receipt = await page.request.get(receiptUrl, { headers: { "Idempotency-Key": submitted[0]!.key! } });
+    expect(receipt.status()).toBe(200);
+    expect(receipt.headers()["cache-control"]).toContain("no-store");
+    expect(await receipt.json()).toEqual({ receipt: { projectId, runId: expectedRun } });
+    const notSent = await page.request.get(receiptUrl, { headers: { "Idempotency-Key": randomUUID() } });
+    expect(await notSent.json()).toEqual({ receipt: null });
+    expect(sends("title:")).toBe(5);
 
     // The person reviews the story, then places the scripts (the existing human gates are unchanged).
     await page.getByRole("link", { name: "查看和修改故事草稿" }).click();
@@ -593,7 +609,7 @@ describe("online writing in a real browser with the site login, real web and API
     expect((JSON.parse(options) as { providers: Array<{ providerKey: string; ready: boolean }> }).providers.map((item) => [item.providerKey, item.ready]))
       .toEqual([["openai", true], ["anthropic", true], ["deepseek", true]]);
     const titleOptions = await page.evaluate(async () => await (await fetch("/api/v1/writing/title-runs/options")).text());
-    expect(JSON.parse(titleOptions)).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: "deepseek" });
+    expect(JSON.parse(titleOptions)).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: "deepseek", viewerIsCreator: false, operatorTokenRequired: false });
     expect(pageWrites.filter((write) => write.token)).toEqual([]);
     expect(pageErrors).toEqual([]);
     expect(sent.every((item) => item.keyMatches)).toBe(true);

@@ -84,6 +84,18 @@ async function poll() {
 const headline = () => screen.getByRole("status").textContent;
 const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
 
+it("reads the exact recovered run when another run of the work is newer", async () => {
+  const gets: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (url.endsWith("/options")) return json({ operatorTokenRequired: false });
+    gets.push(url);
+    return json({ run: view({ runId: url.endsWith(RUN_A) ? RUN_A : RUN_B, state: "completed" }) });
+  }));
+  render(<TitleWritingRun projectId={PA} selectedRunId={RUN_A} />);
+  await settle();
+  expect(gets).toEqual([`/api/v1/projects/${PA}/title-runs/${RUN_A}`]);
+});
+
 describe("P2-A: a late cancel failure", () => {
   it("after a newer snapshot already showed the run CANCELED, the late failure shows no contradicting message", async () => {
     const latest: Record<string, TitleWritingRunView | null> = { [PA]: view() };

@@ -265,7 +265,7 @@ describe("Q. the whole research stage (validateAutoStageOutput, and the series' 
     it("the run records the checks it executed", () => {
       const result = check(answer(mode, { howToVerify: CORE[0] }));
       expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: path.promptVersion === AUTO_CREATION_PROMPT_VERSION ? AUTO_CREATION_CHECKS_VERSION : SERIES_RESEARCH_CONTRACT.checksVersion, promptVersion: path.promptVersion });
-      expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v18");
+      expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v19");
     });
 
     it.each(RANKED)("%s in howToVerify is refused whole: %s", (_label, text) => {

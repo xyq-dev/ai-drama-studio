@@ -64,6 +64,10 @@ function summarize(read: ReadState, items: ReadonlyArray<{ status: string; revie
   };
 }
 
+function distinctShots(items: ReadonlyArray<{ shotId: string }>) {
+  return new Set(items.map(item => item.shotId)).size;
+}
+
 /**
  * Candidates (what can be composed now) are read only for an approved, current script. Composites (what was
  * composed, including STALE history) are read for every episode: a script change does not erase history.
@@ -77,12 +81,12 @@ export async function loadEpisodeMedia(
   for (const episode of episodes) {
     const base = `/projects/${projectId}/episodes/${episode.id}`;
     const candidates = scriptState(episode) === "done"
-      ? await readPages<unknown>(client, `${base}/compose-candidates`, (items) => items.length >= 2)
+      ? await readPages<{ shotId: string }>(client, `${base}/compose-candidates`, items => distinctShots(items) >= 2)
       : { items: [], read: "ok" as ReadState };
     const composites = await readPages<{ status: string; reviewStatus: string }>(client, `${base}/composites`,
       (items) => items.some((item) => item.status === "ACTIVE" && item.reviewStatus === "APPROVED"));
     result[episode.episodeNo] = {
-      candidates: { read: candidates.read, count: candidates.items.length },
+      candidates: { read: candidates.read, count: distinctShots(candidates.items) },
       composites: summarize(composites.read, composites.items),
     };
   }

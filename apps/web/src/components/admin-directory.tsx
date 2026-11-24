@@ -156,7 +156,11 @@ const COPY: Record<Kind, {
 };
 
 const ASSET_TYPES = [["all", "全部类型"], ["image", "分镜图"], ["voice", "角色配音"], ["video", "成片视频"]];
-const JOB_TYPES = [["all", "全部类型"], ["writing", "剧本编写"], ["image", "分镜生图"], ["voice", "角色配音"], ["video", "视频生成"]];
+const JOB_TYPES = [
+  ["all", "全部类型"], ["writing", "剧本编写"], ["scene", "场景生成"], ["shot", "镜头生成"],
+  ["image", "分镜生图"], ["video", "视频生成"], ["voice", "角色配音"], ["subtitle", "字幕生成"],
+  ["music", "音乐生成"], ["shot_compose", "单镜合成"], ["episode_compose", "集级合成"],
+];
 const JOB_STATUS = [["all", "全部状态"], ["succeeded", "成功"], ["running", "进行中"], ["failed", "失败"], ["unknown", "结果未知"], ["canceled", "已取消"], ["queued", "排队中"]];
 
 export function AdminDirectory({ kind, fetchImpl }: { kind: Kind; fetchImpl?: FetchLike }) {

@@ -12,5 +12,7 @@ export default defineConfig({
     testTimeout: 240_000,
     hookTimeout: 180_000,
     fileParallelism: false,
+    // The later browser steps read the project and revisions saved by the earlier steps.
+    bail: 1,
   },
 });

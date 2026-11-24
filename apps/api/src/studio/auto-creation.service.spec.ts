@@ -116,6 +116,31 @@ function asStoredBy(store: InMemoryAutoCreationStore, runId: string, version: "v
 const errorCode = (body: unknown) => (body as { error?: { code?: string } }).error?.code;
 
 describe("automatic creation API", () => {
+  it("recovers only this account's exact start receipt with zero quota and no new writes or dispatch", async () => {
+    const member = await oneWritingUnit(WS);
+    const key = "lost-receipt";
+    const { actorId } = member.actor(key);
+    const { service, store, seen } = setup({ creatorMembership: member.membership });
+    const start = await service.start(P1, { idea: "末班车" }, TOKEN, member.actor(key));
+    expect(start.status).toBe(201);
+    expect((await member.membership.balances(WS, member.accountId)).writing).toBe(0);
+    const ledger = await member.membership.ledger(WS, member.accountId);
+    const create = vi.spyOn(store, "createRun");
+    const reserve = vi.spyOn(member.membership, "reserve");
+    const receipt = { projectId: P1, runId: store.runs[0]!.id };
+    expect((await service.startReceipt(P1, actorId, key)).body).toEqual({ receipt });
+    expect((await service.startReceipt(P1, actorId, key)).body).toEqual({ receipt });
+    expect((await service.startReceipt(P1, actorId, "not-sent")).body).toEqual({ receipt: null });
+    expect((await service.startReceipt(P1, "another-account", key)).body).toEqual({ receipt: null });
+    expect((await service.startReceipt(P1, actorId)).status).toBe(400);
+    await expect(service.startReceipt("no-access", actorId, key)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await member.membership.ledger(WS, member.accountId)).toEqual(ledger);
+    expect(create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(store.runs).toHaveLength(1);
+    expect(seen).toHaveLength(0);
+  });
+
   it.each(["duplicate", "different input"])("keeps only the winning task's writing unit after a racing %s", async (kind) => {
     const member = await oneWritingUnit(WS);
     const context = member.actor("same-submission");

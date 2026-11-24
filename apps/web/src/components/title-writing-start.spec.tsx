@@ -99,6 +99,48 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
+describe("creator preflight", () => {
+  it.each(["found", "missing", "other-project"])("recovers a legacy lost receipt after the last unit is spent: %s", async result => {
+    const runId = "66666666-6666-4666-8666-666666666666";
+    const runKey = "22222222-bbbb-4bbb-8bbb-222222222222";
+    window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 2, request: { title: "旧剧名", settings: { episodeSeconds: 180, style: "" } },
+      projectKey: "11111111-aaaa-4aaa-8aaa-111111111111", projectId: P1, runKey }));
+    const { calls } = server(call => call.url.includes("preflight=writing") ? json({ denial: "QUOTA_EXHAUSTED" })
+      : json({ receipt: result === "missing" ? null : { projectId: result === "found" ? P1 : runId, runId } }),
+    { options: options({ viewerIsCreator: true }) });
+    render(<TitleWritingStart />);
+    const lookup = await screen.findByRole("button", { name: "查询上次请求" });
+    expect((screen.getByRole("button", { name: "AI 一键创作" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(lookup);
+    if (result === "found") {
+      await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing?run=${runId}`));
+      expect(window.sessionStorage.getItem(DRAFT_KEY)).toBeNull();
+    } else {
+      await screen.findByText(result === "missing" ? "暂未查到上次请求的回执。" : "暂时无法读取回执，请稍后再查。");
+      expect(assign).not.toHaveBeenCalled();
+      expect(window.sessionStorage.getItem(DRAFT_KEY)).toContain(runKey);
+    }
+    const reads = calls.filter(call => call.url.endsWith("/start-receipt"));
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatchObject({ method: "GET", url: `/api/v1/projects/${P1}/title-runs/start-receipt` });
+    expect(new Headers(reads[0]!.headers).get("Idempotency-Key")).toBe(runKey);
+    expect(calls.filter(call => call.method === "POST")).toHaveLength(0);
+  });
+
+  it("checks a nonmember before creating a title-writing project", async () => {
+    const { calls } = server(() => json({ denial: "MEMBERSHIP_REQUIRED" }), { options: options({ viewerIsCreator: true }) });
+    render(<TitleWritingStart />);
+    await screen.findByText("还没有开通会员，请联系管理员开通。");
+    expect(screen.getByText("调用权限由你的登录账号确认，会按你的会员写作额度计次，模型密钥只在服务端。")).toBeTruthy();
+    expect(screen.queryByLabelText("操作者令牌")).toBeNull();
+    const button = screen.getByRole("button", { name: "AI 一键创作" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(projectPosts(calls)).toEqual([]);
+    expect(runPosts(calls)).toEqual([]);
+  });
+});
+
 describe("an unconfirmed start", () => {
   it("non-default settings, a lost run receipt and a reload: the form shows the frozen request and the retry replays it", async () => {
     let lose = true;
@@ -377,7 +419,7 @@ describe("the site login authorizes the call", () => {
     const button = await screen.findByRole("button", { name: "AI 一键创作" });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     expect(screen.queryByLabelText("操作者令牌")).toBeNull();
-    expect(screen.getByText("调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。")).toBeTruthy();
+    expect(screen.getByText("调用权限由你的登录账号确认，模型密钥只在服务端。")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
     fireEvent.click(button);
     await waitFor(() => expect(runPosts(calls)).toHaveLength(1));

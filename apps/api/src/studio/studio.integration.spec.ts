@@ -2,7 +2,7 @@ import "reflect-metadata";
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { closePostgresPool, createPostgresPool, runMigrations, type PostgresPool } from "@ai-drama/database";
+import { closePostgresPool, createPostgresPool, runMigrations, runWithStoreCreatorAccess, RuntimeStore, type PostgresPool } from "@ai-drama/database";
 import { AppModule } from "../app.module";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
@@ -132,6 +132,46 @@ afterAll(async () => {
 });
 
 describe("M1-C API and SSE integration", () => {
+  it("renames only the project title, enforces version conflicts and accepts a lost reply replay", async () => {
+    const created = (await sql<{ id: string }>(
+      "INSERT INTO project (workspace_id, title, premise) VALUES ($1, '旧名字', '保留的梗概') RETURNING id", [APP_WORKSPACE_ID],
+    )).rows[0]!;
+    const url = `${base}/api/v1/projects/${created.id}`;
+    const patch = (body: unknown, version?: string) => fetch(url, {
+      method: "PATCH", headers: { "content-type": "application/json", ...(version ? { "if-match": version } : {}) },
+      body: JSON.stringify(body),
+    });
+    const original = await (await fetch(url)).json();
+    const readOnly = await fetch(url + "?view=ops", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "越权改名" }),
+    });
+    expect(readOnly.status).toBe(400);
+    for (const invalid of [{ title: " " }, { title: "雨".repeat(201) }, { title: "改名", ownerAccountId: created.id }, { title: "改名", premise: "不要覆盖" }]) {
+      expect((await patch(invalid)).status).toBe(400);
+    }
+    const saved = await patch({ title: "  最后一班车  " }, String(original.version));
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({ title: "最后一班车", version: original.version + 1, premise: "保留的梗概" });
+    expect(await (await patch({ title: "最后一班车" }, String(original.version))).json()).toMatchObject({ version: original.version + 1 });
+    expect((await patch({ title: "过期的名字" }, String(original.version))).status).toBe(409);
+    expect(await (await fetch(url)).json()).toMatchObject({ title: "最后一班车", premise: "保留的梗概", version: original.version + 1 });
+  });
+
+  it("keeps foreign and archived projects opaque to creator renames", async () => {
+    const owner = (await sql<{ id: string }>(`INSERT INTO creator_account(id,workspace_id,username,password_hash,status)
+      VALUES(gen_random_uuid(),$1,'rename-owner','fixture','ACTIVE') RETURNING id`, [APP_WORKSPACE_ID])).rows[0]!.id;
+    const project = (await sql<{ id: string }>(
+      "INSERT INTO project(workspace_id,title,owner_account_id) VALUES ($1,'原名',$2) RETURNING id", [APP_WORKSPACE_ID, owner],
+    )).rows[0]!;
+    const store = new RuntimeStore(pool);
+    const rename = (accountId: string) => runWithStoreCreatorAccess({ kind: "scoped", ownerAccountId: accountId, actorId: `creator:${accountId}` },
+      () => store.renameProject(APP_WORKSPACE_ID, project.id, "仅本人能改", null));
+    await expect(rename("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(rename(owner)).resolves.toMatchObject({ title: "仅本人能改" });
+    await sql("UPDATE project SET archived_at=now(), status='ARCHIVED' WHERE id=$1", [project.id]);
+    await expect(rename(owner)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("refuses character reference images while the reference draft is not applied", async () => {
     const before = await sql<{ count: number }>("SELECT count(*)::int AS count FROM generation_job");
     const list = await fetch(`${base}/api/v1/characters/55555555-5555-4555-8555-555555555555/reference-images`);

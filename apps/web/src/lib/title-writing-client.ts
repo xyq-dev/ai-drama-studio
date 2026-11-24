@@ -101,6 +101,11 @@ export class TitleWritingClient {
       { method: "GET", headers: { Accept: "application/json" }, ...(signal ? { signal } : {}) })).body.run;
   }
 
+  async get(projectId: string, runId: string): Promise<TitleWritingRunView> {
+    return (await this.call<{ run: TitleWritingRunView }>(`/projects/${projectId}/title-runs/${runId}`,
+      { method: "GET", headers: { Accept: "application/json" } })).body.run;
+  }
+
   async cancel(projectId: string, runId: string): Promise<TitleWritingRunView> {
     return (await this.call<{ run: TitleWritingRunView }>(`/projects/${projectId}/title-runs/${runId}/cancel`,
       { method: "POST", headers: { Accept: "application/json" } })).body.run;
@@ -137,8 +142,12 @@ export function operatorHeader(token: string): Record<string, string> {
 }
 
 /** Whether this server wants a token typed into the page (false when the site login authorizes the operator). */
-export function tokenRequired(options: { operatorTokenRequired?: unknown } | null): boolean {
-  return options?.operatorTokenRequired !== false;
+export function tokenRequired(options: { operatorTokenRequired?: unknown; viewerIsCreator?: boolean } | null): boolean {
+  return options?.viewerIsCreator !== true && options?.operatorTokenRequired !== false;
+}
+
+export function writingSessionNotice(creator: boolean): string {
+  return creator ? "调用权限由你的登录账号确认，会按你的会员写作额度计次，模型密钥只在服务端。" : "调用权限由你的登录账号确认，模型密钥只在服务端。";
 }
 
 /** Reads a possibly malformed options body: anything unexpected counts as "not ready". */

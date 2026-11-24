@@ -73,6 +73,111 @@ afterEach(() => {
 });
 
 describe("AI 自动创作 start card", () => {
+  it("recovers an accepted run after the lost response and last quota without submitting again", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    let sentKey: string | null = null;
+    const writes: string[] = [];
+    const reads: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/options")) return json(options({ viewerIsCreator: true }));
+      if (url.includes("preflight=writing")) return json({ denial: sentKey ? "QUOTA_EXHAUSTED" : null });
+      const key = new Headers(init?.headers).get("Idempotency-Key");
+      if (init?.method === "POST") {
+        writes.push(url);
+        if (url.endsWith("/projects")) return json({ id: P1 }, 201);
+        sentKey = key;
+        throw new TypeError("lost response");
+      }
+      reads.push(url);
+      expect(key).toBe(sentKey);
+      return json({ receipt: { projectId: P1, runId: RUN } });
+    }));
+    const first = render(<AutoCreationStart />);
+    const start = screen.getByRole("button", { name: "AI 自动创作" }) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+    await screen.findByRole("alert");
+    first.unmount();
+    render(<AutoCreationStart />);
+    const lookup = await screen.findByRole("button", { name: "查询上次请求" });
+    expect((screen.getByRole("button", { name: "AI 自动创作" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(lookup);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto?run=${RUN}`));
+    expect(reads).toEqual([`/api/v1/projects/${P1}/auto-runs/start-receipt`]);
+    expect(writes).toEqual(["/api/v1/projects", `/api/v1/projects/${P1}/auto-runs`]);
+  });
+
+  it("does not create a project for a nonmember or ask a signed-in creator for an operator token", async () => {
+    const calls = server(options({ viewerIsCreator: true, operatorTokenRequired: true }), () => json({ denial: "MEMBERSHIP_REQUIRED" }));
+    render(<AutoCreationStart />);
+    await screen.findByText("还没有开通会员，请联系管理员开通。");
+    expect(screen.queryByLabelText(/操作者令牌/)).toBeNull();
+    const start = screen.getByRole("button", { name: "AI 自动创作" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    fireEvent.click(start);
+    expect(screen.queryByRole("button", { name: "重试上次请求" })).toBeNull();
+    expect(calls.filter(call => call.method === "POST")).toEqual([]);
+  });
+
+  it("rechecks before creating, preserving inputs when the last unit has since been used", async () => {
+    let reads = 0;
+    const calls = server(options({ viewerIsCreator: true }), () => json({ denial: ++reads === 1 ? null : "QUOTA_EXHAUSTED" }));
+    render(<AutoCreationStart />);
+    const start = screen.getByRole("button", { name: "AI 自动创作" }) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    const idea = screen.getByLabelText(/一句话想法/) as HTMLInputElement;
+    fireEvent.change(idea, { target: { value: "末班车上的合影" } });
+    fireEvent.click(start);
+    await screen.findByText("编剧额度已用完，请联系管理员增加额度。");
+    expect(idea.value).toBe("末班车上的合影");
+    expect(idea.disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "重试上次请求" })).toBeNull();
+    expect(calls.filter(call => call.method === "POST")).toEqual([]);
+  });
+
+  it("clears only the unsent draft when the create transaction detects a competing debit", async () => {
+    const calls = server(options({ viewerIsCreator: true }), call => call.method === "GET" ? json({ denial: null })
+      : json({ error: { code: "QUOTA_EXHAUSTED", message: "编剧额度已用完" } }, 402));
+    render(<AutoCreationStart />);
+    const start = screen.getByRole("button", { name: "AI 自动创作" }) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+    await screen.findByText("编剧额度已用完，请联系管理员增加额度。");
+    const writes = calls.filter(call => call.method === "POST");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ url: "/api/v1/projects", body: { writingStart: true } });
+    expect(screen.queryByRole("button", { name: "重试上次请求" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "查看进度" })).toBeNull();
+    expect((screen.getByLabelText(/一句话想法/) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("keeps the existing project link, without a retry action, after a definite quota refusal", async () => {
+    const calls = server(options({ viewerIsCreator: true }), call => call.method === "GET" ? json({ denial: null })
+      : call.url.endsWith("/projects") ? json({ id: P1 }, 201)
+      : json({ error: { code: "QUOTA_EXHAUSTED", message: "编剧额度已用完" } }, 402));
+    render(<AutoCreationStart />);
+    const start = screen.getByRole("button", { name: "AI 自动创作" }) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+    await screen.findByText("编剧额度已用完，请联系管理员增加额度。");
+    expect(screen.queryByRole("button", { name: "重试上次请求" })).toBeNull();
+    expect(screen.getByRole("link", { name: "查看进度" }).getAttribute("href")).toBe(`/projects/${P1}/auto`);
+    expect(calls.filter(call => call.method === "POST")).toHaveLength(2);
+  });
+
+  it.each([["创作者指定的名字", "创作者指定的名字"], ["", "最后一班车"]])("uses the optional project title before the idea suggestion: %s", async (input, expected) => {
+    const calls = server(options(), ({ url }) => url === "/api/v1/projects" ? json({ id: P1 }, 201)
+      : json({ run: { runId: RUN, projectId: P1, state: "running" } }, 201));
+    vi.stubGlobal("location", { ...window.location, assign: vi.fn() });
+    render(<AutoCreationStart />);
+    await screen.findByTestId("auto-provider-target");
+    fireEvent.change(screen.getByLabelText("一句话想法（可不填）"), { target: { value: "作品标题必须是《最后一班车》。" } });
+    fireEvent.change(screen.getByLabelText("作品名（可选）"), { target: { value: input } });
+    fireEvent.click(screen.getByRole("button", { name: "AI 自动创作" }));
+    await waitFor(() => expect(calls.find(c => c.method === "POST" && c.url === "/api/v1/projects")?.body).toMatchObject({ title: expected }));
+  });
+
   it.each([false, true])("freezes the optional storyboard preference without starting media (%s)", async (checked) => {
     const calls = server(options(), ({ url }) => url === "/api/v1/projects" ? json({ id: P1 }, 201)
       : json({ run: { runId: RUN, projectId: P1, state: "running" } }, 201));
@@ -697,7 +802,7 @@ describe("AI 自动创作 run page", () => {
     await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
     const stop = screen.getByText(/^停在「/u).textContent!;
     expect(stop).toContain("研究");
-    expect(stop).toContain("没有通过真实性检查");
+    expect(stop).toContain("缺少可核实的依据");
     expect(stop).toContain("limitations[0]");
     expect(stop).toContain("阿拉伯数字");
     const note = screen.getByTestId("auto-output-refused").textContent!;
@@ -711,7 +816,7 @@ describe("AI 自动创作 run page", () => {
     const stage = (errorCode: string) => ({ stageKey: "research", kind: "research" as const, state: "rejected" as const, attemptNo: 1, errorCode, output: null,
       upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null });
     for (const [code, expected] of [
-      ["unsourced_number@hypotheses[0].statement:chinese_numeral+market_statistic+audience_count", ["hypotheses[0].statement", "中文数字", "市场或受众统计", "观众或用户人数", "不说明模型一定编造"]],
+      ["unsourced_number@hypotheses[0].statement:chinese_numeral+market_statistic+audience_count", ["hypotheses[0].statement", "中文数字", "市场或受众统计", "观众或用户人数", "缺少可核实的依据"]],
       ["unsourced_number@hypotheses[0].howToVerify:digits+result_claim+unmarked_audience_judgement", ["hypotheses[0].howToVerify", "已经得到的调查或观众结论", "没有写明待验证或计划"]],
       ["constraint_violation@appliedConstraints[0]:digits+frozen_conflict+cast_over_limit", ["appliedConstraints[0]", "冻结的硬约束", "人物数超过上限"]],
       ["unsourced_number@limitations[0]:digits+unclassified+date_or_range", ["limitations[0]", "无法确认是创作设定还是统计", "日期或数值范围"]],
@@ -1162,6 +1267,22 @@ describe("AI 自动创作 run page", () => {
       calls: callIds.map((callId, index) => call(callId, index + 1, index + 1 === callIds.length ? "unknown" : "completed")) } as Partial<AutoCreationRunView>);
   }
 
+  it("resumes with the creator session without asking for an operator token", async () => {
+    const current = uncertainRun(["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]);
+    const headers: Headers[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/auto-runs/options")) return json(options({ viewerIsCreator: true, operatorTokenRequired: true }));
+      if (input.endsWith("/resume")) headers.push(new Headers(init?.headers));
+      return json({ run: current });
+    }));
+    render(<AutoCreationRun projectId={P1} />);
+    fireEvent.click(await screen.findByRole("checkbox"));
+    expect(screen.queryByLabelText("操作者令牌")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "从已保存的阶段继续" }));
+    await waitFor(() => expect(headers).toHaveLength(1));
+    expect(headers[0]!.has("X-Operator-Token")).toBe(false);
+  });
+
   it("a resume whose answer was lost is replayed with its own key and confirmations, even after another call became uncertain", async () => {
     const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -1370,7 +1491,7 @@ describe("AI 自动创作 run page", () => {
   });
 
   it("result page quotes user revise cost before confirm and starts only after confirm", async () => {
-    const posts: Array<{ url: string; body: unknown; key?: string | null }> = [];
+    const posts: Array<{ url: string; body: unknown; key?: string | null; operatorToken: string | null }> = [];
     const passed = run({
       state: "completed", quality: "passed", errorCode: null, revisionRoundsUsed: 0, callsUsed: 8, callCap: 12,
       selectableFindings: [
@@ -1382,7 +1503,8 @@ describe("AI 自动创作 run page", () => {
       if (input.endsWith("/auto-runs/latest") || /\/auto-runs\/[0-9a-f-]+$/i.test(input)) return json({ run: passed });
       if (input.endsWith("/user-revise")) {
         const body = JSON.parse(String(init?.body)) as { confirm: boolean; findingIds: string[]; instruction: string };
-        posts.push({ url: input, body, key: new Headers(init?.headers).get("Idempotency-Key") });
+        const headers = new Headers(init?.headers);
+        posts.push({ url: input, body, key: headers.get("Idempotency-Key"), operatorToken: headers.get("X-Operator-Token") });
         if (!body.confirm) {
           return json({
             run: passed,
@@ -1391,10 +1513,11 @@ describe("AI 自动创作 run page", () => {
         }
         return json({ run: { ...passed, state: "running", revisionRoundsUsed: 1, quality: "pending" } });
       }
-      return json(options());
+      return json(options({ viewerIsCreator: true, operatorTokenRequired: true }));
     }));
     render(<AutoCreationRun projectId={P1} />);
     const section = await screen.findByTestId("auto-user-revise");
+    expect(screen.queryByLabelText("操作者令牌")).toBeNull();
     expect(within(section).getByText(/R2/)).toBeTruthy();
     fireEvent.click(within(section).getByText(/R2/).closest("label")!.querySelector("input")!);
     fireEvent.change(screen.getByTestId("auto-user-revise-instruction"), { target: { value: "并写清可见犹豫" } });
@@ -1414,6 +1537,7 @@ describe("AI 自动创作 run page", () => {
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1]!.body).toMatchObject({ confirm: true, findingIds: ["R2"], instruction: "并写清可见犹豫" });
     expect(posts[1]!.key).toBeTruthy();
+    expect(posts.map(post => post.operatorToken)).toEqual([null, null]);
   });
 
   it("result page separates recorded usage from amount not yet priced and lists bill-check call fields", async () => {

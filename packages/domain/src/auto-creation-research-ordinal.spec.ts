@@ -39,6 +39,29 @@ const rank = { ok: false, code: "unsourced_number", category: "rank", semantic: 
 
 describe("research creative ordinals (synthetic cases on frozen 2×60)", () => {
   describe.each(["limited", "sourced"] as const)("%s", (mode) => {
+    it.each([
+      "是否比加入旁白或第三方叙述更适合竖屏短时长表达。", "采用第一手资料式的口吻。", "第三者视角揭开真相。",
+      "第一时间赶到第一线。", "第一印象用第一人称表达。", "第一眼看到的选择成了第二天性。",
+    ])("preserves lexical ordinals without a warning: %s", (text) => {
+      for (const slot of ["statement", "pattern"] as const) {
+        const result = check(slot, text, mode);
+        expect(result).toMatchObject({ ok: true, output: { unverified: [] } });
+        if (result.ok) expect(JSON.stringify(result.output)).toContain(text);
+      }
+    });
+
+    it("keeps an unclassified ordinal and continues checking adjacent claims", () => {
+      const statement = "把信封编号写作第三。";
+      expect(check("statement", statement, mode)).toMatchObject({ ok: true, output: {
+        hypotheses: [{ statement }], unverified: [{ token: "第三", semantic: "unclassified", rule: "no_role", field: fields.statement }],
+      } });
+      for (const claim of ["排名第一", "第三名", "播放量第3", "位列第3"]) {
+        expect(check("statement", `第三方报告称该剧${claim}。`, mode)).toMatchObject(rank);
+      }
+      expect(check("statement", "该剧位列第一时间很短。", mode)).toMatchObject(rank);
+      expect(check("statement", statement + "第三方称七成观众喜欢。", mode)).toMatchObject({ ok: false, rule: "proportion" });
+    });
+
     it.each(Object.keys(fields) as Slot[])("recognizes future workflow order in %s", (slot) => {
       for (const text of ["计划在第一阶段收集反馈。", "计划在第一项测试中记录反馈。", "计划在第一轮试读后比较角色人气。", "计划在第二步核对情节热度。"]) {
         const result = check(slot, text, mode);

@@ -47,6 +47,13 @@ describe("auto-creation refusal wording", () => {
     expect(autoErrorText("unknown_reference")).not.toContain("未识别的问题");
   });
 
+  it("explains why an ordinal was rejected without claiming there was a digit in the answer", () => {
+    const reason = autoErrorText("unsourced_number@hypotheses[3].statement:rank+market_statistic+ranking");
+    expect(reason).toContain("序数词（如“第三”）被判为排名");
+    expect(reason).toContain("hypotheses[3].statement");
+    expect(reason).not.toContain("回答里有一个数字");
+  });
+
   it("the earlier evidence codes and the viewing-time branch read as before", () => {
     expect(autoOutputRefused("unknown_source@facts[0].sourceId")).toBe(true);
     expect(autoErrorText("unknown_source@facts[0].sourceId")).toBe("研究结论引用了不存在的资料编号，已拒收。位置：facts[0].sourceId。");

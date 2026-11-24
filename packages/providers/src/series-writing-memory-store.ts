@@ -6,6 +6,7 @@ import {
   currentUncertainCallIds,
   seriesBatchRange,
   seriesStageEpisodeNo,
+  type WritingQuotaTransaction,
   type SeriesAdmission,
   type SeriesCallFinish,
   type SeriesCallRecord,
@@ -157,8 +158,13 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
     return this.ready;
   }
 
-  async createSeries(series: SeriesRecord, project: { title: string; premise: string }): Promise<{ kind: "created" | "existing"; series: SeriesRecord } | { kind: "conflict" } | { kind: "plan_unavailable" }> {
-    const existing = this.series.find((item) => item.workspaceId === series.workspaceId && item.actorId === series.actorId && item.idempotencyKey === series.idempotencyKey);
+  async createSeries(series: SeriesRecord, project: { title: string; premise: string }, checkNewProject?: (transaction?: WritingQuotaTransaction) => Promise<void>): Promise<{ kind: "created" | "existing"; series: SeriesRecord } | { kind: "conflict" } | { kind: "plan_unavailable" }> {
+    const lookup = () => this.series.find((item) => item.workspaceId === series.workspaceId && item.actorId === series.actorId && item.idempotencyKey === series.idempotencyKey);
+    let existing = lookup();
+    if (!existing && this.planReady && checkNewProject) {
+      await checkNewProject();
+      existing = lookup(); // Another in-process request may have completed during the preflight.
+    }
     if (existing) return existing.inputHash === series.inputHash ? { kind: "existing", series: structuredClone(existing) } : { kind: "conflict" };
     if (!this.planReady) return { kind: "plan_unavailable" };
     this.projects.set(series.projectId, { workspaceId: series.workspaceId, writingMode: "series", episodeCount: series.input.episodeCount, title: project.title,

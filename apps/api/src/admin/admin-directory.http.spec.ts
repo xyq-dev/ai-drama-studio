@@ -29,6 +29,8 @@ function row(overrides: Partial<JobSignalRow> = {}): JobSignalRow {
     code: "JOB-2169",
     source: "generation",
     kind: "MEDIA_IMAGE",
+    jobType: "image",
+    isDemo: false,
     state: "FAILED",
     errorCode: "LEASE_EXPIRED",
     updatedAt: "2026-11-21T10:16:41.000Z",

@@ -128,15 +128,16 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * Prompt and research schemas are unchanged.
  * v18: in single-episode research a paired episode count and running time can modify a story. Each value is
  * checked against the frozen work and each other number is still checked for evidence.
+ * v19: lexicalized ordinals are ordinary words; a creative ordinal with no ranking context is unverified.
  */
 export const AUTO_CREATION_CHECKS_V17 = "ads.auto-creation.checks.v17" as const;
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v18" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v19" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
   | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | "ads.auto-creation.checks.v11"
   | "ads.auto-creation.checks.v12" | "ads.auto-creation.checks.v13" | "ads.auto-creation.checks.v14" | "ads.auto-creation.checks.v15"
-  | "ads.auto-creation.checks.v16" | typeof AUTO_CREATION_CHECKS_V17 | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v16" | typeof AUTO_CREATION_CHECKS_V17 | "ads.auto-creation.checks.v18" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the
@@ -1573,6 +1574,8 @@ export interface AutoCreationOptionsView {
   code: string;
   storageReady: boolean;
   operatorTokenRequired: boolean;
+  /** Authenticated creator requests require writing quota before creating a work. */
+  viewerIsCreator?: boolean;
   defaultProvider: TitleWritingProviderKey | null;
   providers: Array<{ providerKey: TitleWritingProviderKey; label: string; ready: boolean; models: string[]; defaultModel: string | null; missing: string[] }>;
   configurationPending?: boolean;

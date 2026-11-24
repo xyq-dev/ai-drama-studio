@@ -186,7 +186,7 @@ export class TitleWritingService {
     setImmediate(() => { void work().catch(() => undefined); });
   }
 
-  async options(): Promise<TitleWritingResult> {
+  async options(viewerIsCreator = false): Promise<TitleWritingResult> {
     const storageReady = await this.deps.store.storageReady();
     // start() prefers this lock for new tasks. The page must see the same choice, including DeepSeek.
     const binding = storageReady ? await this.enabledWritingBinding() : null;
@@ -231,6 +231,7 @@ export class TitleWritingService {
       code,
       storageReady,
       operatorTokenRequired: this.deps.siteOperator !== true,
+      viewerIsCreator,
       defaultProvider: reportedDefault,
       providers,
       configurationPending: await this.configurationPending(),
@@ -432,6 +433,15 @@ export class TitleWritingService {
       return { refusal: failure(409, "TITLE_WRITING_PLAN_MISMATCH", planned) };
     }
     return { version: 2, settings: { episodeCount: plan.episodeCount, episodeSeconds: plan.targetEpisodeSeconds, style: (sent?.style ?? "").trim() } };
+  }
+
+  async startReceipt(projectId: string, actorId: string, key?: string): Promise<TitleWritingResult> {
+    if (!key?.trim() || key.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
+    const refused = await this.readable(projectId);
+    if (refused) return refused;
+    const bundle = await this.deps.store.findRunByKey(this.deps.workspaceId, actorId, key);
+    const receipt = bundle?.run.projectId === projectId && !isScriptBreakdownRun(bundle.run) ? { projectId, runId: bundle.run.id } : null;
+    return { status: 200, body: { receipt } };
   }
 
   async latest(projectId: string): Promise<TitleWritingResult> {

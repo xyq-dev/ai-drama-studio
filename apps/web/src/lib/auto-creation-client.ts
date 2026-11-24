@@ -229,7 +229,7 @@ export function autoHeadline(run: AutoCreationRunView): string {
 }
 
 const ERRORS: Record<string, string> = {
-  unsourced_number: "回答里有一个数字没有通过真实性检查，已拒收，后续阶段没有发送。这不说明模型一定编造了数据，也可能是写法让程序无法确认它是创作设定；下面写明了位置和判断类别。",
+  unsourced_number: "回答中的数量或排名缺少可核实的依据，已拒收，后续阶段没有发送。",
   unsourced_claim: "研究结论把没有来源的判断标成了有来源，已拒收。",
   unknown_source: "研究结论引用了不存在的资料编号，已拒收。",
   unread_source: "研究结论引用了没有读到正文的资料，已拒收。",
@@ -274,7 +274,7 @@ const OUTPUT_CHECK_CODES = new Set(["unsourced_number", "unsourced_claim", "unkn
   "unknown_reference", "constraint_violation", "dangling_reference", "duplicate_id", "duplicate_direction", "episode_mismatch", "invalid_output", "unsafe_content", "too_large"]);
 
 const CATEGORY_TEXT: Record<string, string> = {
-  digits: "阿拉伯数字", percent: "百分比或成数", rank: "排名名次", chinese_numeral: "中文数字", fullwidth_digits: "全角数字",
+  digits: "阿拉伯数字", percent: "百分比或成数", rank: "序数词（如“第三”）被判为排名", chinese_numeral: "中文数字", fullwidth_digits: "全角数字",
   // Every strict stage: the answer carries a field its contract does not allow.
   unrecognized_keys: "模型回答包含契约不允许的额外字段",
 };

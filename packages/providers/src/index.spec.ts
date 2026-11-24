@@ -46,7 +46,7 @@ describe("MockTextAdapter", () => {
     expect(adapter.replayPolicy).toBe("REPLAY_SAFE_SYNC");
     expect(await adapter.generate(request, context)).toEqual(await adapter.generate(request, context));
     expect((await adapter.generate(request, context))).toMatchObject({ kind: "succeeded",
-      output: { schema: "m2.text.scenes.output.v1", scenes: [{ episodeNo: 1 }, { episodeNo: 2 }, { episodeNo: 3 }] } });
+      output: { schema: "m2.text.scenes.output.v1", scenes: [1, 2, 3].map(episodeNo => ({ episodeNo, heading: `第 ${episodeNo} 集 · 开场`, summary: "演示草稿：根据已通过的剧本版本生成" })) } });
   });
 });
 
@@ -112,12 +112,12 @@ describe("MockMediaAdapter", () => {
       ...baseInput,
       capability,
       clientRequestKey: `fixture:${capability}`,
-      inputSnapshot: {},
+      inputSnapshot: { sourceText: "已保存对白" },
     });
     if (submitted.kind !== "succeeded") throw new Error("expected mock success");
     const output = submitted.outputs[0];
     const resolved = await adapter.resolveOutput(output);
-    const polled = await adapter.inspect(submitted.providerRequestId);
+    const polled = await adapter.inspect(submitted.providerRequestId, { sourceText: "已保存对白" });
     if (polled.state !== "SUCCEEDED") throw new Error("expected mock poll success");
     expect(await adapter.resolveOutput(polled.outputs[0])).toEqual(resolved);
 
@@ -146,7 +146,7 @@ describe("MockMediaAdapter", () => {
     } else if (mimeType === "application/json") {
       expect(JSON.parse(bytes.toString("utf8"))).toMatchObject({ valid: true });
     } else {
-      expect(bytes.toString("utf8")).toMatch(/^WEBVTT\n\n00:00:00\.000 --> 00:00:00\.100/);
+      expect(bytes.toString("utf8")).toBe("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n已保存对白\n");
     }
   });
 

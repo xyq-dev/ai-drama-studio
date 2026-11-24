@@ -80,7 +80,7 @@ export async function composePreflightPage(ctx) {
   }
   if (response.request().headers()["idempotency-key"]) throw new Error("page preflight sent an idempotency key");
   assertManifest(payload, { videoId, audioId, musicId, subtitleId });
-  await panel.getByText("合成尚未执行").waitFor({ timeout: 10_000 });
+  await panel.getByText("合成输入已通过预检").waitFor({ timeout: 10_000 });
   const shown = await panel.innerText();
   if (!shown.includes("1080×1920") || !shown.includes("1000 ms") || !shown.includes(videoId) || !shown.includes(audioId)) {
     throw new Error(`preflight panel ${shown}`);
@@ -89,7 +89,7 @@ export async function composePreflightPage(ctx) {
   await panel.getByText("预检摘要").click();
   if (!(await panel.innerText()).includes(payload.inputHash)) throw new Error("preflight hash is not shown");
   await panel.locator("#compose-music").selectOption("");
-  await panel.getByText("合成尚未执行").waitFor({ state: "hidden", timeout: 10_000 });
+  await panel.getByText("合成输入已通过预检").waitFor({ state: "hidden", timeout: 10_000 });
   const cleared = await panel.innerText();
   if (cleared.includes(payload.inputHash)) throw new Error("changing the selection left the previous preflight hash");
   const rows = await ctx.sql(
@@ -249,7 +249,7 @@ export async function composePreflightReadonly(ctx) {
   const panel = ctx.state.page.getByRole("region", { name: "单镜合成预检" });
   await panel.locator("#compose-music").selectOption(selected.musicId);
   await panel.getByRole("button", { name: "预检合成输入" }).click();
-  await panel.getByText("合成尚未执行").waitFor({ timeout: 20_000 });
+  await panel.getByText("合成输入已通过预检").waitFor({ timeout: 20_000 });
   const after = await ledgerSnapshot(ctx);
   const changes = ledgerChanges(before, after);
   if (changes.length > 0) {

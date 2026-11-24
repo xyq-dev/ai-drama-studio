@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { StudioClient } from "../lib/studio-client";
+import { ProjectTitleEditor } from "./project-title-editor";
 import { useProjectBase, type Aggregate } from "../lib/project-base";
 import {
   CAPABILITY_TIMEOUT_MS,
@@ -129,9 +130,9 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const capabilityRead = useRef<{ controller: AbortController; timer: ReturnType<typeof setTimeout> } | null>(null);
   /** A primary action waiting for the next render (after its episode or object was selected). */
   const [pendingFocus, setPendingFocus] = useState<{ target: PrimaryTarget | "choices"; nonce: number } | null>(null);
-  const [sceneId, setSceneId] = useState<string | null>(null);
+  const [sceneChoice, setSceneChoice] = useState<{ scope: string; id: string } | null>(null);
   const [shotId, setShotId] = useState<string | null>(null);
-  const [scenes, setScenes] = useState<{ items: Aggregate[]; read: ReadState } | null>(null);
+  const [scenePage, setScenePage] = useState<{ scope: string; items: Aggregate[]; read: ReadState } | null>(null);
   const [scenesEpoch, setScenesEpoch] = useState(0);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [lastEvent, setLastEvent] = useState("尚未修改");
@@ -141,7 +142,6 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const body = useRef<HTMLDivElement>(null);
   const tasksReturn = useRef<HTMLElement | null>(null);
   const mediaToken = useRef(0);
-  const scenesToken = useRef(0);
   const nonce = useRef(0);
   /** A series work: text steps only (story and episode scripts); no media panel mounts and no media progress is read. */
   const textOnly = project?.writingMode === "series";
@@ -246,9 +246,15 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     const asked = stepFromUrl();
     const offered = asked !== null && steps.some((item) => item.key === asked) ? asked : null;
     const chosen = offered ?? (textOnly ? steps.find((item) => states[item.key] !== "done")?.key ?? "script" : currentStep(states));
+    const params = new URLSearchParams(window.location.search);
+    const savedEpisode = chosen === "sample" ? episodes.find(item => item.episodeNo === Number(params.get("episode"))) : null;
+    const savedScene = params.get("scene");
+    if (savedEpisode && savedScene && scriptState(savedEpisode) === "done" && savedEpisode.currentScriptRevisionId === params.get("script")) {
+      setSceneChoice({ scope: `${projectId}:${savedEpisode.id}:${savedEpisode.currentScriptRevisionId}`, id: savedScene });
+    }
     setStep(chosen);
-    setEpisodeNo(episodeForStep(chosen, facts));
-  }, [step, loading, project, ready, states, facts, steps, textOnly]);
+    setEpisodeNo(savedEpisode?.episodeNo ?? episodeForStep(chosen, facts));
+  }, [step, loading, project, projectId, episodes, ready, states, facts, steps, textOnly]);
 
   /** Unsaved work in this tab, per object, from the editors' stored drafts. */
   const drafts = useMemo(() => (project ? safeUnsavedDrafts(projectId, episodes) : []),
@@ -277,32 +283,46 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     refreshFacts();
   }
 
-  useEffect(() => {
-    if (!step) return;
-    window.history.replaceState(null, "", `/projects/${projectId}/create?step=${step}`);
-  }, [step, projectId]);
-
   const episode = episodes.find((item) => item.episodeNo === episodeNo) ?? null;
 
   // The scene selection belongs to one approved script revision of one episode. Another episode, a new script
   // revision, or a script that is no longer approved drops it (drafts stay in their own storage); the pane only
   // mounts while that prerequisite holds.
-  const sceneScope = episode && scriptState(episode) === "done" ? `${episode.id}:${episode.currentScriptRevisionId}` : null;
+  const sceneScope = episode && scriptState(episode) === "done" ? `${projectId}:${episode.id}:${episode.currentScriptRevisionId}` : null;
+  const scenes = scenePage && scenePage.scope === sceneScope ? scenePage : null;
+  const scopedChoice = sceneChoice?.scope === sceneScope ? sceneChoice : null;
+  const sceneId = scopedChoice && scenes?.items.some(item => item.entityId === scopedChoice.id) ? scopedChoice.id : null;
+  const confirmedShots = media[episodeNo]?.candidates;
   useEffect(() => {
-    setSceneId(null);
     setShotId(null);
   }, [sceneScope]);
+
+  useEffect(() => {
+    if (!step) return;
+    const params = new URLSearchParams({ step });
+    if (step === "sample") {
+      params.set("episode", String(episodeNo));
+      if (scopedChoice && episode?.currentScriptRevisionId) {
+        params.set("scene", scopedChoice.id);
+        params.set("script", episode.currentScriptRevisionId);
+      }
+    }
+    window.history.replaceState(null, "", `/projects/${projectId}/create?${params}`);
+  }, [step, projectId, episodeNo, episode?.currentScriptRevisionId, scopedChoice]);
 
   // Every scene of the chosen episode for 试一段, page by page; a failed read is not an empty episode.
   // Switching episodes or projects drops a late list.
   useEffect(() => {
-    setScenes(null);
-    if (step !== "sample" || !episode || scriptState(episode) !== "done") return;
-    const token = ++scenesToken.current;
+    if (step !== "sample" || !episode || !sceneScope) return;
+    let active = true;
     void readPages<Aggregate>(client, `/projects/${projectId}/episodes/${episode.id}/scenes`).then((list) => {
-      if (token === scenesToken.current) setScenes(list);
+      if (!active) return;
+      setScenePage({ ...list, scope: sceneScope });
+      if (list.read === "ok") setSceneChoice(choice =>
+        choice?.scope === sceneScope && !list.items.some(item => item.entityId === choice.id) ? null : choice);
     });
-  }, [step, episode, projectId, refreshEpoch, scenesEpoch]);
+    return () => { active = false; };
+  }, [step, episode, sceneScope, projectId, refreshEpoch, scenesEpoch]);
 
   function choose(next: StepKey) {
     setStep(next);
@@ -427,6 +447,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           <div className="min-w-0">
             <a className="creator-back" href="/studio"><span aria-hidden="true">← </span>我的作品</a>
             <h1 className="text-2xl font-semibold [overflow-wrap:anywhere]">{project?.title ?? (loading ? "正在读取作品" : "作品")}</h1>
+            {project && project.id === projectId && <ProjectTitleEditor key={project.id} project={project} reload={reloadBase} />}
             <p className="creator-save-status mt-1 text-sm" role="status">保存状态：{save.text}</p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-[15px]">
@@ -513,7 +534,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
         <div ref={body} className="creator-flow-body mt-5 space-y-4" data-step={step ?? undefined}>
           {project && step === "story" ? (
-            <StoryPane project={project} stories={stories} onMore={() => void base.more("stories")} onSaved={reloadBase} onStatus={onStatus} />
+            <StoryPane project={project} stories={stories} onMore={() => void base.more("stories")} onSaved={base.reloadAfterWrite} onStatus={onStatus} />
           ) : null}
 
           {project && step === "script" ? (
@@ -528,8 +549,13 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                   : "剧本里写到的场面还不是场景或镜头记录，它们在「试一段」里单独建立。"}</p>
                 <ScriptPane projectId={projectId} projectVersion={project.version} episodeCount={episodeNumbers(facts).length} episode={episode}
                   storyCurrent={currentStoryRevision(stories?.items ?? [])} premise={project.premise} refreshEpoch={refreshEpoch}
-                  onSaved={reloadBase} onStatus={onStatus} textOnly={textOnly}
-                  onOpenScene={(id) => { if (textOnly) return; setSceneId(id); setStep("sample"); }} />
+                  onSaved={base.reloadAfterWrite} onStatus={onStatus} textOnly={textOnly}
+                  onOpenScene={(id) => {
+                    if (textOnly || !sceneScope) return;
+                    setSceneChoice({ scope: sceneScope, id });
+                    setShotId(null);
+                    setStep("sample");
+                  }} />
               </>
             )
           ) : null}
@@ -564,7 +590,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               ) : null}
               <EntityPane project={project} kind={castKind} page={castKind === "character" ? characters : locations} episodes={episodes}
                 focus={castFocus && castFocus.kind === castKind ? castFocus : null}
-                onMore={() => void base.more(castKind === "character" ? "characters" : "locations")} onSaved={reloadBase} onStatus={onStatus}
+                onMore={() => void base.more(castKind === "character" ? "characters" : "locations")} onSaved={base.reloadAfterWrite} onStatus={onStatus}
                 referenceEpoch={base.referenceEpoch} onReferenceAccepted={base.reloadForProject} />
             </>
           ) : null}
@@ -601,7 +627,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                     <div className="mt-2 text-[15px]">
                       <p>这一集还没有场景。场景和镜头是单独的记录，需要先建立：</p>
                       <ol className="mt-1 list-decimal pl-5">
-                        <li>在任务面板用「Mock 生成场景」，再用「Mock 生成镜头」（需要每一集剧本都已通过）；或</li>
+                        <li>各集剧本通过审核后，在任务面板用「Mock 生成场景」创建演示草稿。通过场景审核后可用「Mock 生成镜头」。</li>
                         <li>到高级编辑手动添加场景。</li>
                       </ol>
                       <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={openTasks}>打开任务面板</button>
@@ -612,7 +638,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                       <li key={scene.entityId}>
                         <button type="button" aria-pressed={sceneId === scene.entityId}
                           className={`rounded-[12px] border px-3 py-1.5 ${sceneId === scene.entityId ? "border-[var(--studio-accent)] bg-[#FBE7E4]" : ""}`}
-                          onClick={() => { setSceneId(scene.entityId); setShotId(null); }}>
+                          onClick={() => { setSceneChoice({ scope: scenes.scope, id: scene.entityId }); setShotId(null); }}>
                           场景 {index + 1} · {STEP_STATE_TEXT[entityState(scene)]}
                         </button>
                       </li>
@@ -625,11 +651,12 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                 <>
                   <LocationNote list={ready ? progress.locations : null} onRetry={rereadAll} />
                   <ScenePane projectId={projectId} episode={episode} sceneId={sceneId} shotId={shotId} refreshEpoch={refreshEpoch}
-                    imageEpoch={imageEpoch} locations={sceneLocations(ready ? progress.locations : null, locations?.items ?? [])}
-                    onSaved={reloadBase} onStatus={onStatus} onOpenShot={setShotId} onMediaChanged={refreshFacts}
+                    imageEpoch={imageEpoch} runs={allRuns} locations={sceneLocations(ready ? progress.locations : null, locations?.items ?? [])}
+                    onSaved={base.reloadAfterWrite} onStatus={onStatus} onOpenShot={setShotId} onMediaChanged={refreshFacts}
                     shotComposeBlocked={composeBlockedReason(gates.shot, "shot")} />
                 </>
               ) : null}
+              <p className="text-[15px] text-[#5F5D66]">至少确认 2 个镜头才能出单集。</p>
             </>
           ) : null}
 
@@ -637,7 +664,9 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             <>
               <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo} state={(no) => episodeFinalState(facts, no)} />
               <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p>
-              <GateNotice gate={gates.episode} onRetry={recheck}>当前环境没有开启集级合成，单集成片暂时不能生成，这一步不会显示为完成。需要管理员在服务端开启后才能继续。</GateNotice>
+              <GateNotice gate={gates.episode} onRetry={recheck}>集级合成由平台统一开启，目前还没开。可以先把每个镜头的单镜成片做完并确认，开启后这里会自动可用。</GateNotice>
+              <p className="text-[15px]">{confirmedShots?.read === "ok"
+                ? `已确认单镜进度 ${Math.min(confirmedShots.count, 2)}/2` : "已确认单镜进度待核实"}</p>
               {ready && mediaReadFailed(media) ? <ReadFailed onRetry={rereadAll} /> : null}
               {episode && scriptState(episode) === "done" ? (
                 <EpisodeComposePreflight projectId={projectId} episodeNo={episodeNo} episodeId={episode.id} onChanged={refreshFacts}

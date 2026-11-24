@@ -41,6 +41,29 @@ def test_plain_cues_drop_ass_markup(tmp_path: Path) -> None:
     assert _safe_cues(path)[0][2] == "Hello Cue"
 
 
+def test_vtt_structure_is_separate_from_spoken_numbers_and_keywords(tmp_path: Path) -> None:
+    source = "\n\n".join([
+        "\ufeffWEBVTT title\nKind: captions",
+        "NOTE not a cue\n00:00.000 --> 00:00.100\nignore this comment",
+        "STYLE\n::cue { color: lime; }",
+        "REGION\nid:region",
+        "unrelated\nmetadata\n00:00.100 --> 00:00.500\nnot a cue",
+        "speaker-2\n00:00.100 --> 00:00.500 align:start\n123",
+        "00:00.500 --> 00:00.900\nNOTE 还给你\nWEBVTT 是文件头\n00:00.900 --> 00:00.950\nmissing block break",
+    ])
+    assert _safe_cues(_write(tmp_path / "dialogue.vtt", source)) == [
+        ("00:00:00.100", "00:00:00.500", "123"),
+        ("00:00:00.500", "00:00:00.900", "NOTE 还给你\nWEBVTT 是文件头"),
+    ]
+
+
+def test_srt_numbers_after_timing_are_dialogue(tmp_path: Path) -> None:
+    source = "9\r\n00:00:00,000 --> 00:00:01,000\r\n123\r\n456\r\n"
+    assert _safe_cues(_write(tmp_path / "dialogue.srt", source)) == [
+        ("00:00:00.000", "00:00:01.000", "123\n456"),
+    ]
+
+
 def _write(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     return path
@@ -53,7 +76,7 @@ def test_widescreen_source_is_padded_and_subtitle_changes_the_frame(tmp_path: Pa
     plain = tmp_path / "plain.mp4"
     burned = tmp_path / "burned.mp4"
     assert main(["--input-dir", str(tmp_path), "--output", str(plain)]) == 0
-    _write(tmp_path / "subtitle.vtt", "WEBVTT\n\n00:00:00.000 --> 00:00:00.800\nVisible subtitle\n")
+    _write(tmp_path / "subtitle.vtt", "WEBVTT\n\n00:00:00.000 --> 00:00:00.800\n123\n")
     assert main(["--input-dir", str(tmp_path), "--output", str(burned)]) == 0
     probed = _probe(burned)
     video = next(item for item in probed["streams"] if item["codec_type"] == "video")
@@ -66,6 +89,7 @@ def test_widescreen_source_is_padded_and_subtitle_changes_the_frame(tmp_path: Pa
     _run(["ffmpeg", "-y", "-i", str(burned), "-frames:v", "1", "-vf", "crop=20:20:0:0", str(top)])
     _run(["ffmpeg", "-y", "-i", str(burned), "-frames:v", "1", "-vf", "crop=40:40:520:900", str(center)])
     assert _not_flat(top, "black-bar")
+    assert (tmp_path / "burn.srt").read_text(encoding="utf-8").endswith("\n123\n")
     assert hashlib.sha256(plain.read_bytes()).hexdigest() != hashlib.sha256(burned.read_bytes()).hexdigest()
 
 

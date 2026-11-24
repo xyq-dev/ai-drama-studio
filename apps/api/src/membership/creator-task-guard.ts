@@ -1,6 +1,7 @@
+import { PersistenceError } from "@ai-drama/database";
 import type { TitleRunRecord, WritingQuotaTransaction, WritingResumeQuotaCheck } from "@ai-drama/contracts";
-import { creatorAccountIdFromActor, type MembershipFeature } from "@ai-drama/domain";
-import type { MembershipStore, ReserveResult } from "./membership-store";
+import { creatorAccountIdFromActor, membershipDenialMessage, type MembershipFeature } from "@ai-drama/domain";
+import { writingPreflight, type MembershipStore, type ReserveResult } from "./membership-store";
 
 interface CreatorTaskContext {
   actorId: string;
@@ -30,6 +31,13 @@ export function installedCreatorMembership(): { store: MembershipStore; workspac
   return installed;
 }
 
+export async function requireWritingForNewProject(workspaceId: string, actorId: string, transaction?: WritingQuotaTransaction, store = installed?.store) {
+  const accountId = creatorAccountIdFromActor(actorId);
+  if (!accountId) return;
+  const denied = await writingPreflight(store, workspaceId, accountId, transaction);
+  if (denied) throw new PersistenceError(denied, membershipDenialMessage(denied, "writing"));
+}
+
 const noopHold = (): OpenCreatorHold => ({ denied: null, holdId: null, keep() {}, async release() {} });
 
 export async function openInstalledHold(
@@ -39,8 +47,7 @@ export async function openInstalledHold(
   operation: string,
   binding?: TaskBinding,
 ): Promise<OpenCreatorHold> {
-  if (!installed) return noopHold();
-  return openCreatorHold(installed.store, installed.workspaceId, context, feature, projectId, operation, binding);
+  return openCreatorHold(installed?.store, installed?.workspaceId ?? "", context, feature, projectId, operation, binding);
 }
 
 /** Reserve and keep the hold. Call only when a new task is about to be sent. */
@@ -67,9 +74,9 @@ export async function openCreatorHold(
 ): Promise<OpenCreatorHold> {
   const accountId = creatorAccountIdFromActor(context.actorId);
   const key = context.idempotencyKey;
-  if (!store || !accountId || !key) {
-    return { denied: null, holdId: null, keep() {}, async release() {} };
-  }
+  if (!accountId) return noopHold();
+  if (!key?.trim()) throw new PersistenceError("IDEMPOTENCY_KEY_REQUIRED", "请提供请求标识。");
+  if (!store) return noopHold();
   const reserved: ReserveResult = await store.reserve(workspaceId, {
     accountId,
     feature,
@@ -79,7 +86,7 @@ export async function openCreatorHold(
     ...(binding && { taskKey: binding.taskKey }),
   }, binding?.transaction);
   if (!reserved.ok) return { denied: { code: reserved.code, message: reserved.message }, holdId: null, keep() {}, async release() {} };
-  if ("skipped" in reserved) return { denied: null, holdId: null, keep() {}, async release() {} };
+  if ("skipped" in reserved) return noopHold();
   let kept = reserved.replay;
   return {
     denied: null,

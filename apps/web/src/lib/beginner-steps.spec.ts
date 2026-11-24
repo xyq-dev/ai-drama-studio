@@ -192,6 +192,12 @@ describe("beginner step states come from server facts", () => {
 });
 
 describe("suggestTitle", () => {
+  it("takes the named work even after an instruction, and respects the project title limit", () => {
+    expect(suggestTitle("作品标题必须是《末班车·最后一站》，雨夜，少年追车。")).toBe("末班车·最后一站");
+    expect(suggestTitle("先用《  》，最终改成《雨夜》")).toBe("雨夜");
+    expect(suggestTitle("《" + "雨".repeat(201) + "》")).toHaveLength(200);
+  });
+
   it("cuts the first clause of the user's own words, at most 12 characters", () => {
     expect(suggestTitle("夜班便利店店员发现班次记录被人改过，所有证据都指向她自己。")).toBe("夜班便利店店员发现班次记…");
     expect(suggestTitle("  回家  ")).toBe("回家");

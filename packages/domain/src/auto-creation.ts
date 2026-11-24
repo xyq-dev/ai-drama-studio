@@ -1,6 +1,5 @@
 import {
   AUTO_CREATION_BIBLE_SCHEMA,
-  AUTO_CREATION_CHECKS_VERSION,
   AUTO_CREATION_CHECKS_V17,
   AUTO_CREATION_DIRECTIONS_SCHEMA,
   AUTO_CREATION_EPISODE_SCHEMA,
@@ -350,9 +349,13 @@ function executedPromptVersion(input: AutoCreationFrozenInput): AutoCreationFroz
   return autoCreationWritesStoryProse(input.promptVersion) ? AUTO_CREATION_PROMPT_V16 : AUTO_CREATION_LEGACY_PROMPT_VERSION;
 }
 
+function checksRevision(version: AutoCreationFrozenInput["checksVersion"]): number {
+  return Number(version.slice("ads.auto-creation.checks.v".length));
+}
+
 function executedChecksVersion(input: AutoCreationFrozenInput): AutoCreationFrozenInput["checksVersion"] {
-  return input.promptVersion === AUTO_CREATION_PROMPT_VERSION && input.checksVersion === AUTO_CREATION_CHECKS_VERSION
-    ? AUTO_CREATION_CHECKS_VERSION : AUTO_CREATION_CHECKS_V17;
+  return input.promptVersion === AUTO_CREATION_PROMPT_VERSION && checksRevision(input.checksVersion) >= 18
+    ? input.checksVersion : AUTO_CREATION_CHECKS_V17;
 }
 
 function sourcesBlock(sources: AutoSourcesOutput): string {
@@ -970,7 +973,8 @@ export function autoResearchServerRecord(input: AutoCreationFrozenInput, sources
 }
 
 function checkResearch(input: AutoCreationFrozenInput, output: AutoResearchAnswer, context: AutoCreationContext): AutoValidation {
-  const frame = { ...numberFrame(input), singleEpisodeResearch: input.episodeCount === 1 && executedChecksVersion(input) === AUTO_CREATION_CHECKS_VERSION };
+  const revision = checksRevision(executedChecksVersion(input));
+  const frame = { ...numberFrame(input), singleEpisodeResearch: input.episodeCount === 1 && revision >= 18, contextualOrdinals: revision >= 19 };
   const notices: AutoUnverifiedNotice[] = [];
   const readable = new Map(readableSources(context.sources!).map((source) => [source.sourceId, source] as const));
   const known = new Set(context.sources!.sources.map((source) => source.sourceId));
@@ -983,8 +987,8 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearchAnswe
   };
   const sourced = (statement: string, ids: readonly string[], field: string, exempt = frame.exempt): AutoValidation | null => {
     // Whole tokens on both sides: "18" is not supported by an excerpt that only has "2018".
-    const supported = new Set(ids.flatMap((id) => numberTokens(readable.get(id)?.excerpt ?? "")).map(normalize));
-    const missing = numberTokens(statement, exempt).find((token) => !supported.has(normalize(token)));
+    const supported = new Set(ids.flatMap((id) => numberTokens(readable.get(id)?.excerpt ?? "", [], frame.contextualOrdinals)).map(normalize));
+    const missing = numberTokens(statement, exempt, frame.contextualOrdinals).find((token) => !supported.has(normalize(token)));
     return missing ? { ok: false, code: "unsourced_number", detail: missing, field, category: numberKind(missing), semantic: "unsourced",
       rule: "not_in_cited_excerpt" } : null;
   };
@@ -1803,8 +1807,20 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
     }
     push("");
   }
-  push("## 生产准备", "", "- 已包含：每场地点、出场人物、文字镜头设计、计划秒数和素材需求（见上方剧本与 JSON 包 production 字段）。",
-    "- 缺项：本系统当前没有接入真实的图片、语音、视频生成服务，现有媒体链路只有演示（Mock）素材；剧本拆解功能关闭，没有写入分镜生产数据。",
-    "- 继续生产：人工审核故事后，可在作品中写入分集剧本草稿，再走现有链路。", "");
+  const scenes = [...context.episodes.values()].flatMap(({ episode }) => episode.scenes);
+  const shots = scenes.flatMap((scene) => scene.shots);
+  const materials = [
+    ["地点设定", Boolean(bible?.locations.length)],
+    ["人物设定", Boolean(bible?.characters.length)],
+    ["文字镜头设计", shots.some((shot) => shot.description.trim())],
+    ["计划秒数", shots.some((shot) => shot.seconds > 0)],
+    ["素材需求", scenes.some((scene) => scene.assetNeeds.length > 0)],
+  ] as const;
+  const present = materials.filter(([, ready]) => ready).map(([label]) => label);
+  const missing = materials.filter(([, ready]) => !ready).map(([label]) => label);
+  push("## 生产准备", "");
+  if (present.length) push(`- ${missing.length ? "已生成" : "已包含"}：${present.join("、")}。`);
+  if (missing.length) push(`- 尚缺：${missing.join("、")}。`);
+  push("- 此剧本包只导出文字，未生成图片、语音或视频。", "");
   return out.join("\n");
 }

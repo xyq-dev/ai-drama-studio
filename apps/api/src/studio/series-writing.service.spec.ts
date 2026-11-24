@@ -49,6 +49,27 @@ function body(view: SeriesView, scope: SeriesScope, extra: Record<string, unknow
 }
 
 describe("series writing service", () => {
+  it("rechecks before inserting a series and replays an already created series after quota is spent", async () => {
+    await withInstalledWritingUnit(WS, async member => {
+      const { service, store, seen } = setup();
+      const request = { title: "末班车", episodeCount: 3, episodeSeconds: 60 };
+      const make = (key: string) => service.create(request, TOKEN, member.actor(key));
+      const concurrent = await Promise.all([make("allowed"), make("allowed")]);
+      expect(concurrent.map(result => result.status).sort()).toEqual([200, 201]);
+      await member.membership.reserve(WS, { accountId: member.accountId, feature: "writing", idempotencyKey: "competing-task" });
+      await expect(make("new-project")).rejects.toMatchObject({ code: "QUOTA_EXHAUSTED" });
+      const ledger = await member.membership.ledger(WS, member.accountId);
+      const actor = member.actor("allowed").actorId;
+      expect((await service.startReceipt(actor, "allowed")).body).toEqual({ receipt: { projectId: viewOf(concurrent[0]!.body).projectId } });
+      expect((await service.startReceipt(actor, "not-received")).body).toEqual({ receipt: null });
+      expect((await service.startReceipt("another-account", "allowed")).body).toEqual({ receipt: null });
+      expect(await member.membership.ledger(WS, member.accountId)).toEqual(ledger);
+      expect((await make("allowed")).status).toBe(200);
+      expect(store.projects.size).toBe(1);
+      expect(seen).toHaveLength(0);
+    });
+  });
+
   it.each([false, true])("keeps the first grant's quota when the keyed request races (different input: %s)", async (different) => {
     await withInstalledWritingUnit(WS, async member => {
       const { service, store } = setup();

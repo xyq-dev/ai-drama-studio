@@ -22,6 +22,7 @@ import {
   REFERENCE_WORKFLOW_TYPE,
   projectEpisodeNumbers,
   useProjectBase,
+  useRevisionRefresh,
   type Aggregate,
   type EpisodeRecord,
   type ProjectRecord,
@@ -36,6 +37,7 @@ import {
   applyPage,
   applyTextContent,
   clearActiveDraft,
+  clearDraft,
   confirmConflictDraft,
   currentStoryRevision,
   describeRevision,
@@ -196,10 +198,12 @@ function focusLabel(focus: Focus): string {
 
 const InspectContext = createContext<{
   visible: boolean;
+  openInspect: () => void;
   registerInspect: () => void;
   unregisterInspect: () => void;
 }>({
   visible: true,
+  openInspect: () => undefined,
   registerInspect: () => undefined,
   unregisterInspect: () => undefined,
 });
@@ -261,11 +265,15 @@ export function Workbench({ projectId }: { projectId: string }) {
     else setNarrowOpen((open) => !open);
   }, []);
   const registerInspect = useCallback(() => setInspectCount((count) => count + 1), []);
+  const openInspect = useCallback(() => {
+    if (wideRef.current) setDesktopOpen(true);
+    else setNarrowOpen(true);
+  }, []);
   const unregisterInspect = useCallback(() => setInspectCount((count) => count - 1), []);
   const inspectVisible = wide ? desktopOpen : narrowOpen;
   const inspect = useMemo(
-    () => ({ visible: inspectVisible, registerInspect, unregisterInspect }),
-    [inspectVisible, registerInspect, unregisterInspect],
+    () => ({ visible: inspectVisible, openInspect, registerInspect, unregisterInspect }),
+    [inspectVisible, openInspect, registerInspect, unregisterInspect],
   );
   const [tasksOpen, setTasksOpen] = useState(false);
   const [saveState, setSaveState] = useState("尚未修改");
@@ -385,7 +393,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               project={project}
               stories={stories}
               onMore={() => void more("stories")}
-              onSaved={reloadBase}
+              onSaved={base.reloadAfterWrite}
               onStatus={setSaveState}
             />
           ) : null}
@@ -405,7 +413,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               storyCurrent={storyCurrent}
               premise={project.premise}
               refreshEpoch={refreshEpoch}
-              onSaved={reloadBase}
+              onSaved={base.reloadAfterWrite}
               onStatus={setSaveState}
               onOpenScene={(sceneId) => setFocus({ kind: "scene", episodeNo: focus.episodeNo, sceneId })}
             />
@@ -417,7 +425,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               page={focus.kind === "character" ? characters : locations}
               episodes={episodes}
               onMore={() => void more(focus.kind === "character" ? "characters" : "locations")}
-              onSaved={reloadBase}
+              onSaved={base.reloadAfterWrite}
               onStatus={setSaveState}
               referenceEpoch={base.referenceEpoch}
               onReferenceAccepted={base.reloadForProject}
@@ -429,10 +437,11 @@ export function Workbench({ projectId }: { projectId: string }) {
               episode={episodes.find((item) => item.episodeNo === focus.episodeNo) ?? null}
               sceneId={focus.sceneId}
               shotId={focus.kind === "shot" ? focus.shotId : null}
+              runs={base.allRuns}
               refreshEpoch={refreshEpoch}
               imageEpoch={imageEpoch}
               locations={locations?.items ?? []}
-              onSaved={reloadBase}
+              onSaved={base.reloadAfterWrite}
               onStatus={setSaveState}
               onOpenShot={(shotId) => setFocus(shotId === null
                 ? { kind: "scene", episodeNo: focus.episodeNo, sceneId: focus.sceneId }
@@ -834,17 +843,26 @@ function SceneList(props: {
       await props.onReload();
       props.onOpen(created.body.entityId);
     } catch (caught) {
-      const conflict = caught instanceof ApiError && caught.status === 409;
-      props.onStatus(conflict ? "版本冲突，草稿保留" : "保存失败，草稿保留");
-      setError(caught instanceof ApiError ? `${caught.code}：${caught.detail}${conflict ? "。草稿保留，确认后再次保存才会使用新基线。" : ""}` : "保存失败，草稿保留");
-      if (conflict) await props.onRefreshBaseline().catch(() => undefined);
+      if (isRevisionConflict(caught)) {
+        props.onStatus("版本冲突，草稿保留");
+        setError("内容已更新，正在载入最新版本…");
+        try {
+          await props.onRefreshBaseline();
+          setError(RELOADED_REVISION);
+        } catch {
+          setError("未能载入最新版本，草稿已保留。");
+        }
+        return;
+      }
+      props.onStatus("保存失败，草稿保留");
+      setError(caught instanceof ApiError ? caught.detail : "保存失败，草稿保留");
     }
   }
 
   return (
     <section className="creator-section rounded-lg bg-white p-4">
       <h2 className="font-medium">场景</h2>
-      <p className="mt-1 text-sm text-neutral-600">Mock 生成场景一次处理本作品的全部各集。前置条件由服务端判断：来源剧本需已通过且为 CURRENT。不会覆盖已经占用的 ordinal 1，也不是一键重新生成。</p>
+      <p className="mt-1 text-sm text-neutral-600">每集生成一个开场场景演示草稿。请先通过各集当前剧本的审核，已有的第一个场景会保留。</p>
       {props.page?.items.length === 0 ? <p className="mt-3 text-sm">这一集还没有场景</p> : null}
       <ul className="mt-3 space-y-2">
         {props.page?.items.map((scene) => (
@@ -1080,19 +1098,22 @@ function ContentEditor(props: {
     }
   }, [contentStamp, props.baseRevisionId, props.content, props.entityKey, props.initialSourceId, props.projectId, scope]);
 
-  async function beginConflict(message: string) {
-    setConflict(message);
+  async function beginConflict() {
+    setConflict("内容已更新，正在载入最新版本…");
     props.onStatus("版本冲突，草稿保留");
     try {
       const snap = await props.readConflict();
       setSeen(snap);
       persistSeen(storageKey, snap);
+      setConflict(RELOADED_REVISION);
     } catch {
       setSeen(null);
       persistSeen(storageKey, null);
-      setConflict(`${message} 未能读取新基线，草稿保留。`);
+      setConflict("未能读取新基线，草稿保留。");
     }
   }
+
+  const pending = usePendingWrite();
 
   async function save(force: boolean) {
     const existing = readDraft(window.sessionStorage, storageKey);
@@ -1130,8 +1151,8 @@ function ContentEditor(props: {
       props.onStatus("已保存");
       await props.onSaved();
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 409) {
-        await beginConflict(`${caught.code}：${caught.detail}`);
+      if (isRevisionConflict(caught)) {
+        await beginConflict();
         return;
       }
       setError(caught instanceof ApiError ? `${caught.code}：${caught.detail}` : "保存失败，草稿保留");
@@ -1152,7 +1173,7 @@ function ContentEditor(props: {
   }
 
   return (
-    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void pending.run(() => save(false)); }}>
       <h2 className="font-medium">{props.title}</h2>
       {props.assistantUnavailableReason ? <p className="mt-2 text-sm" role="status">{props.assistantUnavailableReason}</p> : props.assistant ? (
         <WritingAssistant
@@ -1240,7 +1261,7 @@ function ContentEditor(props: {
           remember(currentDraft({ mode: "json", text: textOf(next), raw: nextRaw, parsed: next }));
         }}>{advanced ? "返回正文" : "高级 JSON"}</button>
       )}
-      <button className="mt-3 rounded bg-red-700 px-4 py-2 text-white disabled:opacity-50" type="submit" disabled={Boolean(shownConflict) || sourceBlocked}>保存新版本</button>
+      <button className="mt-3 rounded bg-red-700 px-4 py-2 text-white disabled:opacity-50" type="submit" disabled={pending.busy || Boolean(shownConflict) || sourceBlocked}>保存新版本</button>
       {sourceBlocked ? <p className="mt-2 text-sm">{selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。"}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       {shownConflict ? (
@@ -1248,7 +1269,7 @@ function ContentEditor(props: {
           <p>{shownConflict}</p>
           <p className="mt-1 text-sm">{shownSeen ? `已看到的并发版本 ${shownSeen.ifMatch}。确认后只按这个版本和新的幂等键提交。` : "草稿已保留。还没有可读的新基线，不能确认提交。"}</p>
           {shownSeen ? <DiffList rows={serverDiff} /> : null}
-          <button className="mt-2 rounded border px-3 py-1 disabled:opacity-50" type="button" disabled={!shownSeen} onClick={() => void save(true)}>确认后重新提交</button>
+          <button className="mt-2 rounded border px-3 py-1 disabled:opacity-50" type="button" disabled={pending.busy || !shownSeen} onClick={() => void pending.run(() => save(true))}>确认后重新提交</button>
         </div>
       ) : null}
     </form>
@@ -1286,7 +1307,6 @@ function EntityScope(props: EntityPaneProps) {
   const focusPending = useRef(false);
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: EntityRevision[] } | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [historyToken, setHistoryToken] = useState(0);
   const historyRequest = useRef(0);
   const sources = props.episodes.flatMap((episode) => {
     const usable = sourceUsable({
@@ -1313,20 +1333,32 @@ function EntityScope(props: EntityPaneProps) {
     setHistoryError(null);
   }, [selected]);
 
-  useEffect(() => {
-    if (!selected) return;
+  const readHistory = useCallback(async () => {
+    if (!selected) return false;
     const request = ++historyRequest.current;
-    const entityId = selected;
-    void client.get<{ aggregate: Aggregate; items: EntityRevision[] }>(`/projects/${props.project.id}/${props.kind}s/${entityId}/revisions`).then((next) => {
-      if (request !== historyRequest.current) return;
+    try {
+      const next = await client.get<{ aggregate: Aggregate; items: EntityRevision[] }>(
+        `/projects/${props.project.id}/${props.kind}s/${selected}/revisions`,
+      );
+      if (request !== historyRequest.current) return false;
       setHistory(next);
       setHistoryError(null);
-    }).catch((caught: unknown) => {
-      if (request !== historyRequest.current) return;
-      setHistory(null);
+      return true;
+    } catch (caught) {
+      if (request !== historyRequest.current) return false;
       setHistoryError(caught instanceof ApiError ? caught.detail : "版本加载失败");
-    });
-  }, [historyToken, props.kind, props.project.id, selected]);
+      throw caught;
+    }
+  }, [props.kind, props.project.id, selected]);
+  const { load: loadHistory, reloadAfterWrite: reloadHistory } = useRevisionRefresh(selected ?? "", readHistory);
+  useEffect(() => {
+    void loadHistory().catch(() => undefined);
+    return () => { ++historyRequest.current; };
+  }, [loadHistory]);
+
+  async function reloadEntity() {
+    await Promise.all([reloadHistory(), props.onSaved()]);
+  }
 
   const current = history?.items.find((item) => item.id === history.aggregate.currentRevisionId) ?? null;
   const shownEntity = selected && history?.aggregate.entityId === selected && current ? selected : null;
@@ -1394,10 +1426,7 @@ function EntityScope(props: EntityPaneProps) {
                 ifMatch: draft.ifMatch ?? undefined,
               });
             }}
-            onSaved={async () => {
-              await props.onSaved();
-              setHistoryToken((value) => value + 1);
-            }}
+            onSaved={reloadEntity}
           />
           </div>
         ) : null}
@@ -1433,15 +1462,79 @@ function EntityScope(props: EntityPaneProps) {
           onMore={() => undefined}
           ifMatch={history.aggregate.rowVersion}
           reviewPath={(revisionId) => `/projects/${props.project.id}/${props.kind}s/${history.aggregate.entityId}/revisions/${revisionId}/review`}
-          onSaved={async () => {
-            await props.onSaved();
-            setHistoryToken((value) => value + 1);
-          }}
+          onSaved={reloadEntity}
         />
       ) : <p className="text-sm">选择一个对象后显示版本。</p>}
       </InspectSlot>
     </EditorGrid>
   );
+}
+
+const RELOADED_REVISION = "内容已更新，已载入最新版本，请确认后再保存";
+
+function isRevisionConflict(error: unknown): boolean {
+  return error instanceof ApiError && (error.code === "REVISION_CONFLICT" || error.code === "REVIEW_CONFLICT" || error.code === "CONFLICT");
+}
+
+function usePendingWrite() {
+  const active = useRef(false);
+  const [busy, setBusy] = useState(false);
+  async function run(operation: () => Promise<void>) {
+    if (active.current) return;
+    active.current = true;
+    setBusy(true);
+    try {
+      await operation();
+    } finally {
+      active.current = false;
+      setBusy(false);
+    }
+  }
+  return { busy, run };
+}
+
+/** A second creation must use the parent version from the read after the first write. */
+function useCreateRevision(reload: () => Promise<void>, onStatus: (value: string) => void) {
+  const pending = usePendingWrite();
+  const [error, setError] = useState<string | null>(null);
+  const [pendingRead, setPendingRead] = useState<"saved" | "conflict" | null>(null);
+
+  async function refresh(reason: "saved" | "conflict") {
+    try {
+      await reload();
+      setPendingRead(null);
+      setError(reason === "conflict" ? RELOADED_REVISION : null);
+      onStatus(reason === "conflict" ? "版本冲突，草稿保留" : "已保存");
+    } catch {
+      setPendingRead(reason);
+      setError(reason === "conflict" ? "未能载入最新版本，草稿已保留。" : "已保存，列表尚未刷新。");
+      onStatus(reason === "conflict" ? "版本冲突，草稿保留" : "已保存");
+    }
+  }
+
+  async function submit(write?: () => Promise<void>) {
+    await pending.run(async () => {
+      setError(null);
+      if (pendingRead) {
+        await refresh(pendingRead);
+        return;
+      }
+      if (!write) return;
+      onStatus("保存中");
+      try {
+        await write();
+        await refresh("saved");
+      } catch (caught) {
+        if (isRevisionConflict(caught)) await refresh("conflict");
+        else {
+          setError(caught instanceof ApiError ? caught.detail : "保存失败，草稿保留");
+          onStatus("保存失败，草稿保留");
+        }
+      }
+    });
+  }
+
+  return { busy: pending.busy, error, pendingRead, submit };
 }
 
 function NewEntityForm(props: {
@@ -1454,10 +1547,15 @@ function NewEntityForm(props: {
   const storageKey = draftStorageKey(props.project.id, `${props.kind}:new`, null);
   const [name, setName] = useState("");
   const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const creation = useCreateRevision(props.onSaved, props.onStatus);
   function remember(nextName: string, nextText: string) {
-    const body = { name: nextName, sourceScriptRevisionId: props.source?.id ?? null, content: applyTextContent({}, nextText) };
-    writeDraft(window.sessionStorage, storageKey, nextDraft(readDraft(window.sessionStorage, storageKey), body, props.project.version, () => crypto.randomUUID()));
+    if (nextName || nextText) {
+      const body = { name: nextName, sourceScriptRevisionId: props.source?.id ?? null, content: applyTextContent({}, nextText) };
+      writeDraft(window.sessionStorage, storageKey, nextDraft(readDraft(window.sessionStorage, storageKey), body, props.project.version, () => crypto.randomUUID()));
+    } else {
+      clearDraft(window.sessionStorage, storageKey);
+    }
+    props.onStatus("未保存");
   }
   useEffect(() => {
     const draft = readDraft(window.sessionStorage, storageKey);
@@ -1473,15 +1571,11 @@ function NewEntityForm(props: {
   }, [storageKey]);
 
   async function save() {
-    if (!props.source) {
-      setError("没有已批准且新鲜的剧本来源");
-      return;
-    }
+    if (!props.source) return;
     const body = { name, sourceScriptRevisionId: props.source.id, content: applyTextContent({}, text) };
     const draft = nextDraft(readDraft(window.sessionStorage, storageKey), body, props.project.version, () => crypto.randomUUID());
-    writeDraft(window.sessionStorage, storageKey, draft);
-    props.onStatus("保存中");
-    try {
+    await creation.submit(async () => {
+      writeDraft(window.sessionStorage, storageKey, draft);
       await client.write({
         path: `/projects/${props.project.id}/${props.kind}s`,
         body,
@@ -1492,12 +1586,7 @@ function NewEntityForm(props: {
         setName("");
         setText("");
       }
-      props.onStatus("已保存");
-      await props.onSaved();
-    } catch (caught) {
-      setError(caught instanceof ApiError ? `${caught.code}：${caught.detail}` : "保存失败，草稿保留");
-      props.onStatus("保存失败，草稿保留");
-    }
+    });
   }
 
   return (
@@ -1508,8 +1597,8 @@ function NewEntityForm(props: {
       <label className="mt-2 block text-sm" htmlFor="entity-text">正文</label>
       <textarea id="entity-text" className="w-full rounded border px-2 py-1" rows={6} value={text} onChange={(event) => { setText(event.target.value); remember(name, event.target.value); }} />
       <p className="mt-2 text-sm">来源：{props.source ? props.source.label : "没有可用来源"}</p>
-      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" disabled={!props.source} type="submit">保存新版本</button>
-      {error ? <p role="alert">{error}</p> : null}
+      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" disabled={creation.busy || (!props.source && !creation.pendingRead)} type={creation.pendingRead ? "button" : "submit"} onClick={creation.pendingRead ? () => void creation.submit() : undefined}>{creation.pendingRead ? "重新载入" : "保存新版本"}</button>
+      {creation.error ? <p role="alert">{creation.error}</p> : null}
     </form>
   );
 }
@@ -1519,6 +1608,7 @@ export function ScenePane(props: {
   episode: EpisodeRecord | null;
   sceneId: string;
   shotId: string | null;
+  runs: readonly WorkflowRun[];
   refreshEpoch: number;
   imageEpoch: number;
   locations: Aggregate[];
@@ -1532,51 +1622,72 @@ export function ScenePane(props: {
 }) {
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: SceneRevision[] } | null>(null);
   const [shots, setShots] = useState<PageState<StoryboardShot> | null>(null);
+  const displayedShots = useRef(shots);
+  displayedShots.current = shots;
+  const createdShot = useRef<{ sceneId: string; id: string } | null>(null);
   const [shotHistory, setShotHistory] = useState<{ aggregate: Aggregate & { archived?: boolean }; items: ShotRevision[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A reused result creates no job, so nothing bumps imageEpoch; this refreshes the compose candidates instead.
   const [reuseEpoch, setReuseEpoch] = useState(0);
   const loadToken = useRef(0);
+  const inspect = useContext(InspectContext);
+  const [reviewTarget, setReviewTarget] = useState<string | null>(null);
+  useEffect(() => {
+    if (!reviewTarget || !inspect.visible) return;
+    const card = document.getElementById(reviewTarget);
+    card?.focus();
+    card?.scrollIntoView({ block: "center" });
+    setReviewTarget(null);
+  }, [reviewTarget, inspect.visible]);
   const archiveScope = useRef({ projectId: props.projectId, sceneId: props.sceneId, shotId: props.shotId });
   archiveScope.current = { projectId: props.projectId, sceneId: props.sceneId, shotId: props.shotId };
 
-  const load = useCallback(async () => {
-    if (!props.episode) return;
+  const episodeId = props.episode?.id;
+  const readScene = useCallback(async () => {
+    if (!episodeId) return false;
     const request = ++loadToken.current;
-    const episode = props.episode;
     try {
       const scene = await client.get<{ aggregate: Aggregate; items: SceneRevision[] }>(
-        `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/revisions`,
+        `/projects/${props.projectId}/episodes/${episodeId}/scenes/${props.sceneId}/revisions`,
       );
-      const shotPage = await client.get<{ items: StoryboardShot[]; nextCursor: string | null }>(
-        `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots?view=storyboard`,
-      );
-      if (!shouldApplyLoad(request, loadToken.current)) return;
+      const url = `/projects/${props.projectId}/episodes/${episodeId}/scenes/${props.sceneId}/shots?view=storyboard`;
+      type ShotPage = { items: StoryboardShot[]; nextCursor: string | null };
+      const previousCount = displayedShots.current?.scope === props.sceneId ? displayedShots.current.items.length : 0;
+      const created = createdShot.current?.sceneId === props.sceneId ? createdShot.current : null;
+      let page = await client.get<ShotPage>(url);
+      const items = [...page.items];
+      while (page.nextCursor && (items.length < previousCount || (created && !items.some(shot => shot.entityId === created.id)))) {
+        if (!shouldApplyLoad(request, loadToken.current)) return false;
+        page = await client.get<ShotPage>(`${url}&cursor=${encodeURIComponent(page.nextCursor)}`);
+        items.push(...page.items);
+      }
+      if (!shouldApplyLoad(request, loadToken.current)) return false;
+      if (created === createdShot.current) createdShot.current = null;
       setHistory(scene);
-      setShots(applyPage(null, {
-        scope: props.sceneId,
-        items: shotPage.items,
-        nextCursor: shotPage.nextCursor,
-        append: false,
-      }));
+      setShots(applyPage(null, { scope: props.sceneId, items, nextCursor: page.nextCursor, append: false }));
       if (props.shotId) {
-        const nextShot = await client.get<{ aggregate: Aggregate & { archived?: boolean }; items: ShotRevision[] }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions`);
-        if (!shouldApplyLoad(request, loadToken.current)) return;
+        const nextShot = await client.get<{ aggregate: Aggregate & { archived?: boolean }; items: ShotRevision[] }>(`/projects/${props.projectId}/episodes/${episodeId}/scenes/${props.sceneId}/shots/${props.shotId}/revisions`);
+        if (!shouldApplyLoad(request, loadToken.current)) return false;
         setShotHistory(nextShot);
       } else {
         setShotHistory(null);
       }
       setError(null);
+      return true;
     } catch (caught) {
-      if (!shouldApplyLoad(request, loadToken.current)) return;
-      setHistory(null);
-      setShotHistory(null);
+      if (!shouldApplyLoad(request, loadToken.current)) return false;
       setError(caught instanceof ApiError ? caught.detail : "场景加载失败");
+      throw caught;
     }
-  }, [props.episode, props.projectId, props.refreshEpoch, props.imageEpoch, props.sceneId, props.shotId, reuseEpoch]);
+  }, [episodeId, props.projectId, props.refreshEpoch, props.imageEpoch, props.sceneId, props.shotId, reuseEpoch]);
+
+  const { load, reloadAfterWrite } = useRevisionRefresh(
+    JSON.stringify([props.projectId, episodeId, props.sceneId, props.shotId]), readScene,
+  );
 
   useEffect(() => {
-    void load();
+    void load().catch(() => undefined);
+    return () => { ++loadToken.current; };
   }, [load]);
 
   async function moreShots() {
@@ -1603,7 +1714,7 @@ export function ScenePane(props: {
       });
     } catch (error) {
       if (error instanceof ApiError && error.code === "REVISION_CONFLICT") {
-        void load();
+        void load().catch(() => undefined);
         throw new Error("分镜版本已变化。关闭此窗口后，请核对刷新后的分镜再删除。", { cause: error });
       }
       throw new Error(error instanceof ApiError ? error.detail : "删除结果暂未确认，请用当前确认窗口重试。", { cause: error });
@@ -1653,6 +1764,8 @@ export function ScenePane(props: {
   const savedPrompt = shotCurrent?.promptText.trim() ?? "";
   const savedDialogue = shotCurrent?.dialogue?.trim() ?? "";
   const approvedMediaGate = !shotGate.usable ? shotGate : imageGate;
+  const needsShotReview = Boolean(visibleShot && shotCurrent && shotCurrent.freshnessStatus === "CURRENT"
+    && (visibleShot.aggregate.approvedRevisionId !== shotCurrent.id || shotCurrent.reviewStatus !== "APPROVED"));
   const videoGate = !approvedMediaGate.usable
     ? approvedMediaGate
     : savedPrompt.length > 0
@@ -1696,7 +1809,7 @@ export function ScenePane(props: {
                 ifMatch,
               });
             }}
-            onSaved={async () => { await props.onSaved(); await load(); }}
+            onSaved={async () => { await Promise.all([reloadAfterWrite(), props.onSaved()]); }}
           />
           <InspectSlot>
           <RevisionColumn
@@ -1716,7 +1829,7 @@ export function ScenePane(props: {
             onMore={() => undefined}
             ifMatch={visibleHistory.aggregate.rowVersion}
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/revisions/${revisionId}/review`}
-            onSaved={async () => { await props.onSaved(); await load(); }}
+            onSaved={async () => { await Promise.all([reloadAfterWrite(), props.onSaved()]); }}
           />
           </InspectSlot>
         </EditorGrid>
@@ -1729,13 +1842,21 @@ export function ScenePane(props: {
         }}
         onOpen={props.onOpenShot} onArchive={archiveShot} onMore={moreShots} createForm={current && visibleHistory ? (
           <ShotCreateForm
+            onCreated={id => {
+              if (archiveScope.current.projectId === props.projectId && archiveScope.current.sceneId === props.sceneId) {
+                createdShot.current = { sceneId: props.sceneId, id };
+              }
+            }}
+            suggestedOrdinal={shots?.scope === props.sceneId && !shots.nextCursor
+              ? String(shots.items.reduce((highest, shot) => Math.max(highest, shot.storyboard?.ordinal ?? 0), 0) + 1)
+              : ""}
             scene={visibleHistory.aggregate}
             source={current}
             projectId={props.projectId}
             episodeId={props.episode.id}
             sceneId={props.sceneId}
             onStatus={props.onStatus}
-            onSaved={async () => { await props.onSaved(); await load(); }}
+            onSaved={async () => { await Promise.all([reloadAfterWrite(), props.onSaved()]); }}
           />
         ) : null} />
       {visibleShot?.aggregate.archived ? <p className="text-sm" role="status">该分镜已从当前列表删除，以下为历史版本。</p> : null}
@@ -1768,10 +1889,14 @@ export function ScenePane(props: {
                 ifMatch,
               });
             }}
-            onSaved={async () => { await props.onSaved(); await load(); }}
+            onSaved={async () => { await Promise.all([reloadAfterWrite(), props.onSaved()]); }}
           />
           <ShotImagePanel
             currentRevisionId={shotCurrent.id}
+            onOpenReview={needsShotReview ? () => {
+              inspect.openInspect();
+              setReviewTarget(`shot-review-${shotCurrent.id}`);
+            } : undefined}
             historyKey={visibleShot.items.map((item) => item.id).join("|")}
             usable={imageGate.usable}
             reason={imageGate.reason}
@@ -1795,6 +1920,7 @@ export function ScenePane(props: {
               void props.onSaved().catch(() => props.onStatus("任务已受理，任务列表刷新暂未完成，请稍后重新读取。"));
             }} />
           <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged}
+            composeJobs={props.runs.flatMap(run => run.jobs.filter(job => job.kind === "MEDIA_COMPOSE" && job.sourceShotRevisionId === shotCurrent.id))}
             blocked={props.shotComposeBlocked ?? null} />
           </>}
           </div>
@@ -1815,9 +1941,10 @@ export function ScenePane(props: {
             nextCursor={null}
             onMore={() => undefined}
             readOnly={visibleShot.aggregate.archived === true}
+            reviewId={`shot-review-${shotCurrent.id}`}
             ifMatch={visibleShot.aggregate.rowVersion}
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions/${revisionId}/review`}
-            onSaved={async () => { await props.onSaved(); await load(); }}
+            onSaved={async () => { await Promise.all([reloadAfterWrite(), props.onSaved()]); }}
           />
           </InspectSlot>
         </EditorGrid>
@@ -1895,8 +2022,8 @@ function SceneForm(props: {
     setLocationId(keptText(record, "locationRevisionId", props.current.locationRevisionId ?? ""));
   }, [props.current.heading, props.current.id, props.current.locationRevisionId, props.current.ordinal, props.current.summary, props.current.timeOfDay, props.projectId, props.scene.entityId, props.scene.rowVersion, sceneEntityKey]);
 
-  async function beginConflict(message: string) {
-    setConflict(message);
+  async function beginConflict() {
+    setConflict("内容已更新，正在载入最新版本…");
     props.onStatus("版本冲突，草稿保留");
     try {
       const fresh = await client.get<{ aggregate: Aggregate; items: SceneRevision[] }>(
@@ -1908,13 +2035,16 @@ function SceneForm(props: {
       setServerScene(latest);
       setSeenVersion(snap.ifMatch);
       persistSeen(storageKey, snap);
+      setConflict(RELOADED_REVISION);
     } catch {
       setServerScene(null);
       setSeenVersion(null);
       persistSeen(storageKey, null);
-      setConflict(`${message} 未能读取新基线，草稿保留。`);
+      setConflict("未能读取新基线，草稿保留。");
     }
   }
+
+  const pending = usePendingWrite();
 
   async function save(force: boolean) {
     const existing = readDraft(window.sessionStorage, storageKey);
@@ -1941,8 +2071,8 @@ function SceneForm(props: {
       props.onStatus("已保存");
       await props.onSaved();
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 409) {
-        await beginConflict(caught.detail);
+      if (isRevisionConflict(caught)) {
+        await beginConflict();
         return;
       }
       setError(caught instanceof ApiError ? caught.detail : "保存失败，草稿保留");
@@ -1963,7 +2093,7 @@ function SceneForm(props: {
   }, body()) : [];
 
   return (
-    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void pending.run(() => save(false)); }}>
       <h2 className="font-medium">{props.current.heading}</h2>
       <label className="mt-2 block" htmlFor="edit-heading">标题</label>
       <input id="edit-heading" className="w-full rounded border px-2 py-1" maxLength={LIMITS.heading} value={heading} onChange={(event) => { setHeading(event.target.value); remember({ ...body(), heading: event.target.value }); }} />
@@ -1981,14 +2111,14 @@ function SceneForm(props: {
         ))}
       </select>
       {!scriptUsable.usable ? <p className="mt-2 text-sm">来源剧本不可用：{scriptUsable.reason}</p> : <p className="mt-2 text-sm">来源剧本 {props.episode.currentScriptRevisionId}</p>}
-      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={!scriptUsable.usable || Boolean(shownSceneConflict)}>保存新版本</button>
+      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={pending.busy || !scriptUsable.usable || Boolean(shownSceneConflict)}>保存新版本</button>
       {error ? <p role="alert">{error}</p> : null}
       {shownSceneConflict ? (
         <div role="alert">
           <p>{shownSceneConflict} 草稿保留。</p>
           <p className="text-sm">{shownSceneVersion !== null ? `已看到的并发版本 ${shownSceneVersion}。确认后只按这个版本提交。` : "还没有可读的新基线，不能确认提交。"}</p>
           {shownScene ? <DiffList rows={sceneDiff} /> : null}
-          <button type="button" disabled={shownSceneVersion === null} onClick={() => void save(true)}>确认后重新提交</button>
+          <button type="button" disabled={pending.busy || shownSceneVersion === null} onClick={() => void pending.run(() => save(true))}>确认后重新提交</button>
         </div>
       ) : null}
     </form>
@@ -1996,6 +2126,8 @@ function SceneForm(props: {
 }
 
 function ShotCreateForm(props: {
+  suggestedOrdinal: string;
+  onCreated: (id: string) => void;
   scene: Aggregate;
   source: SceneRevision;
   projectId: string;
@@ -2011,14 +2143,14 @@ function ShotCreateForm(props: {
     approvedId: props.scene.approvedRevisionId,
     revisionId: props.source.id,
   });
-  const [ordinal, setOrdinal] = useState("1");
+  const [ordinal, setOrdinal] = useState(props.suggestedOrdinal);
   const [shotType, setShotType] = useState("中景");
   const [camera, setCamera] = useState("");
   const [action, setAction] = useState("");
   const [dialogue, setDialogue] = useState("");
   const [durationHint, setDurationHint] = useState("");
   const [promptText, setPromptText] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const creation = useCreateRevision(props.onSaved, props.onStatus);
   const storageKey = draftStorageKey(props.projectId, `shot-new:${props.sceneId}`, null);
   function remember(next: { ordinal: string; shotType: string; camera: string; action: string; dialogue: string; durationHint: string; promptText: string }) {
     const body = {
@@ -2032,18 +2164,19 @@ function ShotCreateForm(props: {
       promptText: next.promptText,
     };
     writeDraft(window.sessionStorage, storageKey, nextDraft(readDraft(window.sessionStorage, storageKey), body, props.scene.rowVersion, () => crypto.randomUUID()));
+    props.onStatus("未保存");
   }
   useEffect(() => {
     const payload = readDraft(window.sessionStorage, storageKey)?.payload;
     const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : null;
-    setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : "1");
+    setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : props.suggestedOrdinal);
     setShotType(typeof record?.shotType === "string" ? record.shotType : "中景");
     setCamera(typeof record?.camera === "string" ? record.camera : "");
     setAction(typeof record?.action === "string" ? record.action : "");
     setDialogue(keptText(record, "dialogue", ""));
     setDurationHint(keptText(record, "durationHint", ""));
     setPromptText(typeof record?.promptText === "string" ? record.promptText : "");
-  }, [storageKey]);
+  }, [props.suggestedOrdinal, storageKey]);
 
   async function save() {
     const body = {
@@ -2057,17 +2190,17 @@ function ShotCreateForm(props: {
       promptText,
     };
     const draft = nextDraft(readDraft(window.sessionStorage, storageKey), body, props.scene.rowVersion, () => crypto.randomUUID());
-    writeDraft(window.sessionStorage, storageKey, draft);
-    props.onStatus("保存中");
-    try {
-      await client.write({
+    await creation.submit(async () => {
+      writeDraft(window.sessionStorage, storageKey, draft);
+      const created = await client.write<{ entityId: string }>({
         path: `/projects/${props.projectId}/episodes/${props.episodeId}/scenes/${props.sceneId}/shots`,
         body,
         idempotencyKey: draft.idempotencyKey,
         ifMatch: aggregateVersion("shot-create", { entityRowVersion: props.scene.rowVersion }),
       });
+      props.onCreated(created.body.entityId);
       if (releaseSubmittedDraft(window.sessionStorage, storageKey, draft)) {
-        setOrdinal("1");
+        setOrdinal("");
         setShotType("中景");
         setCamera("");
         setAction("");
@@ -2075,14 +2208,7 @@ function ShotCreateForm(props: {
         setDurationHint("");
         setPromptText("");
       }
-      props.onStatus("已保存");
-      await props.onSaved();
-    } catch (caught) {
-      const conflict = caught instanceof ApiError && caught.status === 409;
-      setError(caught instanceof ApiError ? `${caught.code}：${caught.detail}${conflict ? "。草稿保留，确认后再次保存才会使用新基线。" : ""}` : "保存失败，草稿保留");
-      props.onStatus(conflict ? "版本冲突，草稿保留" : "保存失败，草稿保留");
-      if (conflict) await props.onSaved().catch(() => undefined);
-    }
+    });
   }
 
   return (
@@ -2090,7 +2216,7 @@ function ShotCreateForm(props: {
       <h3 className="font-medium">新建镜头</h3>
       {!usable.usable ? <p className="text-sm">来源场景不可用：{usable.reason}</p> : null}
       <label htmlFor="new-shot-ordinal">序号</label>
-      <input id="new-shot-ordinal" className="rounded border px-2 py-1" value={ordinal} onChange={(event) => { setOrdinal(event.target.value); remember({ ordinal: event.target.value, shotType, camera, action, dialogue, durationHint, promptText }); }} />
+      <input id="new-shot-ordinal" type="number" min={1} step={1} required placeholder={props.suggestedOrdinal ? undefined : "载入全部分镜或填写未使用的序号"} className="rounded border px-2 py-1" value={ordinal} onChange={(event) => { setOrdinal(event.target.value); remember({ ordinal: event.target.value, shotType, camera, action, dialogue, durationHint, promptText }); }} />
       <label htmlFor="new-shot-type">景别</label>
       <input id="new-shot-type" className="rounded border px-2 py-1" maxLength={LIMITS.shotType} value={shotType} onChange={(event) => { setShotType(event.target.value); remember({ ordinal, shotType: event.target.value, camera, action, dialogue, durationHint, promptText }); }} />
       <label htmlFor="new-shot-camera">镜头</label>
@@ -2103,8 +2229,8 @@ function ShotCreateForm(props: {
       <input id="new-shot-duration" className="rounded border px-2 py-1" maxLength={LIMITS.durationHint} value={durationHint} onChange={(event) => { setDurationHint(event.target.value); remember({ ordinal, shotType, camera, action, dialogue, durationHint: event.target.value, promptText }); }} />
       <label htmlFor="new-shot-prompt">提示词</label>
       <textarea id="new-shot-prompt" className={BODY_FIELD} maxLength={LIMITS.promptText} value={promptText} onChange={(event) => { setPromptText(event.target.value); remember({ ordinal, shotType, camera, action, dialogue, durationHint, promptText: event.target.value }); }} />
-      <button className="w-fit rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={!usable.usable}>保存新版本</button>
-      {error ? <p role="alert">{error}</p> : null}
+      <button className="w-fit rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type={creation.pendingRead ? "button" : "submit"} disabled={creation.busy || (!usable.usable && !creation.pendingRead)} onClick={creation.pendingRead ? () => void creation.submit() : undefined}>{creation.pendingRead ? "重新载入" : "保存新版本"}</button>
+      {creation.error ? <p role="alert">{creation.error}</p> : null}
     </form>
   );
 }
@@ -2187,21 +2313,24 @@ function ShotForm(props: {
     setSourceId(usable?.id ?? "");
   }, [props.current.action, props.current.camera, props.current.dialogue, props.current.durationHint, props.current.plannedDurationMs, props.current.id, props.current.ordinal, props.current.promptText, props.current.shotType, props.current.sourceSceneRevisionId, props.projectId, props.shot.entityId, props.shot.rowVersion, props.sources, shotEntityKey]);
 
-  async function beginConflict(message: string) {
-    setConflict(message);
+  async function beginConflict() {
+    setConflict("内容已更新，正在载入最新版本…");
     props.onStatus("版本冲突，草稿保留");
     try {
       const snap = await props.readConflict();
       setServerShot(snap.server);
       setSeenVersion(snap.ifMatch);
       persistSeen(storageKey, snap);
+      setConflict(RELOADED_REVISION);
     } catch {
       setServerShot(null);
       setSeenVersion(null);
       persistSeen(storageKey, null);
-      setConflict(`${message} 未能读取新基线，草稿保留。`);
+      setConflict("未能读取新基线，草稿保留。");
     }
   }
+
+  const pending = usePendingWrite();
 
   async function save(force: boolean) {
     const existing = readDraft(window.sessionStorage, storageKey);
@@ -2235,8 +2364,8 @@ function ShotForm(props: {
       props.onStatus("已保存");
       await props.onSaved();
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 409) {
-        await beginConflict(caught.detail);
+      if (isRevisionConflict(caught)) {
+        await beginConflict();
         return;
       }
       setError(caught instanceof ApiError ? caught.detail : "保存失败，草稿保留");
@@ -2245,7 +2374,7 @@ function ShotForm(props: {
   }
 
   return (
-    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void pending.run(() => save(false)); }}>
       <h2 className="font-medium">镜头 {props.current.ordinal}</h2>
       <label htmlFor="shot-type">景别</label>
       <input id="shot-type" className="w-full rounded border px-2 py-1" maxLength={LIMITS.shotType} value={shotType} onChange={(event) => { setShotType(event.target.value); remember({ ...body(), shotType: event.target.value }); }} />
@@ -2277,7 +2406,7 @@ function ShotForm(props: {
         const shownShotConflict = shotDrift.blocked ? (conflict ?? "编辑基线已变化，草稿保留") : conflict;
         return (
           <>
-            <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={Boolean(shownShotConflict) || !selectedSource?.usable}>保存新版本</button>
+            <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={pending.busy || Boolean(shownShotConflict) || !selectedSource?.usable}>保存新版本</button>
             {!selectedSource?.usable ? <p className="mt-2 text-sm">{selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。"}</p> : null}
             {error ? <p role="alert">{error}</p> : null}
             {shownShotConflict ? (
@@ -2285,7 +2414,7 @@ function ShotForm(props: {
                 <p>{shownShotConflict} 草稿保留。</p>
                 <p className="text-sm">{shownShotVersion !== null ? `已看到的并发版本 ${shownShotVersion}。确认后只按这个版本提交。` : "还没有可读的新基线，不能确认提交。"}</p>
                 {shownShot ? <DiffList rows={diffJson(shownShot, readDraft(window.sessionStorage, storageKey)?.payload ?? body())} /> : null}
-                <button type="button" disabled={shownShotVersion === null} onClick={() => void save(true)}>确认后重新提交</button>
+                <button type="button" disabled={pending.busy || shownShotVersion === null} onClick={() => void pending.run(() => save(true))}>确认后重新提交</button>
               </div>
             ) : null}
           </>
@@ -2308,6 +2437,7 @@ interface RevisionItem {
 }
 
 function RevisionColumn(props: {
+  reviewId?: string;
   items: RevisionItem[];
   currentId: string | null;
   nextCursor: string | null;
@@ -2324,6 +2454,8 @@ function RevisionColumn(props: {
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const pendingReview = useRef<DraftRecord | null>(null);
+  const [needsReviewReload, setNeedsReviewReload] = useState(false);
+  const pending = usePendingWrite();
   const left = props.items.find((item) => item.id === leftId) ?? latest ?? null;
   const right = props.items.find((item) => item.id === rightId) ?? previous ?? null;
   const current = props.items.find((item) => item.id === props.currentId) ?? null;
@@ -2339,6 +2471,18 @@ function RevisionColumn(props: {
     setLeftId(latestId);
     setRightId(previousId);
   }, [latestId, previousId]);
+
+  async function reloadReview() {
+    setError("内容已更新，正在载入最新版本…");
+    try {
+      await props.onSaved();
+      setNeedsReviewReload(false);
+      setError(RELOADED_REVISION);
+    } catch {
+      setNeedsReviewReload(true);
+      setError("未能载入最新版本，审核备注已保留。");
+    }
+  }
 
   async function review(to: string) {
     if (!current || props.readOnly) return;
@@ -2356,10 +2500,9 @@ function RevisionColumn(props: {
       setError(null);
       await props.onSaved();
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 409) {
+      if (isRevisionConflict(caught)) {
         pendingReview.current = null;
-        setError(`${caught.code}：${caught.detail}。备注保留。重新读取后再次提交才会使用新基线和新幂等键。`);
-        await props.onSaved();
+        await reloadReview();
         return;
       }
       setError(caught instanceof ApiError ? `${caught.code}：${caught.detail}。再次提交将复用同一幂等键。` : "审核失败。再次提交将复用同一幂等键。");
@@ -2397,7 +2540,7 @@ function RevisionColumn(props: {
         </div>
       )}
       {current && !props.readOnly ? (
-        <div className="creator-review-actions mt-4">
+        <div className="creator-review-actions mt-4" id={props.reviewId} tabIndex={props.reviewId ? -1 : undefined}>
           <h3 className="font-medium">审核</h3>
           <p className="text-sm">{REVIEW_TEXT[current.reviewStatus] ?? current.reviewStatus}，新鲜度 {FRESH_TEXT[current.freshnessStatus] ?? current.freshnessStatus}。已通过不等于新鲜。</p>
           {current.staleReason ? <p className="text-sm">过期原因 {current.staleReason}</p> : null}
@@ -2406,12 +2549,14 @@ function RevisionColumn(props: {
           <textarea id={`note-${current.id}`} className="w-full rounded border px-2 py-1" maxLength={LIMITS.reviewNote} value={note} onChange={(event) => setNote(event.target.value)} />
           <div className="mt-2 flex flex-wrap gap-2">
             {actions.map((action) => (
-              <button key={action.to} className="rounded border px-2 py-1 disabled:opacity-50" type="button" disabled={!action.enabled} onClick={() => void review(action.to)}>
+              <button key={action.to} className="rounded border px-2 py-1 disabled:opacity-50" type="button" disabled={!action.enabled || pending.busy || needsReviewReload} onClick={() => void pending.run(() => review(action.to))}>
                 {action.label}{action.enabled ? "" : `（${action.reason}）`}
               </button>
             ))}
           </div>
           {error ? <p role="alert">{error}</p> : null}
+          {needsReviewReload ? <button className="rounded border px-2 py-1" type="button" disabled={pending.busy}
+            onClick={() => void pending.run(reloadReview)}>重新载入</button> : null}
         </div>
       ) : null}
     </aside>
@@ -2435,6 +2580,7 @@ function DiffList({ rows }: { rows: ReturnType<typeof diffJson> }) {
 }
 
 function ShotImagePanel(props: {
+  onOpenReview?: () => void;
   currentRevisionId: string;
   historyKey: string;
   usable: boolean;
@@ -2691,11 +2837,16 @@ function ShotImagePanel(props: {
       </section>
       <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 视频</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。</p>
+        {props.onOpenReview ? <p className="mt-2 text-sm" id={`mock-media-review-${props.currentRevisionId}`}>
+          先提交审核并通过这个镜头，才能生成演示素材
+          <button className="ml-2 rounded border px-3 py-1" type="button" onClick={props.onOpenReview}>前往镜头审核</button>
+        </p> : null}
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示视频为 16×16 黑色画面，时长约 1 秒。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-video-seed">seed（可选）</label>
         <input id="mock-video-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={videoSeed} onChange={(event) => setVideoSeed(event.target.value)} />
-        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.videoUsable || busy !== null} onClick={() => void submitMedia("video")}>
-          {busy === "video" ? "正在提交" : props.videoUsable ? "生成 Mock 视频" : `生成 Mock 视频（${props.videoReason}）`}
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" aria-describedby={props.onOpenReview ? `mock-media-review-${props.currentRevisionId}` : undefined}
+          disabled={!props.videoUsable || busy !== null} onClick={() => void submitMedia("video")}>
+          {busy === "video" ? "正在提交" : props.videoUsable || props.onOpenReview ? "生成 Mock 视频" : `生成 Mock 视频（${props.videoReason}）`}
         </button>
         <button className="ml-2 mt-3 rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!props.videoUsable || busy !== null} onClick={() => void submitMedia("video", true)}>重新生成视频</button>
         {videoNotice ? <p className="mt-2 text-sm">{videoNotice}</p> : null}
@@ -2707,11 +2858,12 @@ function ShotImagePanel(props: {
       </section>
       <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 配音</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 单声道静音。已保存并审核的对白只作为来源审计，fixture 不会朗读它。这不是真实 TTS，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示配音为 100 毫秒静音，听不到对白。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-speech-seed">seed（可选）</label>
         <input id="mock-speech-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={speechSeed} onChange={(event) => setSpeechSeed(event.target.value)} />
-        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.speechUsable || busy !== null} onClick={() => void submitMedia("speech")}>
-          {busy === "speech" ? "正在提交" : props.speechUsable ? "生成 Mock 配音" : `生成 Mock 配音（${props.speechReason}）`}
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" aria-describedby={props.onOpenReview ? `mock-media-review-${props.currentRevisionId}` : undefined}
+          disabled={!props.speechUsable || busy !== null} onClick={() => void submitMedia("speech")}>
+          {busy === "speech" ? "正在提交" : props.speechUsable || props.onOpenReview ? "生成 Mock 配音" : `生成 Mock 配音（${props.speechReason}）`}
         </button>
         {speechNotice ? <p className="mt-2 text-sm">{speechNotice}</p> : null}
         {speechAcceptError ? (
@@ -2722,11 +2874,12 @@ function ShotImagePanel(props: {
       </section>
       <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 字幕</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定测试字幕，内容不随已保存对白变化。seed 只写入快照。这不是真实字幕生成，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示字幕显示已保存的对白，时长约 1 秒。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-subtitle-seed">seed（可选）</label>
         <input id="mock-subtitle-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={subtitleSeed} onChange={(event) => setSubtitleSeed(event.target.value)} />
-        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.subtitleUsable || busy !== null} onClick={() => void submitMedia("subtitle")}>
-          {busy === "subtitle" ? "正在提交" : props.subtitleUsable ? "生成 Mock 字幕" : `生成 Mock 字幕（${props.subtitleReason}）`}
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" aria-describedby={props.onOpenReview ? `mock-media-review-${props.currentRevisionId}` : undefined}
+          disabled={!props.subtitleUsable || busy !== null} onClick={() => void submitMedia("subtitle")}>
+          {busy === "subtitle" ? "正在提交" : props.subtitleUsable || props.onOpenReview ? "生成 Mock 字幕" : `生成 Mock 字幕（${props.subtitleReason}）`}
         </button>
         {subtitleNotice ? <p className="mt-2 text-sm">{subtitleNotice}</p> : null}
         {subtitleAcceptError ? (
@@ -2740,8 +2893,9 @@ function ShotImagePanel(props: {
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 静音，kind 为 MUSIC，与配音 AUDIO 分开。已保存提示词只进入审计快照，不会变成音乐。这不是真实音乐生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-music-seed">seed（可选）</label>
         <input id="mock-music-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={musicSeed} onChange={(event) => setMusicSeed(event.target.value)} />
-        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.musicUsable || busy !== null} onClick={() => void submitMedia("music")}>
-          {busy === "music" ? "正在提交" : props.musicUsable ? "生成 Mock 音乐" : `生成 Mock 音乐（${props.musicReason}）`}
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" aria-describedby={props.onOpenReview ? `mock-media-review-${props.currentRevisionId}` : undefined}
+          disabled={!props.musicUsable || busy !== null} onClick={() => void submitMedia("music")}>
+          {busy === "music" ? "正在提交" : props.musicUsable || props.onOpenReview ? "生成 Mock 音乐" : `生成 Mock 音乐（${props.musicReason}）`}
         </button>
         {musicNotice ? <p className="mt-2 text-sm">{musicNotice}</p> : null}
         {musicAcceptError ? (
@@ -2919,7 +3073,7 @@ export function TaskDrawer(props: {
     <div className="creator-task-drawer fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
       <button className="text-sm underline" type="button" onClick={props.onClose}>关闭任务</button>
       <h2 className="mt-3 font-medium">Mock 文本任务</h2>
-      <p className="mt-2 text-sm">Mock 生成场景和 Mock 生成镜头一次处理本作品的全部各集（每集一个模板场景和镜头，不是按剧本真实拆分），不是一键重新生成，也不会覆盖已占用的 ordinal 1。场景要求每一集剧本均已通过且为 CURRENT；镜头还要求对应场景已通过且为 CURRENT。服务端拒绝时以返回原因为准。返回 202 只表示受理，结果从任务和实体查询读取。</p>
+      <p className="mt-2 text-sm">每集生成一个场景或镜头的演示草稿，保留已有的第一个场景和镜头。生成场景前请先通过各集当前剧本的审核，生成镜头还需通过对应场景的审核。</p>
       <div className="mt-3 flex gap-2">
         <button className="rounded bg-red-700 px-3 py-2 text-white" type="button" onClick={() => void start("mock-scenes")}>Mock 生成场景</button>
         <button className="rounded bg-red-700 px-3 py-2 text-white" type="button" onClick={() => void start("mock-shots")}>Mock 生成镜头</button>

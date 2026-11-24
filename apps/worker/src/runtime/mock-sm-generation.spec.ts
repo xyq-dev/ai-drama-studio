@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { JobPersistenceService, MediaAssetRecord, MediaAssetStore } from "@ai-drama/database";
-import { MOCK_AUDIO_FIXTURE, MOCK_SUBTITLE_FIXTURE, MockMediaAdapter } from "@ai-drama/providers";
+import { MOCK_AUDIO_FIXTURE, MockMediaAdapter } from "@ai-drama/providers";
 import { recoverMockSmAttempt, runMockSmJob, type MockSmJob } from "./mock-sm-generation";
 
-function input(capability: MockSmJob["capability"]): MockSmJob {
+function input(capability: MockSmJob["capability"], sourceText: string): MockSmJob {
   return {
     workspaceId: "11111111-1111-4111-8111-111111111111",
     projectId: "22222222-2222-4222-8222-222222222222",
@@ -17,7 +18,7 @@ function input(capability: MockSmJob["capability"]): MockSmJob {
       outcome: "success",
       executionMode: "sync",
       capability,
-      sourceText: capability === "subtitle.generate" ? "已保存对白" : "已保存提示",
+      sourceText,
     },
     traceId: "mock-sm",
     capability,
@@ -25,11 +26,18 @@ function input(capability: MockSmJob["capability"]): MockSmJob {
 }
 
 describe("synchronous mock subtitle and music", () => {
+  const cue = (body: string) => Buffer.from(`WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n${body}\n`);
   it.each([
-    ["subtitle.generate", "SUBTITLE", "text/vtt", "mock-subtitles", MOCK_SUBTITLE_FIXTURE.byteLength],
-    ["audio.music", "MUSIC", "audio/wav", "mock-music", MOCK_AUDIO_FIXTURE.byteLength],
-  ] as const)("stores %s with a zero actual cost and inspects without another submit", async (capability, kind, mimeType, folder, byteSize) => {
-    const job = input(capability);
+    ["subtitle.generate", "已保存对白", cue("已保存对白")],
+    ["subtitle.generate", "甲 --> <乙> & 丙\r\n\r\n丁", cue("甲 &lt;乙&gt; &amp; 丙 丁")],
+    ["subtitle.generate", "🚌".repeat(90), cue(`${"🚌".repeat(40)}\n${"🚌".repeat(40)}`)],
+    ["audio.music", "已保存提示", MOCK_AUDIO_FIXTURE.bytes],
+  ] as const)("stores deterministic %s bytes for %s and recovers without another submit", async (capability, sourceText, bytes) => {
+    const job = input(capability, sourceText);
+    const subtitle = capability === "subtitle.generate";
+    const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
+    const mimeType = subtitle ? "text/vtt" : "audio/wav";
+    const folder = subtitle ? "mock-subtitles" : "mock-music";
     const jobs = {
       acquireQueuedJob: vi.fn(async () => ({ attemptId: "66666666-6666-4666-8666-666666666666", attemptNo: 1 })),
       attachProviderRequest: vi.fn(async () => undefined),
@@ -49,10 +57,11 @@ describe("synchronous mock subtitle and music", () => {
     const created = await runMockSmJob(job, { jobs, assets, adapter, objects: { put } });
     expect(created).toBe(asset);
     expect(completeAttemptWithAsset).toHaveBeenCalledWith(jobs, expect.objectContaining({
-      kind,
+      kind: subtitle ? "SUBTITLE" : "MUSIC",
       mimeType,
-      durationMs: 100,
-      byteSize,
+      durationMs: subtitle ? 1000 : 100,
+      byteSize: bytes.length,
+      checksumSha256,
       objectKey: expect.stringContaining(`${folder}/`),
       actualCost: expect.objectContaining({
         kind: "ACTUAL",
@@ -71,5 +80,9 @@ describe("synchronous mock subtitle and music", () => {
       providerRequestId: `mock-media|sync|${capability}|${job.jobId}:1`,
     }, { jobs, assets, adapter: recoveryAdapter, objects: { put } });
     expect(submit).not.toHaveBeenCalled();
+    expect(put).toHaveBeenCalledTimes(2);
+    for (const call of [1, 2]) {
+      expect(put).toHaveBeenNthCalledWith(call, expect.objectContaining({ bytes, checksumSha256, mimeType }));
+    }
   });
 });

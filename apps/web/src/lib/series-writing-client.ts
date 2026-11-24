@@ -19,6 +19,8 @@ export interface SeriesOptionsView {
   code: string;
   storageReady: boolean;
   operatorTokenRequired: boolean;
+  /** Authenticated creator requests require writing quota before creating a work. */
+  viewerIsCreator?: boolean;
   defaultProvider: string | null;
   providers: Array<{ providerKey: string; label: string; ready: boolean; models: string[]; defaultModel: string | null; missing: string[] }>;
   configurationPending: boolean;

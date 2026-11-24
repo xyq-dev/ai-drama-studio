@@ -5,7 +5,7 @@ import {
   type StoreCreatorAccess,
 } from "@ai-drama/database";
 import {
-  LEGACY_OWNER_ACCOUNT_ID,
+  LEGACY_OWNER_ACCOUNT_ID, creatorAccountIdFromActor,
   type CreatorAccountRole,
 } from "@ai-drama/domain";
 
@@ -37,6 +37,10 @@ export function runWithCreatorAccess<T>(scope: CreatorAccessScope, work: () => T
 
 export function ownerAccountFilter(): string | null {
   return storeOwnerAccountFilter();
+}
+
+export function isCreatorRequest(): boolean {
+  return creatorAccountIdFromActor(storeActorId()) !== null;
 }
 
 export function actorIdForAccess(): string {

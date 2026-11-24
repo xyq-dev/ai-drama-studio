@@ -65,7 +65,9 @@ describe("beginner start page", () => {
     expect(await screen.findByRole("heading", { name: "确认创建作品" })).toBeTruthy();
     // The suggested name is cut from the user's own words and says so.
     expect((screen.getByLabelText("作品名称") as HTMLInputElement).value).toBe("在外打拼十年的女儿回到老…");
-    expect(screen.getByText(/不是 AI 生成/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("作品名称"), { target: { value: "自定义作品名" } });
+    fireEvent.click(screen.getByRole("button", { name: "从想法提取作品名" }));
+    expect((screen.getByLabelText("作品名称") as HTMLInputElement).value).toBe("在外打拼十年的女儿回到老…");
     expect(calls.filter((call) => call.startsWith("POST"))).toEqual([]);
   });
 

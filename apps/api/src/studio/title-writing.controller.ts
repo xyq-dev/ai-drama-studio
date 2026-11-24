@@ -1,3 +1,4 @@
+import { isCreatorRequest } from "../auth/creator-access";
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Res } from "@nestjs/common";
 import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { TITLE_WRITING_SERVICE } from "./tokens";
@@ -30,7 +31,7 @@ export class TitleWritingController {
 
   @Get("writing/title-runs/options")
   options(@Res({ passthrough: true }) response: StatusResponse) {
-    return this.send(response, this.writing.options());
+    return this.send(response, this.writing.options(isCreatorRequest()));
   }
 
   @Post("projects/:projectId/title-runs")
@@ -44,6 +45,12 @@ export class TitleWritingController {
   ) {
     return this.send(response, this.writing.start(projectId, body, operatorProof(this.site, headers),
       { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
+  }
+
+  @Get("projects/:projectId/title-runs/start-receipt")
+  startReceipt(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string) {
+    return this.send(response, this.writing.startReceipt(projectId, storeActorId(), key));
   }
 
   @Get("projects/:projectId/title-runs/latest")

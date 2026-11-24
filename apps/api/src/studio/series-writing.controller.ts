@@ -1,3 +1,4 @@
+import { isCreatorRequest } from "../auth/creator-access";
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Query, Res } from "@nestjs/common";
 import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { SERIES_WRITING_SERVICE } from "./tokens";
@@ -37,7 +38,12 @@ export class SeriesWritingController {
 
   @Get("writing/series/options")
   options(@Res({ passthrough: true }) response: StatusResponse) {
-    return this.send(response, (service) => service.options());
+    return this.send(response, (service) => service.options(isCreatorRequest()));
+  }
+
+  @Get("writing/series/start-receipt")
+  startReceipt(@Res({ passthrough: true }) response: StatusResponse, @Headers("idempotency-key") key?: string) {
+    return this.send(response, (service) => service.startReceipt(storeActorId(), key));
   }
 
   @Post("writing/series")

@@ -15,7 +15,7 @@ export interface WriteRequest {
   body: unknown;
   idempotencyKey: string;
   ifMatch?: number;
-  method?: "POST" | "PUT";
+  method?: "POST" | "PUT" | "PATCH";
   operatorToken?: string;
 }
 
@@ -33,10 +33,11 @@ export class StudioClient {
   ) {}
 
   /** options.signal (optional) cancels the request; without it the call is unchanged. */
-  async get<T>(path: string, options?: { signal?: AbortSignal }): Promise<T> {
+  async get<T>(path: string, options?: { signal?: AbortSignal; idempotencyKey?: string }): Promise<T> {
     const response = await this.request(`${this.prefix}${path}`, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      cache: "no-store",
+      headers: { Accept: "application/json", ...(options?.idempotencyKey && { "Idempotency-Key": options.idempotencyKey }) },
       ...(options?.signal ? { signal: options.signal } : {}),
     });
     return parseBody<T>(response);

@@ -162,7 +162,7 @@ export class AutoCreationService {
     setImmediate(() => { void work().catch(() => undefined); });
   }
 
-  async options(): Promise<AutoCreationResult> {
+  async options(viewerIsCreator = false): Promise<AutoCreationResult> {
     const storageReady = await this.deps.store.storageReady();
     const providers = TITLE_WRITING_PROVIDER_KEYS.map((providerKey) => {
       const config = this.deps.providers[providerKey];
@@ -189,6 +189,7 @@ export class AutoCreationService {
       code,
       storageReady,
       operatorTokenRequired: this.deps.siteOperator !== true,
+      viewerIsCreator,
       defaultProvider: this.deps.defaultProvider ?? firstReady,
       providers,
       configurationPending: pending,
@@ -372,6 +373,15 @@ export class AutoCreationService {
     } finally {
       await hold?.release();
     }
+  }
+
+  async startReceipt(projectId: string, actorId: string, key?: string): Promise<AutoCreationResult> {
+    if (!key?.trim() || key.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
+    const refused = await this.readable(projectId);
+    if (refused) return refused;
+    const bundle = await this.deps.store.findRunByKey(this.deps.workspaceId, actorId, key);
+    const receipt = bundle?.run.projectId === projectId ? { projectId, runId: bundle.run.id } : null;
+    return { status: 200, body: { receipt } };
   }
 
   async latest(projectId: string, includeResearchRejectionDiagnostic = false): Promise<AutoCreationResult> {

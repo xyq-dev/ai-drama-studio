@@ -3,7 +3,8 @@ import type { JobPersistenceService, MediaAssetRecord, MediaAssetStore, Provider
 import { assertSyncActualCost } from "@ai-drama/database";
 import {
   MOCK_AUDIO_FIXTURE,
-  MOCK_SUBTITLE_FIXTURE,
+  MOCK_SUBTITLE_DURATION_MS,
+  mockDialogueSubtitle,
   type MediaAccountingEnvelope,
   type MediaProviderAdapter,
   type MediaProviderOutput,
@@ -26,12 +27,7 @@ export interface MockSmJob {
   capability: MockSmCapability;
 }
 
-const FIXTURES = {
-  "subtitle.generate": MOCK_SUBTITLE_FIXTURE,
-  "audio.music": MOCK_AUDIO_FIXTURE,
-} as const;
-
-/** Synchronous MEDIA_SUBTITLE / MEDIA_MUSIC path. Bytes stay the fixed fixture. */
+/** The subtitle is regenerated from the same saved shot snapshot, including on recovery. */
 export async function runMockSmJob(
   input: MockSmJob,
   dependencies: {
@@ -102,7 +98,7 @@ export async function recoverMockSmAttempt(
   },
 ): Promise<MediaAssetRecord | null | "ACTIVE" | "FAILED" | "CANCELED" | "UNKNOWN"> {
   assertSyncSnapshot(input.inputSnapshot, input.capability);
-  const observation = await dependencies.adapter.inspect(input.providerRequestId);
+  const observation = await dependencies.adapter.inspect(input.providerRequestId, input.inputSnapshot);
   await dependencies.jobs.recordProviderEvent({
     workspaceId: input.workspaceId,
     providerConfigurationId: input.providerConfigurationId,
@@ -119,7 +115,7 @@ export async function recoverMockSmAttempt(
 }
 
 async function persistMockSmOutput(
-  input: Pick<MockSmJob, "workspaceId" | "projectId" | "shotRevisionId" | "jobId" | "traceId" | "providerConfigurationId" | "capability">,
+  input: Pick<MockSmJob, "workspaceId" | "projectId" | "shotRevisionId" | "jobId" | "traceId" | "providerConfigurationId" | "capability" | "inputSnapshot">,
   attemptId: string,
   providerRequestId: string,
   output: MediaProviderOutput | undefined,
@@ -131,7 +127,9 @@ async function persistMockSmOutput(
     objects: MockImageObjectStore;
   },
 ): Promise<MediaAssetRecord | null> {
-  const fixture = FIXTURES[input.capability];
+  const fixture = input.capability === "subtitle.generate"
+    ? { mimeType: "text/vtt" as const, bytes: mockDialogueSubtitle(input.inputSnapshot), durationMs: MOCK_SUBTITLE_DURATION_MS }
+    : MOCK_AUDIO_FIXTURE;
   const expectedKind = input.capability === "subtitle.generate" ? "SUBTITLE" : "MUSIC";
   if (!output || output.kind !== expectedKind || output.mimeTypeHint !== fixture.mimeType) {
     throw new Error("Mock subtitle or music job requires the canonical fixture output");
@@ -142,9 +140,6 @@ async function persistMockSmOutput(
   const bytes = Buffer.from(resolved.uri.slice(prefix.length), "base64");
   if (!bytes.equals(fixture.bytes)) throw new Error("Mock subtitle or music output is not the canonical fixture");
   const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
-  if (checksumSha256 !== fixture.checksumSha256 || bytes.length !== fixture.byteLength) {
-    throw new Error("Mock subtitle or music output is not the canonical fixture");
-  }
   const extension = expectedKind === "SUBTITLE" ? "vtt" : "wav";
   const folder = expectedKind === "SUBTITLE" ? "mock-subtitles" : "mock-music";
   const key = `${folder}/${input.projectId}/${input.jobId}/${checksumSha256}.${extension}`;

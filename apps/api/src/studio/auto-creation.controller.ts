@@ -1,3 +1,4 @@
+import { isCreatorRequest } from "../auth/creator-access";
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Query, Res } from "@nestjs/common";
 import { PersistenceError, storeActorId } from "@ai-drama/database";
 import { AUTO_CREATION_SERVICE } from "./tokens";
@@ -30,7 +31,7 @@ export class AutoCreationController {
 
   @Get("writing/auto-runs/options")
   options(@Res({ passthrough: true }) response: StatusResponse) {
-    return this.send(response, (service) => service.options());
+    return this.send(response, (service) => service.options(isCreatorRequest()));
   }
 
   @Post("projects/:projectId/auto-runs")
@@ -44,6 +45,12 @@ export class AutoCreationController {
   ) {
     return this.send(response, (service) => service.start(projectId, body, operatorProof(this.site, headers),
       { actorId: storeActorId(), traceId: createTraceId(traceHeader), idempotencyKey }));
+  }
+
+  @Get("projects/:projectId/auto-runs/start-receipt")
+  startReceipt(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string) {
+    return this.send(response, (service) => service.startReceipt(projectId, storeActorId(), key));
   }
 
   @Get("projects/:projectId/auto-runs/latest")

@@ -15,6 +15,7 @@ import { SafeExceptionFilter } from "../http/safe-exception.filter";
 import { AuthModule } from "../auth/auth.module";
 import { hashPassword } from "../auth/password-hash";
 import { SiteAuth, type CreatorLoginDirectory } from "../auth/site-auth";
+import { MEMBERSHIP_STORE, MemoryMembershipStore } from "../membership/membership-store";
 import { runWithCreatorAccess } from "../auth/creator-access";
 
 const ORIGIN = "https://drama.example.test";
@@ -43,7 +44,7 @@ describe("creator isolation access scope (phase 4)", () => {
     app = undefined;
   });
 
-  async function start(creators: CreatorLoginDirectory | null = null) {
+  async function start(creators: CreatorLoginDirectory | null = null, membership: MemoryMembershipStore | null = null) {
     const auth = new SiteAuth(
       { username: OPERATOR, passwordHash: HASH, publicOrigin: ORIGIN },
       { creators, publicRegistrationEnabled: false },
@@ -53,7 +54,7 @@ describe("creator isolation access scope (phase 4)", () => {
     const module = await Test.createTestingModule({
       imports: [AuthModule.register({ NODE_ENV: "test", APP_WORKSPACE_ID: "11111111-1111-4111-8111-111111111111" } as ApiEnv,
         { kind: "enabled", auth }), Routes],
-    }).compile();
+    }).overrideProvider(MEMBERSHIP_STORE).useValue(membership).compile();
     app = module.createNestApplication({ logger: false });
     app.setGlobalPrefix("api/v1");
     app.useGlobalFilters(new SafeExceptionFilter());
@@ -130,6 +131,38 @@ describe("creator isolation access scope (phase 4)", () => {
   it("unconfirmed ledger posts are refused by domain rule", () => {
     expect(mayPostCreatorLedgerEntry({ confirmed: false })).toBe(false);
     expect(mayPostCreatorLedgerEntry({ confirmed: true })).toBe(true);
+  });
+
+  it("preflights the signed-in creator's writing balance over HTTP without reserving or disclosing the ledger", async () => {
+    const id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const workspace = "11111111-1111-4111-8111-111111111111";
+    const membership = new MemoryMembershipStore();
+    await start({ findActiveByUsername: async username => username === "alice" ? { id, username, passwordHash: HASH } : null }, membership);
+    const login = await fetch(`${base}/auth/login`, { method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ username: "alice", password: PASSWORD }) });
+    expect(login.status).toBe(200);
+    const cookie = login.headers.getSetCookie().find(item => item.startsWith("__Host-ads_session="))!.split(";", 1)[0]!;
+    async function preflight() {
+      const res = await fetch(`${base}/account/membership?preflight=writing`, { headers: { cookie } });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toContain("no-store");
+      return res.json();
+    }
+    expect(await preflight()).toEqual({ denial: "MEMBERSHIP_REQUIRED" });
+    const details = { code: "one", name: "编剧", description: "", unitPriceAmount: null, unitPriceCurrency: null, active: true };
+    const plan = await membership.savePlan(workspace, { ...details, features: [{ feature: "writing", enabled: true, includedUnits: 1 }] });
+    await membership.grant(workspace, { accountId: id, planId: plan.id, startsAt: new Date(Date.now()-60000),
+      endsAt: new Date(Date.now()+60000), reason: "测试", grantedBy: null });
+    const before = await membership.ledger(workspace, id);
+    expect(await preflight()).toEqual({ denial: null });
+    expect(await preflight()).toEqual({ denial: null });
+    expect(await membership.ledger(workspace, id)).toEqual(before);
+    expect((await membership.balances(workspace, id)).writing).toBe(1);
+    await membership.savePlan(workspace, { ...details, id: plan.id, features: [{ feature: "writing", enabled: false, includedUnits: 1 }] });
+    expect(await preflight()).toEqual({ denial: "FEATURE_NOT_INCLUDED" });
+    await membership.savePlan(workspace, { ...details, id: plan.id, features: [{ feature: "writing", enabled: true, includedUnits: 1 }] });
+    await membership.adjust(workspace, { accountId: id, feature: "writing", delta: -1, reason: "测试", actorId: "fixture-operator" });
+    expect(await preflight()).toEqual({ denial: "QUOTA_EXHAUSTED" });
   });
 
   it("creator directory authenticates a fixture creator without touching operator password", async () => {
