@@ -15,7 +15,8 @@ export type StepState =
   | "needs_attention"
   | "done"
   | "source_updated"
-  | "unknown";
+  | "unknown"
+  | "compose_disabled";
 
 export const STEP_STATE_TEXT: Record<StepState, string> = {
   not_started: "未开始",
@@ -26,6 +27,7 @@ export const STEP_STATE_TEXT: Record<StepState, string> = {
   done: "已完成",
   source_updated: "来源已更新",
   unknown: "尚未确认",
+  compose_disabled: "还不能完成",
 };
 
 /** A short symbol so a state is never told by colour alone. */
@@ -38,6 +40,7 @@ export const STEP_STATE_MARK: Record<StepState, string> = {
   done: "✓",
   source_updated: "↻",
   unknown: "—",
+  compose_disabled: "—",
 };
 
 export const STEPS: ReadonlyArray<{ key: StepKey; no: number; title: string; doing: string; decide: string; result: string }> = [
@@ -68,7 +71,7 @@ export function revisionState(revision: RevisionFacts | null, approved = true): 
 }
 
 /** Worst first: what the user must look at before anything else. A fact not read yet is never "done". */
-const PRIORITY: StepState[] = ["source_updated", "needs_attention", "unknown", "in_progress", "needs_input",
+const PRIORITY: StepState[] = ["source_updated", "needs_attention", "unknown", "in_progress", "compose_disabled", "needs_input",
   "needs_confirmation", "not_started", "done"];
 
 export function combine(states: readonly StepState[]): StepState {
@@ -105,6 +108,8 @@ export interface ListFacts<T> {
 
 export interface BeginnerFacts {
   story: StoryRevision | null;
+  /** True only when the server explicitly reports that new episode compositions are disabled. */
+  episodeComposeDisabled?: boolean;
   /** The work's episode count (its plan); three when not known. Episodes 1..N are the ones every step covers. */
   episodeCount?: number;
   /** series: a series writing work (1–60 episodes); absent or short: a short-drama work. */
@@ -185,13 +190,14 @@ export function episodeFinalState(facts: BeginnerFacts, episodeNo: number): Step
   const composites = media.composites;
   // An approved current composite settles the episode even when later pages were not read.
   if (composites.approvedActive) return "done";
-  if (composites.read === "unavailable" || composites.read === "failed") return "unknown";
+  if (composites.read === "failed") return "unknown";
   if (episodeComposeRunning(facts.runs, episode.id)) return "in_progress";
   if (composites.draftActive) return "needs_confirmation";
   if (composites.rejectedActive) return "needs_attention";
   // History survives a script change: an approved result made stale by an upstream edit is still a fact.
   if (composites.staleApproved) return "source_updated";
   if (composites.read === "incomplete") return "unknown";
+  if (facts.episodeComposeDisabled || composites.read === "unavailable") return "compose_disabled";
   if (media.candidates.count >= 2) return "needs_input";
   return media.candidates.read === "ok" || scriptState(episode) !== "done" ? "not_started" : "unknown";
 }
@@ -287,6 +293,7 @@ export type PrimaryTarget = "editor" | "review" | "next" | "tasks" | "candidates
 
 /** What the single primary action on a step does, from its state. Every target has a real destination. */
 export function primaryAction(step: StepKey, state: StepState): { label: string; target: PrimaryTarget } {
+  if (state === "compose_disabled") return { label: "重新检查功能状态", target: "reload" };
   if (state === "unknown") return { label: "重新读取进度", target: "reload" };
   if (state === "done") return step === "final" ? { label: "查看并下载成片", target: "compose" } : { label: "继续下一步", target: "next" };
   if (state === "in_progress") return step === "final" ? { label: "查看合成进度", target: "compose" } : { label: "查看任务进度", target: "tasks" };

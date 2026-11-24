@@ -162,10 +162,12 @@ try {
   await page.getByLabel("作品名称").fill(title);
   await capture(page, "desktop-create");
   await page.getByRole("button", { name: "确认创建作品" }).click();
-  await page.waitForURL(/\/projects\/[0-9a-f-]+\/create/);
+  await page.waitForURL(/\/admin\/works\/[0-9a-f-]+\/review\?from=creator$/);
   const projects = await (await page.request.get(`${SITE}/api/v1/projects`)).json();
   const created = projects.items.find((item) => item.title === title);
   assert.ok(created, "the created work is listed");
+  assert.equal(new URL(page.url()).pathname, `/admin/works/${created.id}/review`);
+  await page.getByRole("status").filter({ hasText: "这是创作者的作品，已转到作品管理" }).waitFor();
   evidence.checks.createdWork = true;
   // The same real route, on the work just created: the real handler answers with the session, and refuses without it.
   const storiesPath = `/api/v1/projects/${created.id}/stories`;

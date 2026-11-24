@@ -172,6 +172,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       reading.current = true;
       const readToken = ++listGen.current;
       const pageCount = loadedPages.current;
+      let pollAgain = true;
       try {
         const collected: CompositeItem[] = [];
         let cursor: string | null = null;
@@ -193,10 +194,15 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         setListError(null);
       } catch (caught) {
         if (stopped || listEpoch.current !== token || listGen.current !== readToken) return;
-        setListError(caught instanceof ApiError ? caught.detail : "集级成片暂时无法读取");
+        if (caught instanceof ApiError && caught.code === "CONFIGURATION_ERROR" && props.startBlocked) {
+          setListError(null);
+          pollAgain = false;
+        } else {
+          setListError(caught instanceof ApiError ? caught.detail : "集级成片暂时无法读取");
+        }
       } finally {
         if (readSerial.current === serial) reading.current = false;
-        if (!stopped && listEpoch.current === token && !hidden.current) {
+        if (pollAgain && !stopped && listEpoch.current === token && !hidden.current) {
           timer = window.setTimeout(() => void read(), 2000);
         }
       }
@@ -215,7 +221,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       document.removeEventListener("visibilitychange", onVisibility);
       window.clearTimeout(timer);
     };
-  }, [identity, props.client, props.episodeId, props.projectId, reload]);
+  }, [identity, props.client, props.episodeId, props.projectId, props.startBlocked, reload]);
 
   useEffect(() => {
     if (!job || TERMINAL.has(job.state)) return;
@@ -465,7 +471,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
             <ol>
               {(item.segments ?? []).map((segment) => <li key={`${item.assetId}:${segment.position}:${segment.assetId}`}>{segment.position}. {segment.shotId}</li>)}
             </ol>
-            <video className="creator-composite-player mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${item.assetId}/content`} />
+            <video className="creator-composite-player" controls playsInline src={`/api/v1/assets/${item.assetId}/content`} />
             {item.status === "ACTIVE" && item.reviewStatus === "APPROVED" ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <button className="rounded border px-2 py-1" type="button" disabled={pendingDownloads[item.assetId] !== undefined} onClick={() => void download(item, "mp4")}>

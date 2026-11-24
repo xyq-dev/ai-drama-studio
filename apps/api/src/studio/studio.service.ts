@@ -785,6 +785,7 @@ export class StudioService {
   }
 
   async preflightEpisodeCompose(projectId: string, episodeId: string, body: unknown) {
+    if (!this.episodeComposeEnabled) throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
     let request;
     try {
       request = parseEpisodeComposePreflightRequest(rejectClientWorkspace(body));
@@ -802,9 +803,7 @@ export class StudioService {
   }
 
   async listEpisodeComposites(projectId: string, episodeId: string, cursor?: string, limit?: string) {
-    if (!this.episodeComposeEnabled) {
-      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
-    }
+    await this.store.getProject(this.workspaceId, projectId);
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     return this.mediaAssets.listEpisodeComposites(this.workspaceId, projectId, episodeId, cursor, parsePageLimit(limit));
   }

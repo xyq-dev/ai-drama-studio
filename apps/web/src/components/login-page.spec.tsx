@@ -7,6 +7,9 @@ import { LoginPage } from "./login-page";
 
 const PASSWORD = "test-only-site-password";
 let replace: ReturnType<typeof vi.fn<(url: string | URL) => void>>;
+const PROJECT = "11111111-1111-4111-8111-111111111111";
+const WORKBENCH = `/projects/${PROJECT}/create?step=final`;
+const REVIEW = `/admin/works/${PROJECT}/review?from=creator`;
 type Call = { url: string; init: RequestInit };
 
 function server(login: () => Response, session: () => Response = () => new Response("{}", { status: 401 })) {
@@ -44,6 +47,31 @@ describe("site login page", () => {
     const login = calls.find((call) => call.url === "/api/v1/auth/login")!;
     expect(login.init.method).toBe("POST");
     expect(JSON.parse(String(login.init.body))).toEqual({ username: "admin", password: PASSWORD });
+  });
+  it.each([["operator", REVIEW], ["creator", WORKBENCH]])("opens the correct work page after %s login", async (role, expected) => {
+    server(() => Response.json({ enabled: true, authenticated: true, role }));
+    open("?" + new URLSearchParams({ returnTo: WORKBENCH }));
+    submit();
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(expected));
+  });
+  it("takes an already signed-in operator straight to the work review", async () => {
+    server(() => new Response("{}"), () => Response.json({ enabled: true, authenticated: true, role: "operator" }));
+    open("?" + new URLSearchParams({ returnTo: WORKBENCH }));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(REVIEW));
+  });
+  it("opens the work review only after the operator completes two-factor login", async () => {
+    const responses = [
+      { totpRequired: true, challenge: "test-challenge" },
+      { enabled: true, authenticated: true, role: "operator" },
+    ];
+    server(() => Response.json(responses.shift()));
+    open("?" + new URLSearchParams({ returnTo: WORKBENCH }));
+    submit();
+    const field = await screen.findByLabelText("验证器动态码或恢复码");
+    expect(replace).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(REVIEW));
   });
   it("goes to 我的作品 when opened directly, and never to another site", async () => {
     server(() => new Response("{}", { status: 200 }));

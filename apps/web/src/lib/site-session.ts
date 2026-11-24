@@ -48,6 +48,13 @@ export function safeReturnTo(value: string | null | undefined): string {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+/** The API supplies the role; navigation never grants access to the read-only work review. */
+export function operatorWorkReviewUrl(target: string, role?: SiteSession["role"]): string | null {
+  if (role !== "operator" || !target.startsWith("/projects/")) return null;
+  const project = /^\/projects\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?#]|$)/i.exec(target);
+  return project ? `/admin/works/${project[1]}/review?from=creator` : "/admin/works";
+}
+
 export function loginUrl(returnTo: string, reason?: LoginReason): string {
   const query = new URLSearchParams({ returnTo: safeReturnTo(returnTo) });
   if (reason) query.set("reason", reason);

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { resolveApiUpstream } from "./lib/api-upstream";
-import { loginUrl, type LoginReason } from "./lib/site-session";
+import { loginUrl, operatorWorkReviewUrl, type LoginReason } from "./lib/site-session";
 
 /**
  * Page protection (Next.js proxy, Node runtime). Every page except /login asks the API whether the request carries a
@@ -84,9 +84,13 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     return response;
   }
   const pathname = request.nextUrl.pathname;
+  let destination = operatorWorkReviewUrl(pathname, session.role);
   // Creators never receive the admin shell or the storage settings form.
   if (session.siteLoginEnabled && (isAdminPath(pathname) || isStorageSettingsPath(pathname)) && session.role !== "operator") {
-    const response = NextResponse.redirect(new URL("/studio", request.nextUrl.origin), 307);
+    destination = "/studio";
+  }
+  if (destination) {
+    const response = NextResponse.redirect(new URL(destination, request.nextUrl.origin), 307);
     response.headers.set("Cache-Control", "private, no-store");
     return response;
   }

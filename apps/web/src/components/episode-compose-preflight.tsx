@@ -54,7 +54,7 @@ export function EpisodeComposePreflight(props: {
    * Why a new episode compose cannot start now. Preflight and submit stay closed; choosing and ordering, the
    * existing cuts, playback, review and permitted downloads are unaffected.
    */
-  composeBlocked?: string | null;
+  composeBlocked?: boolean;
 }) {
   const fallback = useRef<StudioClient | null>(null);
   if (!fallback.current) fallback.current = new StudioClient();
@@ -200,7 +200,7 @@ export function EpisodeComposePreflight(props: {
   return (
     <section className="creator-episode-arrangement min-w-0 max-w-full rounded-lg bg-white p-4" aria-label="多镜编排">
       <h2 className="text-lg font-medium">多镜编排</h2>
-      <p className="mt-2 text-sm text-neutral-700">第 {props.episodeNo} 集。选择本集已批准的单镜成片并调整顺序。预检通过后可以开始多镜合成。</p>
+      {props.composeBlocked ? null : <p className="mt-2 text-sm text-neutral-700">第 {props.episodeNo} 集。选择本集已批准的单镜成片并调整顺序。预检通过后可以开始多镜合成。</p>}
       {!props.episodeId ? <p className="mt-3 text-sm">这一集还不存在</p> : null}
       {error ? <p className="mt-3 text-sm" role="alert">{error}</p> : null}
       {error ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void reload()}>重新查询</button> : null}
@@ -241,7 +241,6 @@ export function EpisodeComposePreflight(props: {
         </ol>
         <p className="mt-2 text-sm">总时长 {totalMs} ms</p>
         {!result && selected.length > 0 && totalMs < 60_000 ? <p className="text-sm">尚未达到 V1 的 60–90 秒目标</p> : null}
-        {props.composeBlocked ? <p className="mt-3 text-sm" role="status">{props.composeBlocked}</p> : null}
         <button className="mt-3 rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={selected.length < 2 || busy || Boolean(props.composeBlocked)} onClick={() => void preflight()}>预检编排</button>
       </div>
       {result ? (

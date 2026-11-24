@@ -1,9 +1,14 @@
+import "reflect-metadata";
+import { Test } from "@nestjs/testing";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { MediaAssetStore, type MediaAssetRecord } from "@ai-drama/database";
+import { PersistenceError, MediaAssetStore, type MediaAssetRecord } from "@ai-drama/database";
+import { SafeExceptionFilter } from "../http/safe-exception.filter";
+import { StudioController } from "./studio.controller";
 import { StudioService } from "./studio.service";
+import { STUDIO_SERVICE } from "./tokens";
 
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 const projectId = "22222222-2222-4222-8222-222222222222";
@@ -11,31 +16,77 @@ const episodeId = "33333333-3333-4333-8333-333333333333";
 const firstAssetId = "44444444-4444-4444-8444-444444444441";
 const secondAssetId = "44444444-4444-4444-8444-444444444442";
 
-function service() {
+function service(episodeComposeEnabled = true) {
   const preflightEpisodeCompose = vi.fn(async () => ({
     schema: "m4.episode.compose.preflight.v1",
     inputHash: "ab".repeat(32),
   }));
   const listEpisodeComposeCandidates = vi.fn(async () => ({ items: [], nextCursor: null }));
   const runIdempotent = vi.fn();
+  const getProject = vi.fn();
+  const listEpisodeComposites = vi.fn(async () => ({ items: [] as { assetId: string }[], nextCursor: null }));
+  const createAndQueueWorkflowJob = vi.fn();
   const studio = new StudioService(
-    { runIdempotent } as never,
-    {} as never,
+    { runIdempotent, createAndQueueWorkflowJob } as never,
+    { getProject } as never,
     {} as never,
     workspaceId,
     undefined,
-    { preflightEpisodeCompose, listEpisodeComposeCandidates } as unknown as MediaAssetStore,
+    { preflightEpisodeCompose, listEpisodeComposeCandidates, listEpisodeComposites } as unknown as MediaAssetStore,
     false,
     null,
     false,
     false,
     false,
     null,
+    episodeComposeEnabled,
   );
-  return { studio, preflightEpisodeCompose, listEpisodeComposeCandidates, runIdempotent };
+  return { studio, preflightEpisodeCompose, listEpisodeComposeCandidates, runIdempotent, getProject, listEpisodeComposites, createAndQueueWorkflowJob };
 }
 
 describe("episode compose preflight service", () => {
+  it("returns the owned episode’s stored list over HTTP while compose and preflight stay closed", async () => {
+    const { studio, getProject, listEpisodeComposites, createAndQueueWorkflowJob, preflightEpisodeCompose } = service(false);
+    const module = await Test.createTestingModule({
+      controllers: [StudioController], providers: [{ provide: STUDIO_SERVICE, useValue: studio }],
+    }).compile();
+    const app = module.createNestApplication({ logger: false });
+    app.setGlobalPrefix("api/v1");
+    app.useGlobalFilters(new SafeExceptionFilter());
+    try {
+      await app.listen(0, "127.0.0.1");
+      const url = `${await app.getUrl()}/api/v1/projects/${projectId}/episodes/${episodeId}`;
+      const empty = await fetch(`${url}/composites?limit=50`);
+      expect(empty.status).toBe(200);
+      expect(await empty.json()).toEqual({ items: [], nextCursor: null });
+      expect(getProject).toHaveBeenCalledWith(workspaceId, projectId);
+      expect(listEpisodeComposites).toHaveBeenCalledWith(workspaceId, projectId, episodeId, undefined, 50);
+
+      const history = { items: [{ assetId: firstAssetId }], nextCursor: null };
+      listEpisodeComposites.mockResolvedValueOnce(history);
+      const saved = await fetch(`${url}/composites?limit=10`);
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toEqual(history);
+      getProject.mockRejectedValueOnce(new PersistenceError("NOT_FOUND", "Project not found"));
+      expect((await fetch(`${url}/composites`)).status).toBe(404);
+      expect(listEpisodeComposites).toHaveBeenCalledTimes(2);
+
+      for (const route of ["compose", "compose-preflight"]) {
+        const response = await fetch(`${url}/${route}`, {
+          method: "POST", headers: { "content-type": "application/json", "idempotency-key": "closed-episode" },
+          body: JSON.stringify({ compositeAssetIds: [firstAssetId, secondAssetId],
+            ...(route === "compose" ? { expectedInputHash: "ab".repeat(32) } : {}) }),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ error: { code: "CONFIGURATION_ERROR" } });
+      }
+      expect(preflightEpisodeCompose).not.toHaveBeenCalled();
+      expect(createAndQueueWorkflowJob).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("reads candidates and returns a preflight without an idempotent write", async () => {
     const { studio, preflightEpisodeCompose, listEpisodeComposeCandidates, runIdempotent } = service();
     await expect(studio.listEpisodeComposeCandidates(projectId, episodeId, undefined, "20")).resolves.toEqual({
@@ -67,13 +118,11 @@ describe("episode compose preflight service", () => {
     await expect(studio.preflightEpisodeCompose(projectId, episodeId, {
       compositeAssetIds: [firstAssetId],
     })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
-    const closed = new StudioService(
-      { runIdempotent: vi.fn() } as never,
-      {} as never,
-      {} as never,
-      workspaceId,
+    const withoutStorage = new StudioService(
+      { runIdempotent: vi.fn() } as never, {} as never, {} as never, workspaceId,
+      undefined, undefined, false, null, false, false, false, null, true,
     );
-    await expect(closed.preflightEpisodeCompose(projectId, episodeId, {
+    await expect(withoutStorage.preflightEpisodeCompose(projectId, episodeId, {
       compositeAssetIds: [firstAssetId, secondAssetId],
     })).rejects.toMatchObject({ code: "CONFIGURATION_ERROR" });
     expect(preflightEpisodeCompose).not.toHaveBeenCalled();
@@ -113,7 +162,7 @@ describe("episode compose preflight service", () => {
     expect(freezeEpisodeComposeInput).toHaveBeenCalledWith(expect.anything(), workspaceId, projectId, episodeId, body);
     const episodeOnly = new StudioService(
       { createAndQueueWorkflowJob } as never,
-      {} as never,
+      { getProject: vi.fn() } as never,
       {} as never,
       workspaceId,
       undefined,

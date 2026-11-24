@@ -375,6 +375,11 @@ async function playVideo(video, minWidth) {
       const tick = () => { if (media.currentTime > 0.2) { clearTimeout(timer); resolve(); } };
       media.addEventListener("timeupdate", tick);
     });
+    const style = getComputedStyle(media);
+    const pictureHeight = media.clientWidth * media.videoHeight / media.videoWidth;
+    if (!media.controls || !media.playsInline || style.objectFit !== "contain" || style.objectPosition !== "50% 0%" || media.clientHeight - pictureHeight < 72) {
+      throw new Error("The native controls must have room below the entire composite, including its last line of dialogue");
+    }
     return { sameOrigin: source.origin === location.origin, path: source.pathname, width: media.videoWidth, height: media.videoHeight,
       duration: media.duration, currentTime: media.currentTime, readyState: media.readyState };
   });
@@ -545,7 +550,7 @@ async function main() {
       await stepButton("出成片");
       await page.getByText(/集级合成由平台统一开启，目前还没开/).waitFor({ timeout: 20_000 });
       await page.getByText("已确认单镜进度 0/2").waitFor({ timeout: 20_000 });
-      await page.getByRole("tab", { name: /第 1 集 · — 尚未确认/ }).waitFor({ timeout: 20_000 });
+      await page.getByRole("tab", { name: /第 1 集 · — 还不能完成/ }).waitFor({ timeout: 20_000 });
       if (await page.getByRole("button", { name: "查看并下载成片" }).count()) throw new Error("compose-off final step claimed done");
       await stepButton("试一段");
       await page.getByText("至少确认 2 个镜头才能出单集。").waitFor();
@@ -595,7 +600,7 @@ async function main() {
       if (capabilityOn?.shot !== true || capabilityOn?.episode !== true) throw new Error(`capability on ${JSON.stringify(capabilityOn)}`);
       if (Object.values(capabilityOn).some((value) => typeof value !== "boolean")) throw new Error("capability carries more than booleans");
       evidence.checks.composeOpen = capabilityOn;
-      return { message: "集级合成由平台统一开启，目前还没开", episode1: "尚未确认", studioStage: "第 2 步 看剧本" };
+      return { message: "集级合成由平台统一开启，目前还没开", episode1: "还不能完成", studioStage: "第 2 步 看剧本" };
     });
 
     await stage("step3-cast", async () => {
@@ -796,7 +801,15 @@ async function main() {
         body: { decision: "APPROVE", note: "prep", contentHash: asset.checksum_sha256 } }), 200, "prep composite review");
       world.composite2 = asset.id;
       prepDid("API: shot 2 created and approved, Mock video generated, single-shot preflight + compose (worker FFmpeg), composite approved");
-      return { shot: created.entityId, composite: asset.id };
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
+      await page.locator("[data-beginner-picker]").getByRole("button", { name: /场景 1/ }).click();
+      const storyboard = page.getByRole("region", { name: "分镜工作台", exact: true });
+      await storyboard.getByRole("button", { name: "列表", exact: true }).click();
+      const shotRow = storyboard.getByRole("article")
+        .filter({ has: page.getByRole("heading", { name: /^镜头 2(?: · |$)/ }) });
+      await shotRow.getByRole("button", { name: "打开单镜", exact: true }).click();
+      const playback = await playVideo(page.locator(`[data-composite-id="${asset.id}"] video`), 1000);
+      return { shot: created.entityId, composite: asset.id, playback };
     });
 
     await stage("step5-final", async () => {

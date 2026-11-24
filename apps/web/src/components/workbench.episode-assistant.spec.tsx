@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Workbench } from "./workbench";
 
@@ -9,7 +9,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function fixture(episodeCount: number, episodeNo?: number, writingMode: "short" | "series" = "short") {
+function fixture(episodeCount: number, episodeNo?: number, writingMode: "short" | "series" = "short", projectRead?: Promise<void>) {
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
     const path = String(input).split("?")[0] ?? String(input);
@@ -17,6 +17,7 @@ function fixture(episodeCount: number, episodeNo?: number, writingMode: "short" 
     requests.push({ path, method, body: init?.body ? JSON.parse(String(init.body)) : null });
     let body: unknown = { items: [], nextCursor: null };
     if (path.endsWith("/projects/project-1")) {
+      await projectRead;
       body = { id: "project-1", title: "分集作品", premise: "测试故事", version: 1, status: "ACTIVE", episodeCount, writingMode, targetEpisodeSeconds: 60 };
     } else if (path.endsWith("/episodes")) {
       body = { items: Array.from({ length: episodeCount }, (_, index) => ({
@@ -38,6 +39,46 @@ function fixture(episodeCount: number, episodeNo?: number, writingMode: "short" 
 }
 
 describe("writing assistant with variable episode projects", () => {
+  it("waits for the actual episode count before showing the advanced directory", async () => {
+    let release!: () => void;
+    const projectRead = new Promise<void>(resolve => { release = resolve; });
+    fixture(1, 1, "short", projectRead);
+    expect(screen.getByText("正在加载工作台")).toBeTruthy();
+    expect(screen.queryByText(/本作品共/)).toBeNull();
+    expect(screen.queryByText(/第 3 集/)).toBeNull();
+    await act(async () => { release(); });
+    await screen.findByText("本作品共 1 集");
+    await screen.findByDisplayValue("原剧本");
+  });
+
+  it("keeps unsaved script text while a background read is pending, fails and recovers", async () => {
+    fixture(1, 1);
+    const editor = await screen.findByDisplayValue("原剧本");
+    fireEvent.change(editor, { target: { value: "还在修改的正文" } });
+    const get = globalThis.fetch;
+    let rejectRead!: () => void;
+    const pending = new Promise<void>(resolve => { rejectRead = resolve; });
+    let reads = 0;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/scripts") && ++reads === 1) {
+        await pending;
+        return new Response(null, { status: 503 });
+      }
+      return get(input, init);
+    });
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(reads).toBe(1));
+    expect(screen.getByDisplayValue("还在修改的正文")).toBe(editor);
+    expect(screen.queryByText("正在读取剧本…")).toBeNull();
+    await act(async () => { rejectRead(); });
+    const failure = await screen.findByText(/剧本读取失败/, { selector: "[role=alert]" });
+    expect(screen.getByDisplayValue("还在修改的正文")).toBe(editor);
+    fireEvent.click(within(failure).getByRole("button", { name: "重新读取" }));
+    await waitFor(() => expect(reads).toBe(2));
+    expect(screen.queryByText(/剧本读取失败/)).toBeNull();
+    expect(screen.getByDisplayValue("还在修改的正文")).toBe(editor);
+  });
+
   it.each([1, 2, 3, 4, 5, 6])("offers the story assistant and manual saves for a %i-episode project", async (episodeCount) => {
     const requests = fixture(episodeCount);
     await screen.findByDisplayValue("已批准的故事");

@@ -63,6 +63,22 @@ afterEach(() => {
 });
 
 describe("episode compose job panel", () => {
+  it("stops polling a legacy disabled list and reads it again after the gate opens", async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(async () => json({ error: { code: "CONFIGURATION_ERROR", message: "Episode compose is not enabled" } }, 400));
+    const props = { client: new StudioClient(request), projectId: PROJECT, episodeId: EPISODE, body: null };
+    const view = render(createElement(EpisodeComposeJobPanel, { ...props, startBlocked: true }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "重新查询成片" })).toBeNull();
+
+    request.mockResolvedValueOnce(json({ items: [composite(JOB_A)], nextCursor: null }));
+    view.rerender(createElement(EpisodeComposeJobPanel, { ...props, startBlocked: false }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(document.querySelector(`[data-composite-id="${JOB_A}"]`)).toBeTruthy();
+  });
+
   it("retries a lost or incomplete acceptance with the original body and key", async () => {
     const posts: Array<{ key: string; body: string }> = [];
     let composePosts = 0;

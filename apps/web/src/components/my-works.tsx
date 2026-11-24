@@ -105,6 +105,7 @@ function todo(step: StepKey, state: StepState, mode: ProjectItem["writingMode"])
     case "in_progress": return `${title}：任务处理中`;
     case "needs_attention": return `${title}：有内容需要处理`;
     case "source_updated": return `${title}：上游内容已更新，需要重新确认`;
+    case "compose_disabled": return "集级合成目前还没开";
     case "unknown": return `${title}：部分进度没有读到，暂不能确认`;
     default: return mode === "series" ? "故事和剧本已完成，可以继续编辑" : "五步都已完成，可以查看和下载成片";
   }

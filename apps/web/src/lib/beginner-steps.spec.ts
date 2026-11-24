@@ -130,7 +130,11 @@ describe("beginner step states come from server facts", () => {
     expect(episodeFinalState(facts({ ...base, media: { 1: media(2, { staleApproved: true }) } }), 1)).toBe("source_updated");
     // Not read to the end and nothing decisive yet: unknown, never "needs_input".
     expect(episodeFinalState(facts({ ...base, media: { 1: media(2, { read: "incomplete" }) } }), 1)).toBe("unknown");
-    expect(episodeFinalState(facts({ ...base, media: { 1: media(2, { read: "unavailable" }) } }), 1)).toBe("unknown");
+    expect(episodeFinalState(facts({ ...base, media: { 1: media(2, { read: "unavailable" }) } }), 1)).toBe("compose_disabled");
+    const closed = facts({ ...base, episodeComposeDisabled: true, episodeCount: 1, media: { 1: media(2) } });
+    expect(stepStates(closed).final).toBe("compose_disabled");
+    expect(episodeFinalState({ ...closed, media: { 1: media(2, { approvedActive: true }) } }, 1)).toBe("done");
+    expect(episodeFinalState({ ...closed, media: { 1: media(2, { read: "failed" }) } }, 1)).toBe("unknown");
   });
 
   it("keeps history after a script change: STALE + APPROVED is 来源已更新 even when the script is DRAFT (review)", () => {

@@ -308,6 +308,8 @@ export function Workbench({ projectId }: { projectId: string }) {
     return base.more(kind);
   }
 
+  const episodeNumbers = project ? projectEpisodeNumbers(project) : [];
+  const focusedEpisode = "episodeNo" in focus ? episodes.find(item => item.episodeNo === focus.episodeNo) ?? null : null;
   const storyCurrent = currentStoryRevision(stories?.items ?? []);
   const textWorkflows = workflows;
 
@@ -336,8 +338,8 @@ export function Workbench({ projectId }: { projectId: string }) {
           <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setNavOpen(false)}>关闭目录</button>
           <p className="px-2 pt-2 text-xs text-neutral-600">故事与剧本</p>
           <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" aria-current={focus.kind === "story" ? "page" : undefined} onClick={() => choose({ kind: "story" })}>故事</button>
-          <p className="px-2 pt-3 text-xs text-neutral-600">本作品共 {projectEpisodeNumbers(project).length} 集</p>
-          {projectEpisodeNumbers(project).map((episodeNo) => {
+          {project && <p className="px-2 pt-3 text-xs text-neutral-600">本作品共 {episodeNumbers.length} 集</p>}
+          {episodeNumbers.map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             return (
               <div key={episodeNo}>
@@ -359,7 +361,7 @@ export function Workbench({ projectId }: { projectId: string }) {
           <p className="mt-4 px-2 text-xs text-neutral-600">分镜与素材</p>
           <p className="px-2 py-2 text-sm text-neutral-600">打开某一集后，在正文里进入场景和镜头。这里不提供可保存的集数、风格或时长选项。</p>
           <p className="mt-4 px-2 text-xs text-neutral-600">合成与导出</p>
-          {projectEpisodeNumbers(project).map((episodeNo) => {
+          {episodeNumbers.map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             if (!episode) return null;
             return (
@@ -401,15 +403,15 @@ export function Workbench({ projectId }: { projectId: string }) {
             <EpisodeComposePreflight
               projectId={projectId}
               episodeNo={focus.episodeNo}
-              episodeId={episodes.find((item) => item.episodeNo === focus.episodeNo)?.id ?? null}
+              episodeId={focusedEpisode?.id ?? null}
             />
           ) : null}
           {project && focus.kind === "script" ? (
             <ScriptPane
               projectId={projectId}
               projectVersion={project.version}
-              episodeCount={projectEpisodeNumbers(project).length}
-              episode={episodes.find((item) => item.episodeNo === focus.episodeNo) ?? null}
+              episodeCount={episodeNumbers.length}
+              episode={focusedEpisode}
               storyCurrent={storyCurrent}
               premise={project.premise}
               refreshEpoch={refreshEpoch}
@@ -434,7 +436,7 @@ export function Workbench({ projectId }: { projectId: string }) {
           {project && (focus.kind === "scene" || focus.kind === "shot") ? (
             <ScenePane
               projectId={projectId}
-              episode={episodes.find((item) => item.episodeNo === focus.episodeNo) ?? null}
+              episode={focusedEpisode}
               sceneId={focus.sceneId}
               shotId={focus.kind === "shot" ? focus.shotId : null}
               runs={base.allRuns}
@@ -448,7 +450,7 @@ export function Workbench({ projectId }: { projectId: string }) {
                 : { kind: "shot", episodeNo: focus.episodeNo, sceneId: focus.sceneId, shotId })}
             />
           ) : null}
-          {!loading && project && inspectVisible && inspectCount === 0 ? (
+          {!loading && project && inspectVisible && inspectCount === 0 && !(focus.kind === "script" && focusedEpisode) ? (
             <p className="mt-4 rounded-lg bg-white p-4 text-sm [overflow-wrap:anywhere]" role="status">当前内容没有版本、比较、来源或审核。</p>
           ) : null}
         </section>
@@ -540,7 +542,7 @@ export function StoryPane(props: {
   );
 }
 
-export function ScriptPane(props: {
+interface ScriptPaneProps {
   projectId: string;
   projectVersion: number;
   episodeCount: number;
@@ -553,33 +555,55 @@ export function ScriptPane(props: {
   premise: string;
   /** Text only (a series work): the script editor and its reviews, without the breakdown and scene panels or their reads. */
   textOnly?: boolean;
-}) {
+}
+
+export function ScriptPane(props: ScriptPaneProps) {
+  if (!props.episode) return <p>这一集还不存在。请先通过故事审核。</p>;
+  return <EpisodeScript key={`${props.projectId}:${props.episode.id}`} {...props} episode={props.episode} />;
+}
+
+function EpisodeScript(props: ScriptPaneProps & { episode: EpisodeRecord }) {
   const [scripts, setScripts] = useState<PageState<ScriptRevision> | null>(null);
   const [scenes, setScenes] = useState<PageState<Aggregate> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadToken = useRef(0);
   const openedHandoffSection = useRef("");
-  const episodeId = props.episode?.id ?? "";
+  const episode = props.episode;
+  const episodeId = episode.id;
+  const scriptScope = `${props.projectId}:${episodeId}:${episode.currentScriptRevisionId ?? "new"}`;
 
+  const activeScriptScope = useRef<string | null>(scriptScope);
   const load = useCallback(async () => {
-    if (!props.episode) return;
+    if (activeScriptScope.current !== scriptScope) return;
     const request = ++loadToken.current;
-    const episode = props.episode;
-    const scope = `${props.projectId}:${episode.id}`;
-    const [scriptPage, scenePage] = await Promise.all([
-      client.get<{ items: ScriptRevision[]; nextCursor: string | null }>(`/projects/${props.projectId}/episodes/${episode.id}/scripts`),
-      props.textOnly ? null : client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes`),
+    const path = `/projects/${props.projectId}/episodes/${episodeId}`;
+    setError(null);
+    const scriptRead = client.get<{ items: ScriptRevision[]; nextCursor: string | null }>(`${path}/scripts`).then(page => {
+      if (shouldApplyLoad(request, loadToken.current)) setScripts(applyPage(null, { scope: scriptScope, ...page, append: false }));
+    });
+    const [scriptPage, scenePage] = await Promise.allSettled([
+      scriptRead,
+      props.textOnly ? null : client.get<{ items: Aggregate[]; nextCursor: string | null }>(`${path}/scenes`),
     ]);
     if (!shouldApplyLoad(request, loadToken.current)) return;
-    setScripts(applyPage(null, { scope, items: scriptPage.items, nextCursor: scriptPage.nextCursor, append: false }));
-    if (scenePage) setScenes(applyPage(null, { scope, items: scenePage.items, nextCursor: scenePage.nextCursor, append: false }));
-  }, [props.episode, props.projectId, props.refreshEpoch, props.textOnly]);
+    if (scenePage.status === "fulfilled" && scenePage.value) {
+      setScenes(applyPage(null, { scope: `${props.projectId}:${episodeId}`, ...scenePage.value, append: false }));
+    }
+    if (scriptPage.status === "rejected" || scenePage.status === "rejected") {
+      const message = scriptPage.status === "rejected" ? "剧本读取失败" : "场景读取失败";
+      setError(message);
+      throw new Error(message);
+    }
+  }, [props.projectId, episodeId, scriptScope, props.textOnly]);
 
   useEffect(() => {
-    setScripts(null);
-    setScenes(null);
-    void load().catch((caught: unknown) => setError(caught instanceof ApiError ? caught.detail : "剧本加载失败"));
-  }, [load]);
+    activeScriptScope.current = scriptScope;
+    void load().catch(() => undefined);
+    return () => {
+      activeScriptScope.current = null;
+      loadToken.current += 1;
+    };
+  }, [load, scriptScope, props.refreshEpoch, episode.rowVersion]);
 
   useEffect(() => {
     if (props.textOnly || scripts === null) return;
@@ -592,12 +616,15 @@ export function ScriptPane(props: {
       openedHandoffSection.current = target;
       section.scrollIntoView?.({ block: "start" });
     }
-  }, [episodeId, props.textOnly, scripts]);
+  }, [episodeId, props.textOnly, scripts, scenes]);
 
-  const current = props.episode?.currentScriptRevisionId
-    ? (scripts?.items.find((item) => item.id === props.episode?.currentScriptRevisionId) ?? null)
-    : null;
-  const currentNotLoaded = Boolean(props.episode?.currentScriptRevisionId) && scripts !== null && current === null;
+  const readError = error && (
+    <div role="alert">{error}。<button type="button" className="underline" onClick={() => { void load().catch(() => undefined); }}>重新读取</button></div>
+  );
+  if (scripts?.scope !== scriptScope) return readError || <p role="status">正在读取剧本…</p>;
+
+  const current = scripts.items.find(item => item.id === episode.currentScriptRevisionId) ?? null;
+  const currentNotLoaded = Boolean(episode.currentScriptRevisionId) && current === null;
   const source = props.storyCurrent ? sourceUsable({
     reviewStatus: props.storyCurrent.reviewStatus,
     freshnessStatus: props.storyCurrent.freshnessStatus,
@@ -606,14 +633,15 @@ export function ScriptPane(props: {
     revisionId: props.storyCurrent.id,
   }) : { usable: false, reason: "还没有故事版本" };
 
-  if (!props.episode) return <p>这一集还不存在。请先通过故事审核。</p>;
-  const episode = props.episode;
-
   return (
     <div className="space-y-4">
-      {error ? <p role="alert">{error}</p> : null}
+      {readError}
       <EditorGrid>
-        <ContentEditor
+        {currentNotLoaded ? (
+          <p role="status">当前剧本不在已加载的版本里。{scripts.nextCursor ? "请加载更多版本。" : (
+            <button type="button" className="underline" onClick={() => { void load().catch(() => undefined); }}>重新读取剧本</button>
+          )}</p>
+        ) : <ContentEditor
           title={`第 ${episode.episodeNo} 集剧本`}
           projectId={props.projectId}
           entityKey={`script:${episodeId}`}
@@ -631,10 +659,9 @@ export function ScriptPane(props: {
             if (!nextEpisode) throw new Error("episode missing");
             return { ifMatch: nextEpisode.rowVersion, server: nextScript?.content ?? { text: "" } };
           }}
-          extra={currentNotLoaded ? "当前剧本不在已加载页，请先加载更多版本，不会按序号另建一版。" : source.usable ? null : `来源不可用：${source.reason}`}
+          extra={source.usable ? null : `来源不可用：${source.reason}`}
           onStatus={props.onStatus}
           onSubmit={async (content, draft) => {
-            if (currentNotLoaded) throw new ApiError(400, "REVISION_NOT_LOADED", "当前剧本不在已加载页");
             if (!source.usable || !props.storyCurrent) throw new ApiError(400, "SOURCE_UNAVAILABLE", source.reason);
             await client.write({
               path: `/projects/${props.projectId}/episodes/${episodeId}/scripts`,
@@ -653,16 +680,16 @@ export function ScriptPane(props: {
             episodeId: episode.id,
             premise: props.premise,
             confirmedMaterials: textOf(props.storyCurrent?.content ?? null),
-            loaded: scripts !== null && !currentNotLoaded,
+            loaded: true,
           }}
           onSaved={async () => {
             await props.onSaved();
             await load();
           }}
-        />
+        />}
         <InspectSlot>
         <RevisionColumn
-          items={(scripts?.items ?? []).map((item) => ({
+          items={scripts.items.map((item) => ({
             id: item.id,
             revisionNo: item.revisionNo,
             reviewStatus: item.reviewStatus,
@@ -674,9 +701,9 @@ export function ScriptPane(props: {
             body: item.content,
           }))}
           currentId={current?.id ?? null}
-          nextCursor={scripts?.nextCursor ?? null}
+          nextCursor={scripts.nextCursor}
           onMore={() => {
-            if (!scripts?.nextCursor) return;
+            if (!scripts.nextCursor) return;
             const request = loadToken.current;
             const cursor = scripts.nextCursor;
             void client.get<{ items: ScriptRevision[]; nextCursor: string | null }>(
@@ -684,14 +711,14 @@ export function ScriptPane(props: {
             ).then((page) => {
               if (!shouldApplyLoad(request, loadToken.current)) return;
               setScripts((currentPage) => applyPage(currentPage, {
-                scope: `${props.projectId}:${episodeId}`,
+                scope: scriptScope,
                 items: page.items,
                 nextCursor: page.nextCursor,
                 append: true,
               }));
             });
           }}
-          ifMatch={props.episode.rowVersion}
+          ifMatch={episode.rowVersion}
           reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${episodeId}/scripts/${revisionId}/review`}
           onSaved={async () => {
             await props.onSaved();
@@ -700,7 +727,7 @@ export function ScriptPane(props: {
         />
         </InspectSlot>
       </EditorGrid>
-      {props.textOnly ? null : (
+      {props.textOnly || !scenes ? null : (
         <>
           <div id="script-breakdown"><ScriptBreakdownPanel
             refreshEpoch={props.refreshEpoch}
@@ -736,20 +763,20 @@ export function ScriptPane(props: {
             onChanged={() => { void props.onSaved().catch(() => props.onStatus("配音批次已受理，任务列表暂未刷新，请稍后重新读取。")); }} /></div>
           <div id="episode-scenes"><SceneList
             projectId={props.projectId}
-            episode={props.episode}
+            episode={episode}
             page={scenes}
-            scriptReady={props.episode.currentScriptRevisionId !== null
-              && props.episode.currentScriptRevisionId === props.episode.approvedScriptRevisionId
-              && props.episode.currentScriptReviewStatus === "APPROVED"
-              && props.episode.currentScriptFreshnessStatus === "CURRENT"}
+            scriptReady={episode.currentScriptRevisionId !== null
+              && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
+              && episode.currentScriptReviewStatus === "APPROVED"
+              && episode.currentScriptFreshnessStatus === "CURRENT"}
             onOpen={props.onOpenScene}
             onReload={load}
             onMore={async () => {
-              if (!scenes?.nextCursor || !props.episode) return;
+              if (!scenes.nextCursor) return;
               const request = loadToken.current;
-              const scope = `${props.projectId}:${props.episode.id}`;
+              const scope = `${props.projectId}:${episodeId}`;
               const page = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
-                `/projects/${props.projectId}/episodes/${props.episode.id}/scenes?cursor=${encodeURIComponent(scenes.nextCursor)}`,
+                `/projects/${props.projectId}/episodes/${episodeId}/scenes?cursor=${encodeURIComponent(scenes.nextCursor)}`,
               );
               if (!shouldApplyLoad(request, loadToken.current)) return;
               setScenes((current) => applyPage(current, { scope, items: page.items, nextCursor: page.nextCursor, append: true }));
@@ -1376,7 +1403,8 @@ function EntityScope(props: EntityPaneProps) {
       <div className="space-y-4">
         <section className="creator-section rounded-lg bg-white p-4">
           <h2 className="font-medium">{props.kind === "character" ? "角色" : "场地"}</h2>
-          {describeRevision(props.page?.items.length ? { id: "list" } : null) === "empty" ? <p className="mt-2 text-sm">列表为空</p> : null}
+          {!props.page ? <p className="mt-2 text-sm" role="status">正在读取…</p> : null}
+          {props.page && !props.page.nextCursor && props.page.items.length === 0 ? <p className="mt-2 text-sm">列表为空</p> : null}
           <ul className="creator-entity-list mt-2 space-y-2">
             {props.page?.items.map((item) => (
               <li key={item.entityId}>
@@ -2522,8 +2550,8 @@ function RevisionColumn(props: {
         ))}
       </ul>
       {props.nextCursor ? <button className="mt-2 text-sm underline" type="button" onClick={props.onMore}>加载更多版本</button> : null}
-      <h3 className="mt-4 font-medium">比较</h3>
-      {props.items.length < 2 || !left || !right ? <p className="mt-2 text-sm">只有一个版本，无法比较。</p> : (
+      {props.items.length > 0 && <h3 className="mt-4 font-medium">比较</h3>}
+      {props.items.length === 1 ? <p className="mt-2 text-sm">只有一个版本，无法比较。</p> : left && right ? (
         <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-2">
           <label>左侧版本
             <select className="mt-1 w-full rounded border px-2 py-1" value={left.id} onChange={(event) => setLeftId(event.target.value)}>
@@ -2538,7 +2566,7 @@ function RevisionColumn(props: {
           <DiffList rows={diffJson(right.body, left.body)} />
           <p className="text-sm lg:col-span-2">来源 {left.source || "无"} / {right.source || "无"} · 审核 {left.reviewStatus}/{right.reviewStatus} · 新鲜度 {left.freshnessStatus}/{right.freshnessStatus}</p>
         </div>
-      )}
+      ) : null}
       {current && !props.readOnly ? (
         <div className="creator-review-actions mt-4" id={props.reviewId} tabIndex={props.reviewId ? -1 : undefined}>
           <h3 className="font-medium">审核</h3>

@@ -110,16 +110,14 @@ describe("progress facts follow pagination (review)", () => {
     expect(stepStates({ ...facts({}), episodes: [EPISODE], ...lists }).cast).toBe("needs_attention");
   });
 
-  it("classifies the two compose reads separately: candidates survive when only episode compose is off", async () => {
-    const client = pagedClient(
-      { [`${BASE}/compose-candidates`]: [{ items: [{ shotId: "one" }], nextCursor: null }] },
-      { [`${BASE}/composites`]: new ApiError(503, "CONFIGURATION_ERROR", "Episode compose is not enabled") },
-    );
-    const media = await loadEpisodeMedia(client, "p", [EPISODE]);
-    expect(media[1]!.candidates).toEqual({ read: "ok", count: 1 });
-    expect(media[1]!.composites.read).toBe("unavailable");
+  it.each([200, 400, 503])("keeps two confirmed shots when episode composition is disabled (list HTTP %i)", async (status) => {
+    const paths = { [`${BASE}/compose-candidates`]: [{ items: [{ shotId: "one" }, { shotId: "two" }], nextCursor: null }] };
+    const failures: Record<string, Error> = status === 200 ? {} : { [`${BASE}/composites`]: new ApiError(status, "CONFIGURATION_ERROR", "Episode compose is not enabled") };
+    const media = await loadEpisodeMedia(pagedClient(paths, failures), "p", [EPISODE]);
+    expect(media[1]!.candidates).toEqual({ read: "ok", count: 2 });
+    expect(media[1]!.composites.read).toBe(status === 200 ? "ok" : "unavailable");
     expect(episodeSampleState(facts(media), 1)).toBe("done");
-    expect(episodeFinalState(facts(media), 1)).toBe("unknown");
+    expect(episodeFinalState({ ...facts(media), episodeComposeDisabled: true }, 1)).toBe("compose_disabled");
   });
 
   it("separates a failed read from a real empty list", async () => {
