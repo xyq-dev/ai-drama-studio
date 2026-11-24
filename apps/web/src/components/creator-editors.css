@@ -295,6 +295,7 @@
 }
 
 .creator-app .creator-composite-card {
+  container-type: inline-size;
   margin-top: 20px;
   padding: 24px;
   border: 1px solid var(--studio-line);
@@ -312,14 +313,22 @@
 }
 
 .creator-app .creator-composite-player {
+  --picture-width: min(100cqw, 310px);
   display: block;
-  width: min(100%, 310px);
-  max-height: 552px;
+  width: var(--picture-width);
+  /* Keep the entire 9:16 picture above the native buttons and seek bar. */
+  height: calc(var(--picture-width) * 16 / 9 + 80px);
   margin: 20px auto;
   border-radius: var(--studio-radius);
   background: #151416;
   object-fit: contain;
+  object-position: center top;
   box-shadow: 0 8px 24px rgb(20 18 16 / 0.12);
+}
+
+.creator-app .creator-composite-player:fullscreen {
+  /* Native fullscreen owns the element height. Extend the source rectangle below the picture. */
+  object-view-box: inset(0 0 -25% 0);
 }
 
 .creator-app .creator-task-drawer {
@@ -380,7 +389,7 @@
   }
 
   .creator-app .creator-composite-player {
-    max-height: 500px;
+    --picture-width: min(100cqw, calc(500px * 9 / 16));
   }
 
   .creator-app .creator-task-drawer {

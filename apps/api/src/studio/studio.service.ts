@@ -786,6 +786,7 @@ export class StudioService {
   }
 
   async preflightEpisodeCompose(projectId: string, episodeId: string, body: unknown) {
+    if (!this.episodeComposeEnabled) throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
     let request;
     try {
       request = parseEpisodeComposePreflightRequest(rejectClientWorkspace(body));
@@ -803,9 +804,7 @@ export class StudioService {
   }
 
   async listEpisodeComposites(projectId: string, episodeId: string, cursor?: string, limit?: string) {
-    if (!this.episodeComposeEnabled) {
-      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
-    }
+    await this.store.getProject(this.workspaceId, projectId);
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     return this.mediaAssets.listEpisodeComposites(this.workspaceId, projectId, episodeId, cursor, parsePageLimit(limit));
   }
@@ -930,15 +929,13 @@ export class StudioService {
       const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
       const episodeOutput = schema === "m4.episode.compose.asset.v1";
       const shotOutput = schema === "m4.shot.compose.asset.v1" || schema === "m4.shot.voice-compose.asset.v1";
-      if (episodeOutput && !this.episodeComposeEnabled) {
-        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
-      }
       if (shotOutput && !this.localComposeEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
       }
-      if ((!episodeOutput && !shotOutput) || !this.composeObjectDir) {
+      if (!episodeOutput && !shotOutput) {
         throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
       }
+      if (!this.composeObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Composite storage is unavailable");
       const content = await readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
       return { ...content, etag: `"${asset.checksumSha256}"` };
     }
@@ -985,8 +982,8 @@ export class StudioService {
     assetId: string,
     query: Record<string, unknown>,
   ): Promise<{ filenameStem: string; bytes: Buffer; manifest: ReturnType<typeof episodeExportBody>["manifest"] }> {
-    if (!this.episodeComposeEnabled || !this.composeObjectDir || !this.mediaAssets) {
-      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
+    if (!this.composeObjectDir || !this.mediaAssets) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose storage is unavailable");
     }
     // Opaque ownership gate for download + export-manifest (same NOT_FOUND as a missing project).
     await this.store.getProject(this.workspaceId, projectId);

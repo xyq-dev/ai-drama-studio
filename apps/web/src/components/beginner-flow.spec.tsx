@@ -31,6 +31,7 @@ interface World {
   mediaHold?: Promise<void>;
   runs?: unknown[];
   composites?: Record<string, Array<{ status: string; reviewStatus: string }>>;
+  legacyCompositesOff?: boolean;
   candidates?: Record<string, unknown[]>;
   /** Fail the project read this many times first. */
   projectFailures?: number;
@@ -101,6 +102,7 @@ function install(worlds: Record<string, World>) {
     }
     if (path.endsWith("/composites")) {
       if (world.mediaHold) await world.mediaHold;
+      if (world.legacyCompositesOff) return json({ error: { code: "CONFIGURATION_ERROR", message: "Episode compose is not enabled" } }, 400);
       return json({ items: world.composites?.[episodeId] ?? [], nextCursor: null });
     }
     if (path.endsWith("/scenes") && world.scenesFail?.()) return json({ error: { code: "INTERNAL", message: "boom" } }, 500);
@@ -153,6 +155,37 @@ describe("beginner flow", () => {
     render(<BeginnerFlow projectId={P1} />);
     await screen.findByRole("heading", { name: "最后一班车" });
     expect(calls.filter(call => call.startsWith("PATCH "))).toEqual([`PATCH /api/v1/projects/${P1}`]);
+  });
+
+  it("reopens the approved script only after its text and versions arrive", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=script`);
+    install({ [P1]: { title: "最后一班车", story: story("APPROVED"), episodes: [episode(1, "APPROVED")],
+      project: { episodeCount: 1 } } });
+    const saved = "雨夜，少年追上末班车。\n少年：师傅，照片还给您。";
+    const fetchPage = globalThis.fetch;
+    let scriptRead = Promise.resolve();
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (!input.endsWith("/scripts")) return fetchPage(input, init);
+      await scriptRead;
+      return json({ items: [{
+        ...story("APPROVED"), id: "script-1", sourceStoryRevisionId: "story-1", content: { text: saved },
+      }], nextCursor: null });
+    });
+    const first = render(<BeginnerFlow projectId={P1} />);
+    await screen.findByDisplayValue(saved, { normalizer: value => value });
+    first.unmount();
+
+    let release!: () => void;
+    scriptRead = new Promise(resolve => { release = resolve; });
+    render(<BeginnerFlow projectId={P1} />);
+    await screen.findByText("正在读取剧本…");
+    expect(screen.queryByLabelText("正文")).toBeNull();
+    expect(screen.queryByText("没有历史版本")).toBeNull();
+    expect(screen.queryByText("只有一个版本，无法比较。")).toBeNull();
+    await act(async () => { release(); });
+    expect((await screen.findByLabelText("正文") as HTMLTextAreaElement).value).toBe(saved);
+    expect(screen.getByText(/第 1 版 · .*当前/)).toBeTruthy();
+    expect(screen.getByText("保存状态：没有未保存的修改")).toBeTruthy();
   });
 
   it("opens the first step that needs the user and explains it", async () => {
@@ -254,6 +287,83 @@ describe("beginner flow", () => {
     expect(screen.queryByRole("heading", { name: "旧作品" })).toBeNull();
   });
 
+  it("updates the cast tab with each newly saved row while the media progress reread is pending", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=cast`);
+    const world = sceneWorld({ characters: [] });
+    install({ [P1]: world });
+    const read = globalThis.fetch;
+    const created: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url.endsWith("/characters")) {
+        const { name } = JSON.parse(String(init.body)) as { name: string };
+        created.push(name);
+        const entityId = `person-${created.length}`;
+        world.characters = [...(world.characters ?? []), aggregate(entityId, "DRAFT", { name })];
+        world.project = { version: 3 + created.length };
+        return json({ entityId });
+      }
+      return read(url, init);
+    });
+    render(<BeginnerFlow projectId={P1} />);
+    await screen.findByRole("tab", { name: "角色 · 还没有" });
+    const form = within(screen.getByRole("heading", { name: "新建角色" }).closest("form")!);
+    let release!: () => void;
+    world.mediaHold = new Promise<void>(resolve => { release = resolve; });
+    try {
+      for (const [index, name] of ["少年", "司机"].entries()) {
+        fireEvent.change(form.getByLabelText("名称"), { target: { value: name } });
+        fireEvent.click(form.getByRole("button", { name: "保存新版本" }));
+        await screen.findByRole("button", { name: new RegExp(`person-${index + 1} · ${name}`) });
+        expect(screen.getByRole("tab", { name: `角色 · 0/${index + 1} 已确认` })).toBeTruthy();
+        expect(screen.queryByRole("tab", { name: "角色 · 还没有" })).toBeNull();
+      }
+      expect(created).toEqual(["少年", "司机"]);
+    } finally {
+      await act(async () => { release(); });
+    }
+  });
+
+  it("keeps the visible count while reading the remaining characters and ignores a superseded cursor", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=cast`);
+    install({ [P1]: sceneWorld() });
+    const read = globalThis.fetch;
+    const people = [aggregate("first", "DRAFT", { name: "少年" }), aggregate("second", "DRAFT", { name: "司机" })];
+    let saved = 0;
+    let release!: () => void;
+    const delayed = new Promise<void>(resolve => { release = resolve; });
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/characters") && init?.method === "POST") {
+        const person = people[saved++]!;
+        return json({ entityId: person.entityId });
+      }
+      if (url.endsWith("/characters") && saved > 0) {
+        return json({ items: people.slice(0, saved), nextCursor: saved === 1 ? "old" : null });
+      }
+      if (url.includes("/characters?") && url.includes("cursor=old")) {
+        await delayed;
+        return json({ items: [aggregate("old", "APPROVED")], nextCursor: null });
+      }
+      return read(url, init);
+    });
+    render(<BeginnerFlow projectId={P1} />);
+    const form = within((await screen.findByRole("heading", { name: "新建角色" })).closest("form")!);
+    const add = (name: string) => {
+      fireEvent.change(form.getByLabelText("名称"), { target: { value: name } });
+      fireEvent.click(form.getByRole("button", { name: "保存新版本" }));
+    };
+    try {
+      add("少年");
+      await screen.findByRole("button", { name: /first · 少年/ });
+      expect(screen.getByRole("tab", { name: "角色 · 已读 1 个，正在读取…" })).toBeTruthy();
+      add("司机");
+      await screen.findByRole("button", { name: /second · 司机/ });
+      expect(screen.getByRole("tab", { name: "角色 · 0/2 已确认" })).toBeTruthy();
+    } finally {
+      await act(async () => { release(); });
+    }
+    expect(screen.getByRole("tab", { name: "角色 · 0/2 已确认" })).toBeTruthy();
+  });
+
   it("removes the saved character draft from the header after creation, approval and a reload", async () => {
     window.history.replaceState(null, "", `/projects/${P1}/create?step=cast`);
     const world = sceneWorld();
@@ -318,6 +428,8 @@ describe("beginner flow", () => {
     await screen.findByRole("heading", { name: "夜班" });
     // Before the media facts arrive no step is chosen, so nothing can be pinned to the wrong one.
     expect(screen.queryByRole("heading", { name: /第 \d 步/ })).toBeNull();
+    expect(screen.getByText("正在读取创作进度…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /第 \d 步/ })).toBeNull();
     await act(async () => { release(); await mediaHold; });
     // Cast has no characters yet, so step 3 is first; switching to 出成片 opens episode 2, the one waiting for review.
     expect(await screen.findByRole("heading", { name: "第 3 步 · 定人物" })).toBeTruthy();
@@ -557,13 +669,14 @@ describe("beginner scene editor locations (Issue #52 item 8)", () => {
 
   it("says when the complete location list failed instead of presenting the first page as all", async () => {
     window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
-    install({ [P1]: sceneWorld() });
+    const locations = Array.from({ length: 21 }, (_, index) => aggregate(`loc-${index}`, "APPROVED"));
+    install({ [P1]: sceneWorld({ locations }) });
     const realFetch = globalThis.fetch;
     let locationReads = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
       const url = String(input);
-      // The base reads the first page; the complete bounded read (limit=50) fails.
-      if (url.includes("/locations") && url.includes("limit=50")) {
+      // The first 20 locations are known; only the remaining page fails.
+      if (url.includes("/locations") && url.includes("cursor=20")) {
         locationReads += 1;
         return json({ error: { code: "INTERNAL", message: "boom" } }, 500);
       }
@@ -693,17 +806,28 @@ describe("compose capability gate (PR #53 review 2 and 3)", () => {
     expect(panel.querySelectorAll("[data-selected-asset-id]")).toHaveLength(2);
   });
 
-  it("step 5 with episode compose closed: inner controls closed, the notice and a recheck shown", async () => {
+  it.each([
+    { legacyCompositesOff: false, enabled: false },
+    { legacyCompositesOff: true, enabled: false },
+    { legacyCompositesOff: true, enabled: true },
+  ])("step 5 shows 2/2 and the closed state (legacy=$legacyCompositesOff, capability=$enabled)", async ({ legacyCompositesOff, enabled }) => {
     window.history.replaceState(null, "", `/projects/${P1}/create?step=final`);
-    capabilities = { compose: { shot: true, episode: false } };
-    install({ [P1]: sceneWorld({ candidates: { "episode-1": [candidate("cut-a", 1), candidate("cut-b", 2)] } }) });
+    capabilities = { compose: { shot: true, episode: enabled } };
+    install({ [P1]: sceneWorld({ legacyCompositesOff, episodes: [episode(1, "APPROVED")], project: { episodeCount: 1 },
+      candidates: { "episode-1": [candidate("cut-a", 1), candidate("cut-b", 2)] } }) });
     render(<BeginnerFlow projectId={P1} />);
-    expect(await screen.findByText(/集级合成由平台统一开启，目前还没开/)).toBeTruthy();
+    expect(await screen.findByText("集级合成由平台统一开启，目前还没开。")).toBeTruthy();
     expect(screen.getByText("已确认单镜进度 2/2")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "第 5 步 出成片：还不能完成" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /第 1 集 · — 还不能完成/ })).toBeTruthy();
+    expect(screen.queryByText(/部分进度没有读到|暂时不能确认是否完成|Episode compose is not enabled/)).toBeNull();
+    expect(screen.queryByText(/排好顺序，预检后提交合成/)).toBeNull();
     const panel = await screen.findByRole("region", { name: "多镜编排" });
     for (const button of await within(panel).findAllByRole("button", { name: "加入" })) fireEvent.click(button);
     expect((within(panel).getByRole("button", { name: "预检编排" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!).toBeTruthy();
+    expect((within(panel).getByRole("button", { name: "开始多镜合成" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "重新查询成片" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "重新检查功能状态" }).length).toBeGreaterThan(0);
   });
 });
 

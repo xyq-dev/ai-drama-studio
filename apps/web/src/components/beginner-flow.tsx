@@ -11,7 +11,6 @@ import {
   composeBlockedReason,
   composeGates,
   loadComposeCapability,
-  loadEntityLists,
   loadEpisodeMedia,
   mediaReadFailed,
   readPages,
@@ -43,7 +42,7 @@ import {
   type StepState,
 } from "../lib/beginner-steps";
 import { safeUnsavedDrafts, saveText } from "../lib/unsaved-drafts";
-import { currentStoryRevision } from "../lib/studio-model";
+import { currentStoryRevision, type PageState } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
 import { AutoRunEntry } from "./auto-run-entry";
 import { EntityPane, ScenePane, ScriptPane, StoryPane, TaskDrawer, usesSeriesWritingPage } from "./workbench";
@@ -62,13 +61,40 @@ function stepFromUrl(): StepKey | null {
 interface Progress {
   projectId: string;
   media: Record<number, EpisodeMediaFacts>;
-  characters: ListFacts<Aggregate>;
-  locations: ListFacts<Aggregate>;
 }
 
 const UNREAD: ListFacts<Aggregate> = { items: [], read: "incomplete" };
 
 type CastKind = "character" | "location";
+
+/** Count the same items the editor shows; only fetch beyond its cursor if the total is still unknown. */
+function useCastList(projectId: string, kind: CastKind, page: PageState<Aggregate> | null) {
+  const [scan, setScan] = useState<{ page: PageState<Aggregate>; list: ListFacts<Aggregate> } | null>(null);
+  useEffect(() => {
+    if (page?.scope !== projectId || !page.nextCursor) return;
+    let active = true;
+    void readPages<Aggregate>(client, `/projects/${projectId}/${kind}s`, undefined, page).then(list => {
+      if (active) setScan({ page, list });
+    });
+    return () => { active = false; };
+  }, [projectId, kind, page]);
+
+  return useMemo(() => {
+    if (page?.scope !== projectId) return { list: UNREAD, pending: true };
+    if (!page.nextCursor) return { list: { items: page.items, read: "ok" as const }, pending: false };
+    if (scan?.page === page) return { list: scan.list, pending: false };
+    return { list: { items: page.items, read: "incomplete" as const }, pending: true };
+  }, [page, projectId, scan]);
+}
+
+function castCount(list: ListFacts<Aggregate>, pending: boolean): string {
+  const total = list.items.length;
+  if (list.read !== "ok") {
+    const status = pending ? "正在读取…" : "列表未读全";
+    return total ? `已读 ${total} 个，${status}` : status;
+  }
+  return total ? `${list.items.filter(item => entityState(item) === "done").length}/${total} 已确认` : "还没有";
+}
 
 interface CastProblem {
   kind: CastKind;
@@ -150,6 +176,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   /** A series work: text steps only (story and episode scripts); no media panel mounts and no media progress is read. */
   const textOnly = project?.writingMode === "series";
   const steps = stepsFor(project?.writingMode);
+  const castCharacters = useCastList(projectId, "character", textOnly ? null : characters);
+  const castLocations = useCastList(projectId, "location", textOnly ? null : locations);
 
   // Facts of another project never mix with this one.
   useEffect(() => {
@@ -213,7 +241,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     return dropCapabilityRead;
   }, [projectId, checkCapability, dropCapabilityRead]);
 
-  // Progress facts (complete entity lists, episode media) follow every base reload, which compose panels trigger
+  // Media progress follows every base reload, which compose panels trigger
   // when a compose is accepted, finishes or is reviewed. Every read reports how complete it was; an older answer
   // is dropped.
   useEffect(() => {
@@ -221,26 +249,28 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     const token = ++mediaToken.current;
     if (project.writingMode === "series") {
       // Nothing of the media steps is read for a series work: its step states come from the story and scripts.
-      setProgress({ projectId, media: {}, characters: UNREAD, locations: UNREAD });
+      setProgress({ projectId, media: {} });
       return;
     }
-    void Promise.all([loadEntityLists(client, projectId), loadEpisodeMedia(client, projectId, episodes)]).then(([entities, media]) => {
+    void loadEpisodeMedia(client, projectId, episodes).then(media => {
       if (token !== mediaToken.current) return;
-      setProgress({ projectId, media, ...entities });
+      setProgress({ projectId, media });
     });
   }, [project, projectId, episodes, refreshEpoch, imageEpoch]);
 
-  const ready = progress !== null && progress.projectId === projectId;
-  const media = ready ? progress.media : {};
+  const media = progress?.projectId === projectId ? progress.media : undefined;
+  const ready = media !== undefined && (textOnly || (!castCharacters.pending && !castLocations.pending));
   const facts: BeginnerFacts = useMemo(() => ({
     story: currentStoryRevision(stories?.items ?? []), episodes,
     ...(project?.episodeCount !== undefined ? { episodeCount: project.episodeCount } : {}),
     ...(project?.writingMode !== undefined ? { writingMode: project.writingMode } : {}),
-    characters: ready ? progress.characters : UNREAD, locations: ready ? progress.locations : UNREAD,
-    runs: allRuns, media: ready ? progress.media : {},
-  }), [stories, episodes, ready, progress, allRuns, project?.episodeCount, project?.writingMode]);
+    characters: castCharacters.list, locations: castLocations.list,
+    runs: allRuns, media: media ?? {},
+    episodeComposeDisabled: capability?.read === "ok" && !capability.episode,
+  }), [stories, episodes, castCharacters.list, castLocations.list, media, allRuns, project?.episodeCount, project?.writingMode, capability]);
   const states = useMemo(() => stepStates(facts), [facts]);
   const gates = composeGates(capability);
+  const episodeGate = gates.episode !== "pending" && media?.[episodeNo]?.composites.read === "unavailable" ? "disabled" : gates.episode;
 
   // First visit waits for every fact, then opens the first step (and episode) that still needs the user;
   // ?step= reopens a chosen step after a refresh.
@@ -296,7 +326,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const scenes = scenePage && scenePage.scope === sceneScope ? scenePage : null;
   const scopedChoice = sceneChoice?.scope === sceneScope ? sceneChoice : null;
   const sceneId = scopedChoice && scenes?.items.some(item => item.entityId === scopedChoice.id) ? scopedChoice.id : null;
-  const confirmedShots = media[episodeNo]?.candidates;
+  const confirmedShots = media?.[episodeNo]?.candidates;
   useEffect(() => {
     setShotId(null);
   }, [sceneScope]);
@@ -371,7 +401,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const state = step ? states[step] : "not_started";
   // A compose step whose channel is not confirmed open offers no action the server would reject: while the
   // capability is read it waits, otherwise it offers a recheck.
-  const gate = info.key === "sample" ? gates.shot : info.key === "final" ? gates.episode : "enabled";
+  const gate = info.key === "sample" ? gates.shot : info.key === "final" ? episodeGate : "enabled";
   const closed = state !== "done" && gate !== "enabled";
   const action = closed
     ? { label: gate === "pending" ? "正在检查功能状态" : "重新检查功能状态", target: "reload" as const }
@@ -511,7 +541,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           </div>
         ) : null}
 
-        <nav aria-label="创作步骤" className="creator-steps mt-5">
+        {!ready && !error ? <p className="mt-5 text-[15px]" role="status">正在读取创作进度…</p> : null}
+        {ready && <nav aria-label="创作步骤" className="creator-steps mt-5">
           <ol className={`grid ${textOnly ? "grid-cols-2" : "grid-cols-5"} gap-1 sm:gap-2`}>
             {steps.map((item) => (
               <li key={item.key} className="min-w-0">
@@ -526,9 +557,9 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               </li>
             ))}
           </ol>
-        </nav>
+        </nav>}
 
-        {step ? (
+        {step && ready ? (
           <section className="creator-step-overview mt-5 rounded-[12px] border border-[#E7E5E0] bg-white p-5 shadow-sm" aria-labelledby="step-title">
             <div className="flex flex-wrap items-center gap-3">
               <h2 id="step-title" className="text-xl font-semibold">第 {info.no} 步 · {info.title}</h2>
@@ -595,13 +626,12 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             <>
               <div role="tablist" aria-label="人物与场地" className="creator-cast-tabs flex gap-2">
                 {(["character", "location"] as const).map((kind) => {
-                  // Counts come from the complete lists, not the first page the editor shows.
-                  const list = kind === "character" ? facts.characters : facts.locations;
+                  const { list, pending } = kind === "character" ? castCharacters : castLocations;
                   return (
                     <button key={kind} role="tab" type="button" aria-selected={castKind === kind}
                       className={`rounded-[12px] border px-3 py-1.5 ${castKind === kind ? "border-[var(--studio-accent)] bg-[#FBE7E4]" : "bg-white"}`}
                       onClick={() => { setCastKind(kind); setCastFocus(null); }}>
-                      {kind === "character" ? "角色" : "场地"} · {list.read !== "ok" ? "尚未确认" : list.items.length === 0 ? "还没有" : `${list.items.filter((item) => entityState(item) === "done").length}/${list.items.length} 已确认`}
+                      {kind === "character" ? "角色" : "场地"} · {castCount(list, pending)}
                     </button>
                   );
                 })}
@@ -685,9 +715,9 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               )}
               {sceneId && episode && sceneScope ? (
                 <>
-                  <LocationNote list={ready ? progress.locations : null} onRetry={rereadAll} />
+                  <LocationNote list={castLocations.pending ? null : castLocations.list} onRetry={rereadAll} />
                   <ScenePane projectId={projectId} episode={episode} sceneId={sceneId} shotId={shotId} refreshEpoch={refreshEpoch}
-                    imageEpoch={imageEpoch} runs={allRuns} locations={sceneLocations(ready ? progress.locations : null, locations?.items ?? [])}
+                    imageEpoch={imageEpoch} runs={allRuns} locations={castLocations.list.items}
                     onSaved={base.reloadAfterWrite} onStatus={onStatus} onOpenShot={setShotId} onMediaChanged={refreshFacts}
                     shotComposeBlocked={composeBlockedReason(gates.shot, "shot")} />
                 </>
@@ -700,14 +730,14 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             <>
               <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={selectEpisode} state={(no) => episodeFinalState(facts, no)} />
               {assistantPanel}
-              <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p>
-              <GateNotice gate={gates.episode} onRetry={recheck}>集级合成由平台统一开启，目前还没开。可以先把每个镜头的单镜成片做完并确认，开启后这里会自动可用。</GateNotice>
+              {episodeGate !== "disabled" ? <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p> : null}
+              <GateNotice gate={episodeGate} onRetry={recheck}>集级合成由平台统一开启，目前还没开。{confirmedShots && confirmedShots.count >= 2 ? null : "可以先把每个镜头的单镜成片做完并确认，开启后这里会自动可用。"}</GateNotice>
               <p className="text-[15px]">{confirmedShots?.read === "ok"
                 ? `已确认单镜进度 ${Math.min(confirmedShots.count, 2)}/2` : "已确认单镜进度待核实"}</p>
               {ready && mediaReadFailed(media) ? <ReadFailed onRetry={rereadAll} /> : null}
               {episode && scriptState(episode) === "done" ? (
                 <EpisodeComposePreflight projectId={projectId} episodeNo={episodeNo} episodeId={episode.id} onChanged={refreshFacts}
-                  composeBlocked={composeBlockedReason(gates.episode, "episode")} />
+                  composeBlocked={episodeGate !== "enabled"} />
               ) : (
                 <>
                   <p id="creator-export-section" tabIndex={-1} className="rounded-[12px] border bg-white p-4">
@@ -755,16 +785,6 @@ function GateNotice({ gate, onRetry, children }: { gate: ComposeGate; onRetry: (
   );
 }
 
-/**
- * Location choices for the scene editor: the complete bounded list when it was read, so a location past the first
- * page can be chosen; the first page only while the complete list is not there.
- */
-function sceneLocations(complete: ListFacts<Aggregate> | null, firstPage: Aggregate[]): Aggregate[] {
-  if (!complete) return firstPage;
-  const known = new Set(complete.items.map((item) => item.entityId));
-  return [...complete.items, ...firstPage.filter((item) => !known.has(item.entityId))];
-}
-
 function LocationNote({ list, onRetry }: { list: ListFacts<Aggregate> | null; onRetry: () => void }) {
   if (list === null) return <p className="text-[15px] text-[#5F5D66]" role="status">正在读取全部场地，场景里的场地选项暂时只有第一页。</p>;
   if (list.read === "ok") return null;
@@ -790,7 +810,8 @@ function ReadFailed({ onRetry }: { onRetry: () => void }) {
 
 /** One plain sentence on what to do now, from the step's real state. */
 function StepGuide({ step, state }: { step: StepKey; state: StepState }) {
-  const text: Record<StepState, string> = {
+  const text: Record<StepState, string | null> = {
+    compose_disabled: null,
     not_started: "上一步还没有完成，完成后这里就能开始。",
     needs_input: step === "story" ? "可以直接写故事，也可以用编剧助手生成候选。确认正文后，点击「保存新版本」。"
       : step === "script" ? "这一集还没有剧本。可以在下方直接编写并保存；若编辑器提供编剧助手，也可以先生成候选再采纳。"
@@ -806,5 +827,5 @@ function StepGuide({ step, state }: { step: StepKey; state: StepState }) {
       : "上游内容改过了，这里的已确认版本已过期，不能再次批准。原来的审核记录会保留；请修改后保存新版本，再提交审核。",
     unknown: "这一步的部分进度没有读到（读取失败、功能未开启或列表还没读完），暂时不能确认是否完成。",
   };
-  return <p className="creator-step-guide mt-3 rounded-[12px] bg-[#F7F6F2] p-3 text-[15px]">{text[state]}</p>;
+  return text[state] && <p className="creator-step-guide mt-3 rounded-[12px] bg-[#F7F6F2] p-3 text-[15px]">{text[state]}</p>;
 }

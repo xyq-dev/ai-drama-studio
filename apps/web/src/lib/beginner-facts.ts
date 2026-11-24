@@ -30,12 +30,14 @@ export async function readPages<T>(
   client: Client,
   path: string,
   settled: (items: readonly T[]) => boolean = () => false,
+  firstPage?: Page<T>,
 ): Promise<{ items: T[]; read: ReadState }> {
-  const items: T[] = [];
-  const seen = new Set<string>();
-  let cursor: string | null = null;
+  if (firstPage && (!firstPage.nextCursor || settled(firstPage.items))) return { items: firstPage.items, read: "ok" };
+  const items: T[] = firstPage ? [...firstPage.items] : [];
+  let cursor: string | null = firstPage?.nextCursor ?? null;
+  const seen = new Set<string>(cursor ? [cursor] : []);
   try {
-    for (let page = 0; page < MAX_PAGES; page += 1) {
+    for (let page = firstPage ? 1 : 0; page < MAX_PAGES; page += 1) {
       const separator = path.includes("?") ? "&" : "?";
       const url: string = `${path}${separator}limit=${PAGE_LIMIT}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
       const body: Page<T> = await client.get<Page<T>>(url);

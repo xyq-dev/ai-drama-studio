@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { DEFAULT_AFTER_LOGIN, readSession, safeReturnTo } from "../lib/site-session";
+import { DEFAULT_AFTER_LOGIN, operatorWorkReviewUrl, readSession, safeReturnTo, type SiteSession } from "../lib/site-session";
 import styles from "./login-page.module.css";
 
 const REASONS: Record<string, string> = {
@@ -41,7 +41,7 @@ export function LoginPage() {
     setNotice(REASONS[query.get("reason") ?? ""] ?? "");
     // Already signed in (or login switched off): go straight on.
     void readSession().then((session) => {
-      if (!session.enabled || session.authenticated) window.location.replace(target);
+      if (!session.enabled || session.authenticated) window.location.replace(operatorWorkReviewUrl(target, session.role) ?? target);
     }).catch(() => undefined);
   }, []);
 
@@ -58,7 +58,8 @@ export function LoginPage() {
           body: JSON.stringify({ challenge, code }),
         });
         if (totpResponse.ok) {
-          window.location.replace(returnTo);
+          const session = await totpResponse.json() as SiteSession;
+          window.location.replace(operatorWorkReviewUrl(returnTo, session.role) ?? returnTo);
           return;
         }
         setError("验证器动态码或恢复码不正确。");
@@ -80,13 +81,13 @@ export function LoginPage() {
         body: JSON.stringify({ username: username.trim(), password: submitted }),
       });
       if (response.ok) {
-        const body = await response.json().catch(() => ({})) as { totpRequired?: boolean; challenge?: string };
+        const body = await response.json().catch(() => ({})) as { totpRequired?: boolean; challenge?: string; role?: SiteSession["role"] };
         if (body.totpRequired && body.challenge) {
           setChallenge(body.challenge);
           setBusy(false);
           return;
         }
-        window.location.replace(returnTo);
+        window.location.replace(operatorWorkReviewUrl(returnTo, body.role) ?? returnTo);
         return;
       }
       let code = "";

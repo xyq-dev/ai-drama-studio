@@ -18,7 +18,7 @@ export interface EpisodeComposeJobPanelProps {
   onReviewed?: () => void;
   /** Called when a compose is accepted, reaches a terminal state, or a composite is reviewed. */
   onChanged?: () => void;
-  /** A new compose (or a resend of an unconfirmed one) cannot start now; the list, review and downloads stay. */
+  /** New renders and review decisions require an open episode compose gate. */
   startBlocked?: boolean;
   /** An unapproved script can inspect prior exports, including their quality reports. */
   historyOnly?: boolean;
@@ -109,7 +109,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const [job, setJob] = useState<JobView | null>(null);
   const notifyChanged = useChangeNotice(job, props.onChanged);
   const [items, setItems] = useState<CompositeItem[]>([]);
-  const [listLoaded, setListLoaded] = useState(false);
+  const [listState, setListState] = useState<"loading" | "loaded" | "unavailable">("loading");
   const [listError, setListError] = useState<string | null>(null);
   const [held, setHeld] = useState<HeldSubmit | null>(null);
   const [reload, setReload] = useState(0);
@@ -147,7 +147,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
     setError(null);
     setJob(null);
     setItems([]);
-    setListLoaded(false);
+    setListState("loading");
     setListError(null);
     setHeld(null);
     downloadSession.current += 1;
@@ -181,6 +181,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       reading.current = true;
       const readToken = ++listGen.current;
       const pageCount = loadedPages.current;
+      let pollAgain = true;
       try {
         const collected: CompositeItem[] = [];
         let cursor: string | null = null;
@@ -198,15 +199,21 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         }
         if (stopped || listEpoch.current !== token || listGen.current !== readToken) return;
         setItems((current) => preferListed(current, collected));
-        setListLoaded(true);
+        setListState("loaded");
         rememberCursor(nextCursor);
         setListError(null);
       } catch (caught) {
         if (stopped || listEpoch.current !== token || listGen.current !== readToken) return;
-        setListError(caught instanceof ApiError ? caught.detail : "集级成片暂时无法读取");
+        if (caught instanceof ApiError && caught.code === "CONFIGURATION_ERROR" && props.startBlocked) {
+          setListState("unavailable");
+          setListError(null);
+          pollAgain = false;
+        } else {
+          setListError(caught instanceof ApiError ? caught.detail : "集级成片暂时无法读取");
+        }
       } finally {
         if (readSerial.current === serial) reading.current = false;
-        if (!stopped && listEpoch.current === token && !hidden.current) {
+        if (pollAgain && !stopped && listEpoch.current === token && !hidden.current) {
           timer = window.setTimeout(() => void read(), 2000);
         }
       }
@@ -225,7 +232,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       document.removeEventListener("visibilitychange", onVisibility);
       window.clearTimeout(timer);
     };
-  }, [identity, props.client, props.episodeId, props.projectId, reload]);
+  }, [identity, props.client, props.episodeId, props.projectId, props.startBlocked, reload]);
 
   useEffect(() => {
     if (!job || TERMINAL.has(job.state)) return;
@@ -424,6 +431,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   }
 
   async function review(item: CompositeItem, action: "APPROVE" | "REJECT") {
+    if (props.historyOnly || props.startBlocked) return;
     const token = epoch.current;
     const listToken = listEpoch.current;
     listGen.current += 1;
@@ -465,7 +473,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
             <button className="mt-2 rounded border px-3 py-1" type="button" onClick={() => setReload((value) => value + 1)}>重新查询成片</button>
           </div>
         ) : items.length === 0 ? (
-          <p className="text-sm" role="status">{listLoaded ? "本集还没有成片。完成本集合成后，质检结果会显示在这里。" : "正在读取本集成片…"}</p>
+          <p className="text-sm" role="status">{listState === "loading" ? "正在读取本集成片…" : listState === "unavailable" ? "历史成片列表暂不可查看。" : "本集还没有成片。完成本集合成后，质检结果会显示在这里。"}</p>
         ) : null}
         {historyCursor ? <button className="mb-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void loadHistory()}>加载更早的成片</button> : null}
         <ul className="space-y-2">
@@ -495,7 +503,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
                 </div>
               ) : null}
               {downloadErrors[item.assetId] !== undefined ? <p className="mt-2" role="alert">{downloadErrors[item.assetId]}</p> : null}
-              {!props.historyOnly && item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
+              {!props.historyOnly && !props.startBlocked && item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "APPROVE")}>批准成片</button>
                   <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "REJECT")}>退回成片</button>

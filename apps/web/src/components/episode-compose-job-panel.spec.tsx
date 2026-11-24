@@ -63,6 +63,23 @@ afterEach(() => {
 });
 
 describe("episode compose job panel", () => {
+  it("stops polling a legacy disabled list and reads it again after the gate opens", async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(async () => json({ error: { code: "CONFIGURATION_ERROR", message: "Episode compose is not enabled" } }, 400));
+    const props = { client: new StudioClient(request), projectId: PROJECT, episodeId: EPISODE, body: null };
+    const view = render(createElement(EpisodeComposeJobPanel, { ...props, startBlocked: true }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("历史成片列表暂不可查看。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "重新查询成片" })).toBeNull();
+
+    request.mockResolvedValueOnce(json({ items: [composite(JOB_A)], nextCursor: null }));
+    view.rerender(createElement(EpisodeComposeJobPanel, { ...props, startBlocked: false }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(document.querySelector(`[data-composite-id="${JOB_A}"]`)).toBeTruthy();
+  });
+
   it("keeps a focusable quality result when the selected episode has no composites", async () => {
     render(panel(async () => json({ items: [], nextCursor: null })));
     const section = screen.getByRole("region", { name: "成片质检结果" });
@@ -72,30 +89,43 @@ describe("episode compose job panel", () => {
     expect(await screen.findByText(/本集还没有成片/)).toBeTruthy();
   });
 
-  it("links a quality finding to its own player's time and distinguishes unchecked and unavailable reports", async () => {
+  it("keeps quality findings, readable players and approved exports while review is closed", async () => {
     const assets = [
       { ...composite("bad"), qualityCheckEnabled: true, containsMockSources: true, qualityReport: {
         skill: "qc-skill", version: "1.4.5", status: "FAIL", findings: [{ code: "BLACK", startMs: 750, endMs: 1900 }],
       } },
-      composite("old"),
+      composite("old", { reviewStatus: "APPROVED" }),
       { ...composite("off"), qualityCheckEnabled: false },
       { ...composite("unknown"), qualityCheckEnabled: true, qualityReport: {
         skill: "qc-skill", version: "1.4.5", status: "UNKNOWN", reason: "CHECK_UNAVAILABLE", findings: [],
       } },
     ];
-    const view = render(panel(async () => json({ items: assets, nextCursor: null })));
+    const client = new StudioClient(async () => json({ items: assets, nextCursor: null }));
+    const props = { client, projectId: PROJECT, episodeId: EPISODE, body: null };
+    const view = render(createElement(EpisodeComposeJobPanel, { ...props, startBlocked: true }));
     const jump = await screen.findByRole("button", { name: "定位黑屏，0:00.75" });
     const bad = view.container.querySelector<HTMLVideoElement>('[data-composite-id="bad"] video')!;
     const other = view.container.querySelector<HTMLVideoElement>('[data-composite-id="old"] video')!;
     Object.defineProperty(bad, "readyState", { value: 1 });
     fireEvent.click(jump);
     expect(bad.currentTime).toBe(0.75);
+    expect(bad.className).toBe("creator-composite-player");
+    expect(bad.controls).toBe(true);
+    expect(bad.hasAttribute("playsinline")).toBe(true);
+    expect(screen.queryByRole("button", { name: "批准成片" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "退回成片" })).toBeNull();
+    expect(screen.getByRole("button", { name: "下载 MP4" })).toBeTruthy();
     expect(other.currentTime).toBe(0);
     expect(screen.getByText("此成片含演示素材。")).toBeTruthy();
     expect(screen.getByText(/这份成片没有质检记录/)).toBeTruthy();
     expect(screen.getByText(/本次合成未启用质检/)).toBeTruthy();
     expect(screen.getByText(/检测工具不可用/)).toBeTruthy();
     expect(screen.queryByText(/画面和音轨检查通过/)).toBeNull();
+    view.rerender(createElement(EpisodeComposeJobPanel, { ...props, startBlocked: false }));
+    expect(screen.getAllByRole("button", { name: "批准成片" })).toHaveLength(3);
+    view.rerender(createElement(EpisodeComposeJobPanel, { ...props, historyOnly: true }));
+    expect(screen.queryByRole("button", { name: "批准成片" })).toBeNull();
+    expect(screen.getByRole("button", { name: "定位黑屏，0:00.75" })).toBeTruthy();
   });
 
   it("retries a lost or incomplete acceptance with the original body and key", async () => {

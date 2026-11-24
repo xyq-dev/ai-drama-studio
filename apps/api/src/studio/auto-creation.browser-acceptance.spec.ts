@@ -3,7 +3,7 @@
  * AI automatic creation in a real browser with the site login on. Chrome drives the built Next app, which reaches the
  * real Nest API through its same-origin /api/v1 rewrite; the API runs on a new, empty, disposable PostgreSQL database
  * with the test site's migration combination (base seven, guarded Claude, candidate and DeepSeek candidate migrations,
- * script breakdown NOT applied) plus the guarded automatic creation migration. NOT part of `test` or `integration`:
+ * script breakdown NOT applied) plus the guarded automatic creation, creator-account and membership migrations. NOT part of `test` or `integration`:
  *   pnpm build && pnpm --filter @ai-drama/api auto-creation:browser-acceptance
  * with the title writing acceptance guard variables. What is not real: the model. The automatic creation service the
  * controller uses is built here with the automatic creation double as its transport (DeepSeek wire format, the
@@ -24,6 +24,8 @@ import { AUTO_CREATION_PROMPT_VERSION, autoCreationNormalCalls, type AutoCreatio
 import {
   AUTO_CREATION_MIGRATION,
   BASE_MIGRATIONS,
+  CREATOR_ACCOUNT_PLAN_MIGRATION,
+  STAFF_MEMBERSHIP_MIGRATION,
   GUARDED_SINGLE_MIGRATIONS,
   PostgresAutoCreationStore,
   SCRIPT_BREAKDOWN_MIGRATION,
@@ -40,6 +42,7 @@ import {
 import { AutoCreationEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { autoFixtureTransport, type AutoFixtureExchange, type AutoFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { AppModule } from "../app.module";
+import { createWritingCreator } from "../../test/creator-browser-acceptance";
 import { hashPassword } from "../auth/password-hash";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
@@ -84,6 +87,7 @@ function autoService(runtime: StudioRuntime): AutoCreationService {
   });
 }
 
+let creator: Awaited<ReturnType<typeof createWritingCreator>>;
 let app: INestApplication | undefined;
 let web: { child: ChildProcess; logs: () => string } | undefined;
 let browser: Browser | undefined;
@@ -96,7 +100,7 @@ async function bootApi(): Promise<INestApplication> {
     NODE_ENV: "test", DATABASE_URL: acceptanceUrl, REDIS_URL: "redis://127.0.0.1:6399", S3_ENDPOINT: "http://127.0.0.1:59000", S3_REGION: "us-east-1",
     S3_BUCKET: "ai-drama-dev", S3_ACCESS_KEY_ID: "test", S3_SECRET_ACCESS_KEY: "test", APP_WORKSPACE_ID: WORKSPACE,
     SITE_AUTH_ENABLED: "true", SITE_AUTH_USERNAME: "admin",
-    SITE_AUTH_PASSWORD_HASH: await hashPassword(PASSWORD, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 }), SITE_AUTH_PUBLIC_ORIGIN: WEB,
+    SITE_AUTH_PASSWORD_HASH: await hashPassword(randomUUID(), { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 }), SITE_AUTH_PUBLIC_ORIGIN: WEB,
   });
   const moduleRef = await Test.createTestingModule({ imports: [AppModule.register(env)] })
     .overrideProvider(AUTO_CREATION_SERVICE).useFactory({ inject: [STUDIO_RUNTIME], factory: (runtime: StudioRuntime) => autoService(runtime) })
@@ -184,13 +188,14 @@ beforeAll(async () => {
     throw new Error(`Auto creation browser acceptance refused: ${verified.reason}`);
   }
   expect((await runMigrations(pool, undefined, { before: SCRIPT_BREAKDOWN_MIGRATION })).applied).toEqual([...BASE_MIGRATIONS]);
-  for (const name of [WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION]) {
+  for (const name of [WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, CREATOR_ACCOUNT_PLAN_MIGRATION, STAFF_MEMBERSHIP_MIGRATION]) {
     expect((await runMigrations(pool, undefined, { only: { name, requires: GUARDED_SINGLE_MIGRATIONS[name]! } })).applied).toEqual([name]);
   }
   const ledger = (await q<{ name: string }>("SELECT name FROM schema_migration ORDER BY name")).map((row) => row.name);
   expect(ledger).not.toContain(SCRIPT_BREAKDOWN_MIGRATION);
   evidence.migrationsApplied = ledger;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'auto-creation-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
+  creator = await createWritingCreator(pool, WORKSPACE, PASSWORD);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });
   app = await bootApi();
   web = startWeb();
@@ -229,7 +234,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     plan = {};
     await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
     await page.waitForURL(/\/login\?returnTo=%2Fcreate/, { timeout: 30_000 });
-    await page.getByLabel("账号").fill("admin");
+    await page.getByLabel("账号").fill(creator.username);
     await page.getByLabel("密码").fill(PASSWORD);
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.waitForURL(`${WEB}/create`, { timeout: 30_000 });
@@ -250,6 +255,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await startButton.click();
     await navigated;
     firstProject = /\/projects\/([0-9a-f-]{36})\/auto$/.exec(page.url())![1]!;
+    expect(await q("SELECT owner_account_id FROM project WHERE id = $1", [firstProject])).toEqual([{ owner_account_id: creator.accountId }]);
     await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("剧本包已完成（机器检查通过，仍需人工审核）");
     expect(seen).toHaveLength(autoCreationNormalCalls(1));
     // Reload: the stored stages and results come back as they are.
@@ -333,7 +339,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await context!.clearCookies();
     await page.goto(`${WEB}/projects/${firstProject}/create`, { waitUntil: "domcontentloaded" });
     await page.waitForURL(/\/login\?returnTo=/, { timeout: 30_000 });
-    await page.getByLabel("账号").fill("admin");
+    await page.getByLabel("账号").fill(creator.username);
     await page.getByLabel("密码").fill(PASSWORD);
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.waitForURL(`${WEB}/projects/${firstProject}/create`, { timeout: 30_000 });

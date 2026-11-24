@@ -1,17 +1,17 @@
 /// <reference lib="dom" />
 /**
- * Online writing in a real browser with the site login on: the administrator signs in once and then starts a title run
+ * Online writing in a real browser with the site login on: a member signs in to their creator account and starts a title run
  * with DeepSeek (the default after its quick setup), asks for an episode candidate (DeepSeek), an episode candidate from
  * Claude and a story candidate from OpenAI (both chosen in the advanced settings), adopts candidates into the editor draft
  * and saves them with the editor's own "保存新版本" — without ever typing an operator token. A real browser drives the
  * built Next app, which reaches the real Nest API through its same-origin /api/v1 rewrite; the API runs on a new, empty,
- * disposable PostgreSQL database with the test site's migration combination: the seven base migrations, then the guarded
- * Claude, candidate and DeepSeek candidate migrations, and the script breakdown migration NOT applied. NOT part of `test`
+ * disposable PostgreSQL database with the writing, creator account and membership migrations applied. The script
+ * breakdown migration stays unapplied. NOT part of `test`
  * or `integration`: run only with `pnpm --filter @ai-drama/api writing-online:browser-acceptance` and the title writing
  * acceptance guard variables.
  *
  * What is real: Chrome, the built web app and its rewrite and page protection, the site login (scrypt hash, session
- * cookie, CSRF token, origin check), the Nest controllers (operator proof from the session), the services, both
+ * cookie, CSRF token, origin check), the Nest controllers (role and ownership from the session), the services, both
  * PostgreSQL stores and the text chain. What is not: the model. The title and candidate services the controllers use are
  * built here with a stub transport that answers in each provider's own wire format (DeepSeek Chat Completions, Claude
  * Messages, OpenAI Responses), records every request and never opens a network connection. Its texts say they are the
@@ -29,10 +29,12 @@ import { type Browser, type BrowserContext, type Locator, type Page, chromium } 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   BASE_MIGRATIONS,
+  CREATOR_ACCOUNT_PLAN_MIGRATION,
   GUARDED_SINGLE_MIGRATIONS,
   PostgresTitleWritingStore,
   PostgresWritingCandidateStore,
   SCRIPT_BREAKDOWN_MIGRATION,
+  STAFF_MEMBERSHIP_MIGRATION,
   TextChainService,
   WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
   WRITING_CANDIDATE_MIGRATION,
@@ -62,6 +64,7 @@ import { AppModule } from "../app.module";
 import { hashPassword } from "../auth/password-hash";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
+import { createWritingCreator } from "../../test/creator-browser-acceptance";
 import type { StudioRuntime } from "./studio.runtime";
 import { TitleWritingService } from "./title-writing.service";
 import { STUDIO_RUNTIME, TITLE_WRITING_SERVICE, WRITING_CANDIDATE_SERVICE } from "./tokens";
@@ -80,6 +83,8 @@ const WEB = `http://127.0.0.1:${String(WEB_PORT)}`;
 const API = `http://127.0.0.1:${String(API_PORT)}`;
 // Generated per run, held in memory, typed into the login form only; never printed or written to the evidence.
 const PASSWORD = `acceptance-${randomUUID()}`;
+const OPERATOR_PASSWORD = `operator-${randomUUID()}`;
+let creator: Awaited<ReturnType<typeof createWritingCreator>>;
 // Not a key of any provider account: the stub never sends it anywhere.
 // A personal Claude Console key shape (sk-ant-usr-) with a workspace id, as a key not scoped to one workspace needs.
 const STUB_KEY = `sk-ant-usr-stub-not-a-provider-key-${randomUUID()}`;
@@ -190,7 +195,7 @@ const pageErrors: string[] = [];
 const pageWrites: Array<{ method: string; path: string; key: string | null; token: boolean }> = [];
 
 function redact(text: string): string {
-  return text.split(PASSWORD).join("[password]").split(STUB_KEY).join("[stub-key]").split(DEEPSEEK_STUB_KEY).join("[deepseek-stub-key]")
+  return text.split(PASSWORD).join("[password]").split(OPERATOR_PASSWORD).join("[operator-password]").split(STUB_KEY).join("[stub-key]").split(DEEPSEEK_STUB_KEY).join("[deepseek-stub-key]")
     .split(acceptanceUrl).join("[database-url]");
 }
 
@@ -199,9 +204,9 @@ async function bootApi(): Promise<INestApplication> {
     NODE_ENV: "test", DATABASE_URL: acceptanceUrl, REDIS_URL: "redis://127.0.0.1:6399", S3_ENDPOINT: "http://127.0.0.1:59000", S3_REGION: "us-east-1",
     S3_BUCKET: "ai-drama-dev", S3_ACCESS_KEY_ID: "test", S3_SECRET_ACCESS_KEY: "test", APP_WORKSPACE_ID: WORKSPACE,
     SITE_AUTH_ENABLED: "true", SITE_AUTH_USERNAME: "admin",
-    SITE_AUTH_PASSWORD_HASH: await hashPassword(PASSWORD, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 }), SITE_AUTH_PUBLIC_ORIGIN: WEB,
+    SITE_AUTH_PASSWORD_HASH: await hashPassword(OPERATOR_PASSWORD, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 }), SITE_AUTH_PUBLIC_ORIGIN: WEB,
   });
-  // No operator token anywhere: the signed-in administrator is the operator.
+  // Both roles authenticate with their own site account, without an operator token.
   expect(env.TITLE_WRITING_OPERATOR_TOKEN).toBeUndefined();
   const moduleRef = await Test.createTestingModule({ imports: [AppModule.register(env)] })
     .overrideProvider(TITLE_WRITING_SERVICE).useFactory({ inject: [STUDIO_RUNTIME], factory: (runtime: StudioRuntime) => titleService(runtime) })
@@ -323,18 +328,22 @@ beforeAll(async () => {
     await closePostgresPool(pool);
     throw new Error(`Writing online browser acceptance refused: ${verified.reason}`);
   }
-  // The test site's combination, built the way its release applies it: the base seven, then each guarded migration on
-  // its own; the script breakdown migration stays unapplied.
+  // Enable only the tables exercised here, keeping the breakdown explicitly unavailable.
   expect((await runMigrations(pool, undefined, { before: SCRIPT_BREAKDOWN_MIGRATION })).applied).toEqual([...BASE_MIGRATIONS]);
-  for (const name of [WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]) {
+  const required = [
+    WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+    CREATOR_ACCOUNT_PLAN_MIGRATION, STAFF_MEMBERSHIP_MIGRATION,
+  ];
+  for (const name of required) {
     const guarded = await runMigrations(pool, undefined, { only: { name, requires: GUARDED_SINGLE_MIGRATIONS[name]! } });
     expect(guarded.applied).toEqual([name]);
   }
   const ledger = (await q<{ name: string }>("SELECT name FROM schema_migration ORDER BY name")).map((row) => row.name);
-  expect(ledger).toEqual([...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
+  expect(ledger).toEqual([...BASE_MIGRATIONS, ...required]);
   expect(ledger).not.toContain(SCRIPT_BREAKDOWN_MIGRATION);
   evidence.migrationsApplied = ledger;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'writing-online-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
+  creator = await createWritingCreator(pool, WORKSPACE, PASSWORD);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });
 
   app = await bootApi();
@@ -386,7 +395,7 @@ afterAll(async () => {
     for (const file of await readdir(evidenceDir, { recursive: true })) {
       if (!String(file).endsWith(".json")) continue;
       const text = await readFile(join(evidenceDir, String(file)), "utf8");
-      if (text.includes(PASSWORD) || text.includes(STUB_KEY) || text.includes(DEEPSEEK_STUB_KEY) || text.includes(acceptanceUrl)) problems.push(`secret in ${String(file)}`);
+      if (text.includes(PASSWORD) || text.includes(OPERATOR_PASSWORD) || text.includes(STUB_KEY) || text.includes(DEEPSEEK_STUB_KEY) || text.includes(acceptanceUrl)) problems.push(`secret in ${String(file)}`);
     }
   }
   if (problems.length > 0) throw new Error(`writing online browser acceptance cleanup: ${problems.join("; ")}`);
@@ -395,20 +404,44 @@ afterAll(async () => {
 let projectId = "";
 
 describe("online writing in a real browser with the site login, real web and API, isolated PostgreSQL, model stubbed", () => {
-  it("A: one login; the title run starts without any operator token and its scripts are placed after the story review", async () => {
+  it("shows operator-specific options without charging or creating a work", async () => {
+    const operator = await browser!.newContext();
+    try {
+      const login = await operator.request.post(`${WEB}/api/v1/auth/login`, {
+        headers: { origin: WEB }, data: { username: "admin", password: OPERATOR_PASSWORD },
+      });
+      expect(login.status()).toBe(200);
+      expect(await login.json()).toMatchObject({ authenticated: true, role: "operator" });
+      const options = await operator.request.get(`${WEB}/api/v1/writing/title-runs/options`);
+      expect(await options.json()).toMatchObject({ viewerIsCreator: false, defaultProvider: "deepseek", operatorTokenRequired: false });
+      const start = await operator.newPage();
+      await start.goto(`${WEB}/create`);
+      const card = start.getByRole("region", { name: "AI 一键创作", exact: true });
+      await card.getByText(/服务端已配置：OpenAI、Claude、DeepSeek。/).waitFor();
+      await card.getByText("调用权限由你的登录账号确认，模型密钥只在服务端。", { exact: true }).waitFor();
+      expect(await card.getByLabel("操作者令牌").count()).toBe(0);
+      expect(await card.getByText(/按你的会员写作额度计次/).count()).toBe(0);
+      expect(sent).toHaveLength(0);
+    } finally {
+      await operator.close();
+    }
+  });
+
+  it("A: a creator starts their own title run and places its scripts after the story review", async () => {
     await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
     await page.waitForURL(/\/login\?returnTo=%2Fcreate/, { timeout: 30_000 });
-    await page.getByLabel("账号").fill("admin");
+    await page.getByLabel("账号").fill(creator.username);
     await page.getByLabel("密码").fill(PASSWORD);
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.waitForURL(`${WEB}/create`, { timeout: 30_000 });
     await page.getByText(/服务端已配置：OpenAI、Claude、DeepSeek。/).waitFor({ timeout: 30_000 });
     expect(await page.getByText(/千问/).count()).toBe(0);
     const titleCard = page.getByRole("region", { name: "AI 一键创作", exact: true });
-    const sessionNotice = titleCard.getByText("调用权限由你的登录账号确认，模型密钥只在服务端。", { exact: true });
+    const session = await page.request.get(`${WEB}/api/v1/auth/session`);
+    expect(await session.json()).toMatchObject({ authenticated: true, role: "creator", accountId: creator.accountId });
+    const sessionNotice = titleCard.getByText("调用权限由你的登录账号确认，会按你的会员写作额度计次，模型密钥只在服务端。", { exact: true });
     await sessionNotice.waitFor();
     expect(await titleCard.getByLabel("操作者令牌").count()).toBe(0);
-    expect(await titleCard.getByText(/按你的会员写作额度计次/).count()).toBe(0);
     await titleCard.getByLabel("剧名", { exact: true }).fill(TITLE);
     await viewports("01-title-start", sessionNotice, titleCard.getByRole("button", { name: "AI 一键创作" }));
     const navigated = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/writing$/, { timeout: 30_000 });
@@ -416,6 +449,7 @@ describe("online writing in a real browser with the site login, real web and API
     await navigated;
     projectId = /\/projects\/([0-9a-f-]{36})\/writing$/.exec(page.url())![1]!;
     await expect.poll(async () => await headline().textContent(), { timeout: 60_000, interval: 250 }).toBe("创作完成");
+    expect(await q("SELECT owner_account_id FROM project WHERE id=$1", [projectId])).toEqual([{ owner_account_id: creator.accountId }]);
     expect(sends("title:")).toBe(5);
     // The configured default is DeepSeek, with the model a key alone gives it; every step went to DeepSeek only.
     const run = (await q<{ provider_key: string; model: string }>("SELECT provider_key, model FROM title_writing_run WHERE project_id = $1", [projectId]))[0]!;
@@ -609,7 +643,7 @@ describe("online writing in a real browser with the site login, real web and API
     expect((JSON.parse(options) as { providers: Array<{ providerKey: string; ready: boolean }> }).providers.map((item) => [item.providerKey, item.ready]))
       .toEqual([["openai", true], ["anthropic", true], ["deepseek", true]]);
     const titleOptions = await page.evaluate(async () => await (await fetch("/api/v1/writing/title-runs/options")).text());
-    expect(JSON.parse(titleOptions)).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: "deepseek", viewerIsCreator: false, operatorTokenRequired: false });
+    expect(JSON.parse(titleOptions)).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: "deepseek", viewerIsCreator: true, operatorTokenRequired: false });
     expect(pageWrites.filter((write) => write.token)).toEqual([]);
     expect(pageErrors).toEqual([]);
     expect(sent.every((item) => item.keyMatches)).toBe(true);

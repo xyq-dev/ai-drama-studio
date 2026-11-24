@@ -76,6 +76,23 @@ describe("page proxy", () => {
     expect(storage.status).toBe(307);
     expect(storage.headers.get("location")).toBe("https://drama.example.test/studio");
   });
+  it.each(["", "/create?step=cast", "/script", "/writing", "/series", "/auto"])("redirects an operator opening a project%s to its read-only review", async (path) => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const fetch = vi.fn(async () => json({ enabled: true, authenticated: true, role: "operator" }));
+    vi.stubGlobal("fetch", fetch);
+    const response = await proxy(new NextRequest(`https://drama.example.test/projects/${id}${path}`));
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(`https://drama.example.test/admin/works/${id}/review?from=creator`);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("leaves the workbench and its existing ownership gate in place for creators and legacy login-off sessions", async () => {
+    for (const session of [{ enabled: true, authenticated: true, role: "creator" }, { enabled: false }]) {
+      vi.stubGlobal("fetch", vi.fn(async () => json(session)));
+      const response = await proxy(new NextRequest("https://drama.example.test/projects/11111111-1111-4111-8111-111111111111/create?step=cast"));
+      expect(response.headers.get("x-middleware-next")).toBe("1");
+    }
+  });
   it("allows an operator session into /admin", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({
       enabled: true, authenticated: true, role: "operator", username: "admin",

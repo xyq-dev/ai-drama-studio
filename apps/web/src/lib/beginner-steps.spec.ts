@@ -130,7 +130,20 @@ describe("beginner step states come from server facts", () => {
     expect(episodeFinalState(facts({ ...base, media: { 1: media(2, { staleApproved: true }) } }), 1)).toBe("source_updated");
     // Not read to the end and nothing decisive yet: unknown, never "needs_input".
     expect(episodeFinalState(facts({ ...base, media: { 1: media(2, { read: "incomplete" }) } }), 1)).toBe("unknown");
-    expect(episodeFinalState(facts({ ...base, media: { 1: media(2, { read: "unavailable" }) } }), 1)).toBe("unknown");
+    expect(episodeFinalState(facts({ ...base, media: { 1: media(2, { read: "unavailable" }) } }), 1)).toBe("compose_disabled");
+    const closed = facts({ ...base, episodeComposeDisabled: true, episodeCount: 1, media: { 1: media(2) } });
+    expect(stepStates(closed).final).toBe("compose_disabled");
+    expect(episodeFinalState({ ...closed, media: { 1: media(2, { approvedActive: true }) } }, 1)).toBe("done");
+    expect(episodeFinalState({ ...closed, media: { 1: media(2, { read: "failed" }) } }, 1)).toBe("unknown");
+  });
+
+  it("keeps a historical draft blocked until episode compose reopens, while an approved cut stays done", () => {
+    const closed = facts({ episodeCount: 1, episodes: [episode(1, "APPROVED")], episodeComposeDisabled: true,
+      media: { 1: media(2, { draftActive: true }) } });
+    expect(episodeFinalState(closed, 1)).toBe("compose_disabled");
+    expect(primaryAction("final", stepStates(closed).final).target).toBe("reload");
+    expect(stepStates({ ...closed, episodeComposeDisabled: false }).final).toBe("needs_confirmation");
+    expect(stepStates({ ...closed, media: { 1: media(2, { draftActive: true, approvedActive: true }) } }).final).toBe("done");
   });
 
   it("keeps history after a script change: STALE + APPROVED is 来源已更新 even when the script is DRAFT (review)", () => {

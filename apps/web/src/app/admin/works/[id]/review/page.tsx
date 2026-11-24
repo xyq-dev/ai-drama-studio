@@ -1,9 +1,9 @@
-"use client";
-
-import { useParams } from "next/navigation";
 import { AdminWorkReview } from "../../../../../components/admin-work-review";
 
-export default function AdminWorkReviewPage() {
-  const params = useParams<{ id: string }>();
-  return <AdminWorkReview id={params.id} />;
+export default async function AdminWorkReviewPage({ params, searchParams }: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string | string[] }>;
+}) {
+  const [{ id }, query] = await Promise.all([params, searchParams]);
+  return <AdminWorkReview key={id} id={id} fromCreator={query.from === "creator"} />;
 }

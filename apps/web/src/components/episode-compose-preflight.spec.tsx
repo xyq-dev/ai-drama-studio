@@ -82,6 +82,46 @@ async function settle(pending: { promise: Promise<Response>; resolve: (response:
 afterEach(() => cleanup());
 
 describe("episode compose arrangement", () => {
+  it("keeps standalone history playable and approved exports available while review waits for an open gate", async () => {
+    const answers = [deferred(), deferred(), deferred()];
+    let reads = 0;
+    const methods: string[] = [];
+    const client = new StudioClient(async (input, init) => {
+      methods.push(init?.method ?? "GET");
+      if (input.endsWith("/providers/capabilities")) return answers[reads++]!.promise;
+      if (input.includes("/composites?")) return json({ items: [
+        { assetId: ASSET_A, status: "ACTIVE", reviewStatus: "DRAFT", checksumSha256: HASH_A, rowVersion: 1, segments: [] },
+        { assetId: ASSET_B, status: "ACTIVE", reviewStatus: "APPROVED", checksumSha256: HASH_NEW, rowVersion: 2, segments: [] },
+      ], nextCursor: null });
+      return json({ items: [], nextCursor: null });
+    });
+    // Workbench supplies no gate; the beginner page supplies its own gate (below).
+    const props = { projectId: PROJECT, episodeId: EPISODE_A, episodeNo: 1, client };
+    const view = render(createElement(EpisodeComposePreflight, props));
+    const assertReadOnly = async () => {
+      expect(await screen.findByRole("button", { name: "下载 MP4" })).toBeTruthy();
+      expect(document.querySelectorAll("video[controls]")).toHaveLength(2);
+      expect(screen.queryByRole("button", { name: "批准成片" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "退回成片" })).toBeNull();
+    };
+    await assertReadOnly();
+    await settle(answers[0]!, json({ compose: { shot: true, episode: false } }));
+    expect(screen.getByText("集级合成目前未开启。")).toBeTruthy();
+    await assertReadOnly();
+    fireEvent.click(screen.getByRole("button", { name: "重新检查功能状态" }));
+    await settle(answers[1]!, json({ error: { code: "UNAVAILABLE", message: "暂时不可用" } }, 503));
+    await assertReadOnly();
+    fireEvent.click(screen.getByRole("button", { name: "重新检查功能状态" }));
+    await settle(answers[2]!, json({ compose: { shot: true, episode: true } }));
+    expect(screen.getByRole("button", { name: "批准成片" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "退回成片" })).toBeTruthy();
+
+    view.rerender(createElement(EpisodeComposePreflight, { ...props, composeBlocked: true }));
+    await assertReadOnly();
+    expect(reads).toBe(3);
+    expect(methods.every(method => method === "GET")).toBe(true);
+  });
+
   it("clears the previous hash when the order changes and keeps the selection after a failure", async () => {
     const calls: string[] = [];
     const fetchImpl = (input: string, init?: RequestInit) => {
@@ -99,6 +139,7 @@ describe("episode compose arrangement", () => {
       return Promise.resolve(json(preflight(HASH_A)));
     };
     render(createElement(EpisodeComposePreflight, {
+      composeBlocked: false,
       projectId: PROJECT,
       episodeId: EPISODE_A,
       episodeNo: 1,
@@ -137,6 +178,7 @@ describe("episode compose arrangement", () => {
     };
     const client = new StudioClient(fetchImpl);
     const view = render(createElement(EpisodeComposePreflight, {
+      composeBlocked: false,
       projectId: PROJECT,
       episodeId: EPISODE_A,
       episodeNo: 1,
@@ -148,6 +190,7 @@ describe("episode compose arrangement", () => {
     fireEvent.click(addButtons[1]!);
     fireEvent.click(screen.getByRole("button", { name: "预检编排" }));
     view.rerender(createElement(EpisodeComposePreflight, {
+      composeBlocked: false,
       projectId: PROJECT,
       episodeId: EPISODE_B,
       episodeNo: 2,
@@ -156,6 +199,7 @@ describe("episode compose arrangement", () => {
     await screen.findByText("场景 2 INT. HALL");
     expect(screen.queryByText(`inputHash ${HASH_A}`)).toBeNull();
     view.rerender(createElement(EpisodeComposePreflight, {
+      composeBlocked: false,
       projectId: PROJECT,
       episodeId: EPISODE_A,
       episodeNo: 1,
@@ -187,6 +231,7 @@ describe("episode compose arrangement", () => {
       }));
     };
     render(createElement(EpisodeComposePreflight, {
+      composeBlocked: false,
       projectId: PROJECT,
       episodeId: EPISODE_A,
       episodeNo: 1,
@@ -216,6 +261,7 @@ describe("episode compose arrangement", () => {
       return posts === 1 ? first.promise : second.promise;
     };
     render(createElement(EpisodeComposePreflight, {
+      composeBlocked: false,
       projectId: PROJECT,
       episodeId: EPISODE_A,
       episodeNo: 1,
@@ -262,6 +308,7 @@ describe("episode compose arrangement", () => {
       return posts === 1 ? first.promise : second.promise;
     };
     render(createElement(EpisodeComposePreflight, {
+      composeBlocked: false,
       projectId: PROJECT,
       episodeId: EPISODE_A,
       episodeNo: 1,

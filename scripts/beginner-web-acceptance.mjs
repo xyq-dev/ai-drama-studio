@@ -375,6 +375,11 @@ async function playVideo(video, minWidth) {
       const tick = () => { if (media.currentTime > 0.2) { clearTimeout(timer); resolve(); } };
       media.addEventListener("timeupdate", tick);
     });
+    const style = getComputedStyle(media);
+    const pictureHeight = media.clientWidth * media.videoHeight / media.videoWidth;
+    if (!media.controls || !media.playsInline || style.objectFit !== "contain" || style.objectPosition !== "50% 0%" || media.clientHeight - pictureHeight < 72) {
+      throw new Error("The native controls must have room below the entire composite, including its last line of dialogue");
+    }
     return { sameOrigin: source.origin === location.origin, path: source.pathname, width: media.videoWidth, height: media.videoHeight,
       duration: media.duration, currentTime: media.currentTime, readyState: media.readyState };
   });
@@ -545,7 +550,7 @@ async function main() {
       await stepButton("出成片");
       await page.getByText(/集级合成由平台统一开启，目前还没开/).waitFor({ timeout: 20_000 });
       await page.getByText("已确认单镜进度 0/2").waitFor({ timeout: 20_000 });
-      await page.getByRole("tab", { name: /第 1 集 · — 尚未确认/ }).waitFor({ timeout: 20_000 });
+      await page.getByRole("tab", { name: /第 1 集 · — 还不能完成/ }).waitFor({ timeout: 20_000 });
       if (await page.getByRole("button", { name: "查看并下载成片" }).count()) throw new Error("compose-off final step claimed done");
       await stepButton("试一段");
       await page.getByText("至少确认 2 个镜头才能出单集。").waitFor();
@@ -595,7 +600,7 @@ async function main() {
       if (capabilityOn?.shot !== true || capabilityOn?.episode !== true) throw new Error(`capability on ${JSON.stringify(capabilityOn)}`);
       if (Object.values(capabilityOn).some((value) => typeof value !== "boolean")) throw new Error("capability carries more than booleans");
       evidence.checks.composeOpen = capabilityOn;
-      return { message: "集级合成由平台统一开启，目前还没开", episode1: "尚未确认", studioStage: "第 2 步 看剧本" };
+      return { message: "集级合成由平台统一开启，目前还没开", episode1: "还不能完成", studioStage: "第 2 步 看剧本" };
     });
 
     await stage("step3-cast", async () => {
@@ -796,7 +801,15 @@ async function main() {
         body: { decision: "APPROVE", note: "prep", contentHash: asset.checksum_sha256 } }), 200, "prep composite review");
       world.composite2 = asset.id;
       prepDid("API: shot 2 created and approved, Mock video generated, single-shot preflight + compose (worker FFmpeg), composite approved");
-      return { shot: created.entityId, composite: asset.id };
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
+      await page.locator("[data-beginner-picker]").getByRole("button", { name: /场景 1/ }).click();
+      const storyboard = page.getByRole("region", { name: "分镜工作台", exact: true });
+      await storyboard.getByRole("button", { name: "列表", exact: true }).click();
+      const shotRow = storyboard.getByRole("article")
+        .filter({ has: page.getByRole("heading", { name: /^镜头 2(?: · |$)/ }) });
+      await shotRow.getByRole("button", { name: "打开单镜", exact: true }).click();
+      const playback = await playVideo(page.locator(`[data-composite-id="${asset.id}"] video`), 1000);
+      return { shot: created.entityId, composite: asset.id, playback };
     });
 
     await stage("step5-final", async () => {
@@ -887,6 +900,19 @@ async function main() {
       if (!JSON.stringify(asset.input_snapshot).includes(world.episode.id)) throw new Error("frozen input does not name this episode");
       const card = page.locator(`[data-composite-id="${asset.id}"]`);
       await card.waitFor({ timeout: 60_000 });
+      await stopProcess("api");
+      await startApi({ ...env, M4_COMPOSE_OBJECT_DIR: composeObjectDir });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByRole("tab", { name: /第 1 集.*还不能完成/ }).click();
+      await playVideo(card.locator("video"), 1000);
+      if (await card.getByRole("button", { name: /批准成片|退回成片|下载 MP4|下载来源清单/ }).count()) {
+        throw new Error("A draft episode must be read-only while episode compose is disabled");
+      }
+      evidence.checks.draftEpisodeWhileClosed = { playback: true, reviewOffered: false, downloadOffered: false };
+      await stopProcess("api");
+      await startApi(mediaEnv(env));
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByRole("tab", { name: /第 1 集.*待确认/ }).click();
       // From here on, approval must update the page in place.
       await page.evaluate(() => { window.__beginnerNoReload = "step5"; });
       // Not approved yet: no download button, and the export route refuses.
@@ -981,7 +1007,26 @@ async function main() {
       // Issue #54 D: a completed step whose compose is switched off still offers a recheck in its notice. The API is
       // restarted without the compose switches; 试一段 is done (episode 1 has an approved sample).
       await stopProcess("api");
-      await startApi(env);
+      await startApi({ ...env, M4_COMPOSE_OBJECT_DIR: composeObjectDir });
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=final`, { waitUntil: "domcontentloaded" });
+      await page.getByText(/集级合成由平台统一开启，目前还没开/).waitFor();
+      await page.getByRole("tab", { name: /第 1 集/ }).click();
+      const approved = results["step5-final"].detail;
+      const savedCard = page.locator(`[data-composite-id="${approved.asset}"]`);
+      const beforeRead = await counts();
+      await playVideo(savedCard.locator("video"), 1000);
+      const savedMp4 = join(scratch, "approved-episode.mp4");
+      const savedManifest = join(scratch, "approved-episode.json");
+      await saveDownload(savedCard.getByRole("button", { name: "下载 MP4" }), savedMp4);
+      await saveDownload(savedCard.getByRole("button", { name: "下载来源清单" }), savedManifest);
+      const savedHash = createHash("sha256").update(await readFile(savedMp4)).digest("hex");
+      const savedInfo = JSON.parse(await readFile(savedManifest, "utf8"));
+      const afterRead = await counts();
+      if (savedHash !== approved.sha256 || savedInfo.asset?.checksumSha256 !== savedHash ||
+          beforeRead.jobs !== afterRead.jobs || beforeRead.costs !== afterRead.costs) {
+        throw new Error("Reading an approved episode with compose disabled must preserve its bytes, jobs and costs");
+      }
+      evidence.checks.approvedEpisodeWhileClosed = { sha256: savedHash, playback: true, manifest: true };
       await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
       const closedNotice = page.getByRole("status").filter({ hasText: "当前环境没有开启单镜成片所需的功能" });
       await closedNotice.waitFor({ timeout: 20_000 });
