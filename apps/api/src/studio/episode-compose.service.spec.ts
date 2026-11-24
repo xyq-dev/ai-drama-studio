@@ -276,9 +276,10 @@ describe("episode compose preflight service", () => {
       await expect(studio.readMockAssetContent(assetId)).rejects.toMatchObject({ code: "NOT_FOUND" });
       await mkdir(join(root, "compose", workspaceId, projectId, jobId, attemptId), { recursive: true });
       await writeFile(join(root, objectKey), bytes);
-      await expect(studio.readMockAssetContent(assetId)).resolves.toEqual({ mimeType: "video/mp4", bytes });
+      const content = { mimeType: "video/mp4", bytes, etag: `"${asset.checksumSha256}"` };
+      await expect(studio.readMockAssetContent(assetId)).resolves.toEqual(content);
       expect(getWorkspaceAsset).toHaveBeenCalledWith(workspaceId, assetId);
-      await expect(studio.readOperatorAssetContent(assetId, null)).resolves.toEqual({ mimeType: "video/mp4", bytes });
+      await expect(studio.readOperatorAssetContent(assetId, null)).resolves.toEqual(content);
 
       // A foreign or missing asset is rejected by the same owner-scoped lookup, before reading its schema or file.
       compositeOutputSchema.mockClear();
