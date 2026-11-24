@@ -41,6 +41,7 @@ import {
 import { SeriesWritingEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { seriesFixtureTransport, type SeriesFixtureExchange, type SeriesFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { AppModule } from "../app.module";
+import { createWritingCreator } from "../../test/creator-browser-acceptance";
 import { hashPassword } from "../auth/password-hash";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
@@ -86,6 +87,7 @@ function seriesService(runtime: StudioRuntime): SeriesWritingService {
   });
 }
 
+let creator: Awaited<ReturnType<typeof createWritingCreator>>;
 let app: INestApplication | undefined;
 let web: { child: ChildProcess; logs: () => string } | undefined;
 let browser: Browser | undefined;
@@ -98,7 +100,7 @@ async function bootApi(): Promise<INestApplication> {
     NODE_ENV: "test", DATABASE_URL: acceptanceUrl, REDIS_URL: "redis://127.0.0.1:6399", S3_ENDPOINT: "http://127.0.0.1:59000", S3_REGION: "us-east-1",
     S3_BUCKET: "ai-drama-dev", S3_ACCESS_KEY_ID: "test", S3_SECRET_ACCESS_KEY: "test", APP_WORKSPACE_ID: WORKSPACE,
     SITE_AUTH_ENABLED: "true", SITE_AUTH_USERNAME: "admin",
-    SITE_AUTH_PASSWORD_HASH: await hashPassword(PASSWORD, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 }), SITE_AUTH_PUBLIC_ORIGIN: WEB,
+    SITE_AUTH_PASSWORD_HASH: await hashPassword(randomUUID(), { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 }), SITE_AUTH_PUBLIC_ORIGIN: WEB,
   });
   const moduleRef = await Test.createTestingModule({ imports: [AppModule.register(env)] })
     .overrideProvider(SERIES_WRITING_SERVICE).useFactory({ inject: [STUDIO_RUNTIME], factory: (runtime: StudioRuntime) => seriesService(runtime) })
@@ -178,7 +180,7 @@ async function viewports(name: string, ready: Locator, primary?: Locator): Promi
 async function login(returnTo: string): Promise<void> {
   await page.goto(`${WEB}${returnTo}`, { waitUntil: "domcontentloaded" });
   await page.waitForURL(/\/login\?returnTo=/, { timeout: 30_000 });
-  await page.getByLabel("账号").fill("admin");
+  await page.getByLabel("账号").fill(creator.username);
   await page.getByLabel("密码").fill(PASSWORD);
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await page.waitForURL(`${WEB}${returnTo}`, { timeout: 30_000 });
@@ -243,6 +245,7 @@ beforeAll(async () => {
   }
   evidence.migrationsApplied = (await q<{ name: string }>("SELECT name FROM schema_migration ORDER BY name")).map((row) => row.name);
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'series-writing-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
+  creator = await createWritingCreator(pool, WORKSPACE, PASSWORD);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });
   app = await bootApi();
   web = startWeb();
@@ -290,6 +293,7 @@ describe("series writing in a real browser (site login, built web, real API, iso
     expect(await card.getByTestId("series-start-calls").textContent()).toContain("规划加前 3 集正文及该批审阅 19 次");
     await viewports("01-series-start", card, card.getByRole("button", { name: "创建系列作品" }));
     sixty = await createFromStart("六十集替身样例", 60);
+    expect(await q("SELECT owner_account_id FROM project WHERE id = $1", [sixty])).toEqual([{ owner_account_id: creator.accountId }]);
     expect(seen).toHaveLength(0);
     await page.getByTestId("series-card").waitFor({ timeout: 30_000 });
     expect(await page.getByTestId("series-card-summary").textContent()).toContain("正常调用 19 次");
