@@ -34,6 +34,7 @@ export interface WritingCandidateDependencies {
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: WritingCandidateStore;
   creatorMembership?: MembershipStore;
+  skillEnabled?: (skill: "short-drama-write") => Promise<boolean>;
   executor: Pick<WritingCandidateExecutor, "workspaceId" | "executorId" | "execute" | "maintain">;
   projects: Pick<RuntimeStore, "getProject" | "getProjectEpisodePlan">;
   /** The shared rolling 24 h cap of every paid text call of the workspace. */
@@ -51,6 +52,7 @@ export interface WritingCandidateResult {
 }
 
 const MESSAGES: Record<string, string> = {
+  CREATOR_SKILL_DISABLED: "短剧编剧技能已停用。",
   WRITING_CANDIDATE_DISABLED: "在线创作没有开启。仍可复制指令到外部 AI，再粘贴或导入候选。",
   WRITING_CANDIDATE_FORBIDDEN: "没有调用权限（需要管理员登录，或在未启用站点登录时提供正确的操作者令牌），没有发出调用。",
   WRITING_CANDIDATE_STORAGE_UNAVAILABLE: "在线候选的数据库迁移还没有执行，没有保存请求，也没有发出调用。",
@@ -187,6 +189,7 @@ export class WritingCandidateService {
     if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
     const start = parsed.data;
     const episodeId = start.mode === "episode" ? start.episodeId : null;
+    const skill = start.mode === "episode" ? start.skill : undefined;
     // A key already used is answered from its stored request, whatever the providers are now: a lost receipt must stay
     // recoverable and must never create or send a second request. Same key with another input is refused.
     const previous = await this.deps.store.findByKey(this.deps.workspaceId, context.actorId, key);
@@ -194,6 +197,8 @@ export class WritingCandidateService {
     const build = (providerKey: TitleWritingProviderKey, model: string, episodeCount: number | undefined) => newWritingCandidate({
       workspaceId: this.deps.workspaceId, projectId, actorId: context.actorId, idempotencyKey: key, mode: start.mode, episodeId, episodeCount,
       providerKey, model, base: start.base, request: start.request, confirmedRequestId: start.confirmUncertainRequestId ?? null,
+      ...(skill && { skill }),
+      ...(skill && previous?.input.skill === skill && previous.input.skillVersion && { replaySkillVersion: previous.input.skillVersion }),
       executorId: this.deps.executor.executorId, now,
     });
     if (previous) {
@@ -201,6 +206,7 @@ export class WritingCandidateService {
       return previous.projectId === projectId && replay.requestHash === previous.requestHash
         ? this.found(previous, projectId) : failure(409, "IDEMPOTENCY_KEY_REUSED");
     }
+    if (skill && this.deps.skillEnabled && !await this.deps.skillEnabled(skill)) return failure(409, "CREATOR_SKILL_DISABLED");
     const providerKey = start.providerKey ?? await this.defaultChoice();
     if (providerKey === null) return failure(503, "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", { missing: [] });
     const provider = this.deps.providers[providerKey];

@@ -1,6 +1,7 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 import { MediaAssetStore } from "./media-assets";
+import { runWithStoreCreatorAccess } from "./creator-access-context";
 
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 const projectId = "22222222-2222-4222-8222-222222222222";
@@ -28,18 +29,20 @@ function row(assetId: string, createdAt: string): QueryResultRow {
   };
 }
 
-function store() {
+function store(reportMetadata: Record<string, unknown> = {}) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
   const client = {
     async query(sql: string, params: unknown[] = []) {
       queries.push({ sql, params });
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
-      if (sql.includes("FROM episode")) return { rows: [{ id: episodeId }] };
+      if (sql.includes("information_schema.columns")) return { rows: [{ present: true }] };
+      if (sql.includes("FROM episode")) return { rows: params[3] && params[3] !== newerSameId ? [] : [{ id: episodeId }] };
       if (!sql.includes("created_at_text")) throw new Error(sql);
       const createdAt = params[4];
       const assetId = params[5];
       const limit = params[6];
       const catalog = [row(microId, nextMicrosecond), row(newerSameId, sameInstant), row(olderId, sameInstant)];
+      Object.assign(catalog[0]!.metadata_json, reportMetadata);
       const start = createdAt == null ? 0 : catalog.findIndex((item) => item.created_at_text === createdAt && item.asset_id === assetId) + 1;
       return { rows: catalog.slice(start, start + Number(limit)) };
     },
@@ -52,6 +55,18 @@ function store() {
 }
 
 describe("episode composite cursor", () => {
+  it("projects the saved report only on its owning episode asset, including mock and historical states", async () => {
+    const qualityReport = { skill: "qc-skill", version: "1.4.5", status: "FAIL", findings: [{ code: "SILENCE", startMs: 0, endMs: 1000 }] };
+    const { assets, queries } = store({ qualityReport, qualityCheckEnabled: true, containsMockSources: true });
+    const read = () => assets.listEpisodeComposites(workspaceId, projectId, episodeId, undefined, 2);
+    await expect(runWithStoreCreatorAccess({ kind: "scoped", actorId: "creator", ownerAccountId: olderId }, read))
+      .rejects.toMatchObject({ code: "NOT_FOUND" });
+    const { items } = await runWithStoreCreatorAccess({ kind: "scoped", actorId: "creator", ownerAccountId: newerSameId }, read);
+    expect(queries.find((q) => q.sql.includes("FROM episode"))?.sql).toContain("p.owner_account_id = $4");
+    expect(items[0]).toMatchObject({ qualityReport, qualityCheckEnabled: true, containsMockSources: true });
+    expect(items[1]).toMatchObject({ qualityReport: null, qualityCheckEnabled: null, containsMockSources: null });
+  });
+
   it("pages newest first with the exact database timestamp text", async () => {
     const { assets, queries } = store();
     const seen: string[] = [];

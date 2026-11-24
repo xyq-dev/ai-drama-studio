@@ -13,6 +13,7 @@ import sys
 import time
 from pathlib import Path
 
+from media_worker.episode_quality import check_episode
 from media_worker.encode_measurement import measure_local_encode
 from media_worker.compose_cli import (
     ComposeFailure,
@@ -44,9 +45,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="media-episode-compose")
     parser.add_argument("--input-dir", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--skip-quality-check", action="store_true")
     args = parser.parse_args(argv)
     try:
-        result = render(Path(args.input_dir), Path(args.output))
+        result = render(Path(args.input_dir), Path(args.output), check_quality=not args.skip_quality_check)
     except ComposeFailure as error:
         print(json.dumps({"ok": False, "code": error.code, "retryable": error.retryable, "detail": error.detail[-400:]}), file=sys.stderr)
         return 2 if not error.retryable else 3
@@ -54,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def render(input_dir: Path, output: Path) -> dict[str, object]:
+def render(input_dir: Path, output: Path, *, check_quality: bool = True) -> dict[str, object]:
     started = time.monotonic()
     root = _directory(input_dir)
     plan = json.loads(_file(root, "plan.json").read_text(encoding="utf-8"))
@@ -85,11 +87,12 @@ def render(input_dir: Path, output: Path) -> dict[str, object]:
     _publish_episode(temporary, output, expected_sec, started)
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     final = _probe(output)
-    return {
+    duration_ms = round(float(final["duration"]) * 1000)
+    result = {
         "ok": True,
         "checksumSha256": digest,
         "byteSize": output.stat().st_size,
-        "durationMs": int(round(float(final["duration"]) * 1000)),
+        "durationMs": duration_ms,
         "width": int(final["width"]),
         "height": int(final["height"]),
         "elapsedMs": int((time.monotonic() - started) * 1000),
@@ -98,6 +101,11 @@ def render(input_dir: Path, output: Path) -> dict[str, object]:
         "audioCodec": final["audioCodec"],
         "segments": len(segments),
     }
+    if check_quality:
+        result["qualityReport"] = check_episode(
+            output, duration_ms, video_present=bool(final["videoCodec"]), audio_present=bool(final["audioCodec"]),
+        )
+    return result
 
 
 def _require_segment(probed: dict[str, object], duration_ms: int) -> dict[str, object]:

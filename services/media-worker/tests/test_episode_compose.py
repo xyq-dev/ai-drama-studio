@@ -62,7 +62,7 @@ def _plan(directory: Path, durations: list[int]) -> None:
 
 
 @needs_ffmpeg
-def test_concat_keeps_order_and_audio_bounds(tmp_path: Path) -> None:
+def test_concat_keeps_order_and_audio_bounds(tmp_path: Path, capsys) -> None:
     first = tmp_path / "seg-000.mp4"
     second = tmp_path / "seg-001.mp4"
     _clip(first, "red", "0.40", "440", "0.16")
@@ -71,6 +71,8 @@ def test_concat_keeps_order_and_audio_bounds(tmp_path: Path) -> None:
     _plan(tmp_path, durations)
     output = tmp_path / "episode.mp4"
     assert main(["--input-dir", str(tmp_path), "--output", str(output)]) == 0
+    published = json.loads(capsys.readouterr().out)
+    assert published["qualityReport"] == {"skill": "qc-skill", "version": "1.4.5", "status": "PASS", "findings": []}
     early = _color_at(output, "0.08")
     later = _color_at(output, "0.56")
     assert early[0] > early[2]
@@ -86,7 +88,7 @@ def test_concat_keeps_order_and_audio_bounds(tmp_path: Path) -> None:
 
 
 @needs_ffmpeg
-def test_two_and_thirty_segments_and_rejects_bounds(tmp_path: Path) -> None:
+def test_two_and_thirty_segments_and_rejects_bounds(tmp_path: Path, capsys) -> None:
     short = tmp_path / "unit.mp4"
     _clip(short, "green", "0.08", "660")
     duration = int(round(_video_seconds(short) * 1000))
@@ -96,7 +98,8 @@ def test_two_and_thirty_segments_and_rejects_bounds(tmp_path: Path) -> None:
         target = pair / f"seg-{index:03d}.mp4"
         target.write_bytes(short.read_bytes())
     _plan(pair, [duration, duration])
-    assert main(["--input-dir", str(pair), "--output", str(pair / "out.mp4")]) == 0
+    assert main(["--input-dir", str(pair), "--output", str(pair / "out.mp4"), "--skip-quality-check"]) == 0
+    assert "qualityReport" not in json.loads(capsys.readouterr().out)
     many = tmp_path / "many"
     many.mkdir()
     for index in range(30):

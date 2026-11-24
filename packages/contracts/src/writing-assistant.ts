@@ -5,6 +5,8 @@ export const STORY_PLAN_SCHEMA = "ads.writing.story-plan.v1";
 /** Adapted candidate for one episode. Not an upstream Markdown screenplay. */
 export const EPISODE_DRAFT_SCHEMA = "ads.writing.episode-draft.v1";
 export const WRITING_PROMPT_VERSION = "ads.writing.prompt.v1";
+/** Pinned Zenstory source and local adaptation, stored on each skill-backed request. */
+export const DRAMA_TEXT_SKILL_VERSION = "c2426e03c0e7722bebcc6a488b6658dc38c65ac3+hg.1" as const;
 
 /** UTF-8 JSON import cap. Stays under the API JSON body limit after wrapping as content.text. */
 export const WRITING_IMPORT_MAX_BYTES = 48_000;

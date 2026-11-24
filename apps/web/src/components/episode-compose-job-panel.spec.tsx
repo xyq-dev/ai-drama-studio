@@ -63,6 +63,41 @@ afterEach(() => {
 });
 
 describe("episode compose job panel", () => {
+  it("keeps a focusable quality result when the selected episode has no composites", async () => {
+    render(panel(async () => json({ items: [], nextCursor: null })));
+    const section = screen.getByRole("region", { name: "成片质检结果" });
+    expect(section.id).toBe("episode-quality-results");
+    expect(section.tabIndex).toBe(-1);
+    expect(section.textContent).toContain("正在读取");
+    expect(await screen.findByText(/本集还没有成片/)).toBeTruthy();
+  });
+
+  it("links a quality finding to its own player's time and distinguishes unchecked and unavailable reports", async () => {
+    const assets = [
+      { ...composite("bad"), qualityCheckEnabled: true, containsMockSources: true, qualityReport: {
+        skill: "qc-skill", version: "1.4.5", status: "FAIL", findings: [{ code: "BLACK", startMs: 750, endMs: 1900 }],
+      } },
+      composite("old"),
+      { ...composite("off"), qualityCheckEnabled: false },
+      { ...composite("unknown"), qualityCheckEnabled: true, qualityReport: {
+        skill: "qc-skill", version: "1.4.5", status: "UNKNOWN", reason: "CHECK_UNAVAILABLE", findings: [],
+      } },
+    ];
+    const view = render(panel(async () => json({ items: assets, nextCursor: null })));
+    const jump = await screen.findByRole("button", { name: "定位黑屏，0:00.75" });
+    const bad = view.container.querySelector<HTMLVideoElement>('[data-composite-id="bad"] video')!;
+    const other = view.container.querySelector<HTMLVideoElement>('[data-composite-id="old"] video')!;
+    Object.defineProperty(bad, "readyState", { value: 1 });
+    fireEvent.click(jump);
+    expect(bad.currentTime).toBe(0.75);
+    expect(other.currentTime).toBe(0);
+    expect(screen.getByText("此成片含演示素材。")).toBeTruthy();
+    expect(screen.getByText(/这份成片没有质检记录/)).toBeTruthy();
+    expect(screen.getByText(/本次合成未启用质检/)).toBeTruthy();
+    expect(screen.getByText(/检测工具不可用/)).toBeTruthy();
+    expect(screen.queryByText(/画面和音轨检查通过/)).toBeNull();
+  });
+
   it("retries a lost or incomplete acceptance with the original body and key", async () => {
     const posts: Array<{ key: string; body: string }> = [];
     let composePosts = 0;

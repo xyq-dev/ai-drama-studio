@@ -1,6 +1,9 @@
 import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Put, Query, Res } from "@nestjs/common";
 import {
   FEATURE_KEYS,
+  CREATOR_SKILL_RELEASES,
+  creatorSkillIdSchema,
+  skillToggleSchema,
   FEATURE_LABELS,
   FEATURE_VENDOR_LABELS,
   featureDraftSaveSchema,
@@ -10,9 +13,9 @@ import {
   type FeatureKey,
   type FeatureVendor,
 } from "@ai-drama/contracts";
-import type { StaffPermission } from "@ai-drama/domain";
+import { sessionAllowsStaffPermission, type StaffPermission } from "@ai-drama/domain";
 import { noteCredentialChange, noteOperation } from "./operation-log-store";
-import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
+import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteSessionView, type SiteAuthState } from "../auth/site-auth";
 import { StaffAccessError, assertStaffPermission } from "./staff-access.service";
 import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
 import { FeatureConfigError, type FeatureConfigService } from "./feature-config.service";
@@ -41,6 +44,46 @@ export class FeatureConfigController {
       const { auth, backend } = this.configured();
       this.requireOperator(headers, auth);
       return backend.view();
+    });
+  }
+
+  @Get("skills")
+  skills(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, async () => {
+      const { auth, backend } = this.configured();
+      const operator = this.requireOperator(headers, auth);
+      return { ...await backend.skills(), ...skillPermissions(operator) };
+    });
+  }
+
+  @Put("skills/:skill")
+  setSkill(
+    @Param("skill") skill: string, @Headers() headers: RequestHeaders, @Body() body: unknown,
+    @Res({ passthrough: true }) response: AdminResponse,
+  ) {
+    return this.send(response, async () => {
+      const { auth, backend } = this.configured();
+      const operator = this.requireOperator(headers, auth, "enable_models");
+      authorizeJsonWrite(auth, headers);
+      const id = creatorSkillIdSchema.safeParse(skill);
+      const update = skillToggleSchema.safeParse(body);
+      if (!id.success || !update.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      const { enabled, expectedRevision } = update.data;
+      const settings = await backend.setSkill(id.data, enabled, expectedRevision);
+      await noteOperation({
+        actor: operator.username, action: enabled ? "启用创作技能" : "停用创作技能",
+        target: CREATOR_SKILL_RELEASES[id.data].label, result: "success", source: "管理后台 /admin/features",
+      });
+      return { ...settings, ...skillPermissions(operator) };
+    });
+  }
+
+  @Get("skills/runs")
+  skillRuns(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, async () => {
+      const { auth, backend } = this.configured();
+      this.requireOperator(headers, auth, "view_usage");
+      return { runs: await backend.skillRuns() };
     });
   }
 
@@ -231,4 +274,12 @@ function authorizeJsonWrite(auth: SiteAuth, headers: RequestHeaders): void {
   if (typeof contentType !== "string" || contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
     throw new SiteAuthError(415, "AUTH_CONTENT_TYPE_REJECTED");
   }
+}
+
+
+function skillPermissions(session: SiteSessionView) {
+  return {
+    canManage: sessionAllowsStaffPermission({ ...session, required: "enable_models" }),
+    canViewRuns: sessionAllowsStaffPermission({ ...session, required: "view_usage" }),
+  };
 }

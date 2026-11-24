@@ -14,6 +14,7 @@ import {
 } from "@ai-drama/contracts";
 import { AdminFrame, AdminGateView, useOperatorGate } from "./admin-access";
 import { SAVED_SECRET_MASK } from "../lib/ai-model-vendors";
+import { AdminCreatorSkills } from "./admin-creator-skills";
 import { ModelSelect } from "./model-select";
 import { useModalKeyboard } from "../lib/modal-keyboard";
 import {
@@ -631,6 +632,7 @@ export function FeatureConfig() {
           </div>
         </div>
       ) : null}
+      <AdminCreatorSkills client={client} onUpdated={() => client.view().then(setView).catch(() => setFailed(true))} />
     </AdminFrame>
   );
 }

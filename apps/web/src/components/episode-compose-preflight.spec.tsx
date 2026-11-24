@@ -171,7 +171,13 @@ describe("episode compose arrangement", () => {
     let opened = false;
     const calls: string[] = [];
     const fetchImpl = (input: string, init?: RequestInit) => {
-      calls.push(init?.method ?? "GET");
+      const method = init?.method ?? "GET";
+      const path = input.split("?")[0];
+      calls.push(`${method} ${path}`);
+      if (path === `/api/v1/projects/${PROJECT}/episodes/${EPISODE_A}/composites`) {
+        return Promise.resolve(json({ items: [], nextCursor: null }));
+      }
+      expect(path).toBe(`/api/v1/projects/${PROJECT}/episodes/${EPISODE_A}/compose-candidates`);
       if (!opened) {
         return Promise.resolve(json({ error: { code: "NOT_FOUND", message: "候选成片加载失败" } }, 500));
       }
@@ -186,11 +192,12 @@ describe("episode compose arrangement", () => {
       episodeNo: 1,
       client: new StudioClient(fetchImpl),
     }));
-    await screen.findByRole("alert");
+    expect((await screen.findByRole("alert")).textContent).toBe("候选成片加载失败");
     opened = true;
     fireEvent.click(screen.getByRole("button", { name: "重新查询" }));
     await screen.findByText("场景 1 INT. ROOM");
-    expect(calls.every((method) => method === "GET")).toBe(true);
+    expect(calls.filter(call => call.endsWith("/compose-candidates"))).toHaveLength(2);
+    expect(calls.every(call => call.startsWith("GET "))).toBe(true);
     expect(screen.getByRole("button", { name: "加载更多" })).toBeTruthy();
   });
 

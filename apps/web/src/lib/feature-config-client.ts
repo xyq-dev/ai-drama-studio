@@ -1,4 +1,4 @@
-import { BAILIAN_PLAN_KEY_MESSAGE } from "@ai-drama/contracts";
+import { BAILIAN_PLAN_KEY_MESSAGE, skillSettingsViewSchema, skillRunSchema, type CreatorSkillId } from "@ai-drama/contracts";
 import type {
   FeatureConfigView, FeatureDraftSave, FeatureEnableRequest, FeatureKey, FeatureMutationResult, FeatureRollbackRequest, FeatureTestRequest,
   UsageRecordView, UsageSummaryView,
@@ -69,6 +69,10 @@ export function createFeatureConfigClient(fetchImpl?: FetchLike) {
     return payload as T;
   }
   return {
+    skills: async () => skillSettingsViewSchema.parse(await request<unknown>("/skills", "GET")),
+    setSkill: async (id: CreatorSkillId, enabled: boolean, expectedRevision: number) =>
+      skillSettingsViewSchema.parse(await request<unknown>(`/skills/${id}`, "PUT", { enabled, expectedRevision })),
+    skillRuns: async () => skillRunSchema.array().parse((await request<{ runs: unknown }>("/skills/runs", "GET")).runs),
     view: () => request<FeatureConfigView>("/features", "GET"),
     saveDraft: (feature: FeatureKey, body: FeatureDraftSave) => request<FeatureConfigView>(`/features/${feature}/draft`, "PUT", body),
     testDraft: (feature: FeatureKey, body: FeatureTestRequest) => request<FeatureMutationResult>(`/features/${feature}/test`, "POST", body),

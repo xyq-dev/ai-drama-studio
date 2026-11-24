@@ -10,6 +10,12 @@ Three interpreters stay separate:
 
 The development path, including the default-off switches, is in `docs/DEV_RUNBOOK.md`.
 
+## Episode quality check
+
+After rendering, the episode CLI scans the final MP4 with local FFmpeg. It reports black intervals of at least 0.5 s and silence below −50 dB lasting at least 1 s. Very short previews use half their duration as the maximum detection threshold. Findings include millisecond timestamps; the first 64 are retained. An unavailable or incomplete scan is recorded as `UNKNOWN`. Findings are available for creator review alongside the output.
+
+The worker freezes the admin skill switch when dispatching the render and verifies the output digest before persisting the report with the asset. The measurement parsers are adapted from [qc-skill 1.4.5](https://github.com/kajisho5/qc-skill/tree/df73a07105fba979192273cfb863dc72cbd634b6). The source revision and MIT license are included in `qc_skill_measurements.py`.
+
 ## Local setup
 
 Windows PowerShell:

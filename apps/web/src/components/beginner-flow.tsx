@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { StudioClient } from "../lib/studio-client";
+import { CreatorSkillAssistant, CreatorSkillContext, type CreatorSkillLaunch } from "./creator-skill-assistant";
+import { VimaxPreviewPanel } from "./vimax-preview-panel";
 import { ProjectTitleEditor } from "./project-title-editor";
 import { useProjectBase, type Aggregate } from "../lib/project-base";
 import {
@@ -44,7 +46,7 @@ import { safeUnsavedDrafts, saveText } from "../lib/unsaved-drafts";
 import { currentStoryRevision } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
 import { AutoRunEntry } from "./auto-run-entry";
-import { EntityPane, ScenePane, ScriptPane, StoryPane, TaskDrawer } from "./workbench";
+import { EntityPane, ScenePane, ScriptPane, StoryPane, TaskDrawer, usesSeriesWritingPage } from "./workbench";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 
@@ -118,6 +120,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     reloadBase } = base;
   const [step, setStep] = useState<StepKey | null>(null);
   const [episodeNo, setEpisodeNo] = useState(1);
+  const [assistantLaunch, setAssistantLaunch] = useState<CreatorSkillLaunch | null>(null);
   const [castKind, setCastKind] = useState<CastKind>("character");
   /** The cast entity a primary action opened, and the choice offered when several need the user. */
   const [castFocus, setCastFocus] = useState<{ kind: CastKind; entityId: string; nonce: number } | null>(null);
@@ -324,7 +327,13 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     return () => { active = false; };
   }, [step, episode, sceneScope, projectId, refreshEpoch, scenesEpoch]);
 
+  function selectEpisode(value: number) {
+    setAssistantLaunch(null);
+    setEpisodeNo(value);
+  }
+
   function choose(next: StepKey) {
+    setAssistantLaunch(null);
     setStep(next);
     setEpisodeNo(episodeForStep(next, facts));
     setCastChoices(null);
@@ -337,6 +346,24 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     tasksReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setTasksOpen(true);
   }
+
+  const activeLaunch = assistantLaunch?.projectId === projectId && assistantLaunch.episodeId === episode?.id
+    ? assistantLaunch : null;
+  const assistantStage = step === "script" ? "script" : step === "sample" ? "storyboard" : step === "final" ? "export" : null;
+  const assistantAvailable = !textOnly || !usesSeriesWritingPage(episodeNumbers(facts).length, episodeNo);
+  const assistantPanel = episode && assistantStage && assistantAvailable ? <CreatorSkillAssistant key={`${projectId}:${episode.id}:${assistantStage}`}
+    projectId={projectId} episodeId={episode.id} episodeNo={episodeNo} stage={assistantStage} textOnly={textOnly}
+    onResolved={launch => {
+      setAssistantLaunch(launch);
+      setStep(launch.skill === "short-drama-write" ? "script" : launch.skill === "short-drama-storyboard" ? "sample" : "final");
+    }} /> : null;
+  useEffect(() => {
+    if (activeLaunch?.skill === "qc-skill" && step === "final") {
+      const target = document.getElementById("episode-quality-results") ?? document.getElementById("creator-export-section");
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView?.({ block: "start" });
+    }
+  }, [activeLaunch, step]);
 
   const stepIndex = steps.findIndex((item) => item.key === step);
   const info = steps[stepIndex] ?? steps[0]!;
@@ -390,7 +417,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     }
     // Decided from the facts at click time: a finished episode hands the action to the one that needs it.
     const target = episodeForAction(info.key, facts, episodeNo);
-    if (target !== episodeNo) setEpisodeNo(target);
+    if (target !== episodeNo) selectEpisode(target);
     setPendingFocus({ target: action.target, nonce: ++nonce.current });
   }
 
@@ -514,7 +541,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             <StepGuide step={info.key} state={state} />
             {unfinished !== null ? (
               <button className="mt-3 rounded-[12px] border bg-white px-4 py-2 text-[15px]" type="button"
-                onClick={() => { setEpisodeNo(unfinished); setPendingFocus({ target: info.key === "sample" ? "candidates" : info.key === "final" ? "compose" : "editor", nonce: ++nonce.current }); }}>
+                onClick={() => { selectEpisode(unfinished); setPendingFocus({ target: info.key === "sample" ? "candidates" : info.key === "final" ? "compose" : "editor", nonce: ++nonce.current }); }}>
                 继续制作第 {unfinished} 集
               </button>
             ) : null}
@@ -532,6 +559,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           </section>
         ) : null}
 
+        <CreatorSkillContext.Provider value={activeLaunch}>
         <div ref={body} className="creator-flow-body mt-5 space-y-4" data-step={step ?? undefined}>
           {project && step === "story" ? (
             <StoryPane project={project} stories={stories} onMore={() => void base.more("stories")} onSaved={base.reloadAfterWrite} onStatus={onStatus} />
@@ -542,8 +570,9 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               <p className="rounded-[12px] border bg-white p-4">故事确认通过后，服务器会按作品设置建立 {episodeNumbers(facts).length} 集。请先完成第 1 步。</p>
             ) : (
               <>
-                <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
+                <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={selectEpisode}
                   state={(no) => scriptState(episodes.find((item) => item.episodeNo === no))} />
+                {assistantPanel}
                 <p className="text-[15px] text-[#5F5D66]">审核只针对当前展示的这一集、这一个版本；其他集要分别打开检查。{textOnly
                   ? "系列作品只做文本：剧本不会拆成场景或镜头。"
                   : "剧本里写到的场面还不是场景或镜头记录，它们在「试一段」里单独建立。"}</p>
@@ -554,6 +583,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                     if (textOnly || !sceneScope) return;
                     setSceneChoice({ scope: sceneScope, id });
                     setShotId(null);
+                    setAssistantLaunch(null);
                     setStep("sample");
                   }} />
               </>
@@ -597,8 +627,13 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
           {project && !textOnly && step === "sample" ? (
             <>
-              <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
+              <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={selectEpisode}
                 state={(no) => episodeSampleState(facts, no)} />
+              {assistantPanel}
+              {episode && activeLaunch?.skill === "short-drama-storyboard" && <VimaxPreviewPanel
+                projectId={projectId} episodeId={episode.id} scriptReady={scriptState(episode) === "done"}
+                refreshEpoch={refreshEpoch} onChanged={base.reloadAfterWrite}
+                onOpenScene={id => { if (sceneScope) { setSceneChoice({ scope: sceneScope, id }); setShotId(null); } }} />}
               <GateNotice gate={gates.shot} onRetry={recheck}>当前环境没有开启单镜成片所需的功能（Mock 媒体或本地合成），样片暂时不能生成，这一步不会显示为完成。需要管理员在服务端开启后才能继续；其余步骤可以照常进行。</GateNotice>
               {ready && mediaReadFailed(media) ? <ReadFailed onRetry={rereadAll} /> : null}
               <div className="rounded-[12px] border border-[#E7E5E0] bg-white p-4 text-[15px]">
@@ -662,7 +697,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
           {project && !textOnly && step === "final" ? (
             <>
-              <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo} state={(no) => episodeFinalState(facts, no)} />
+              <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={selectEpisode} state={(no) => episodeFinalState(facts, no)} />
+              {assistantPanel}
               <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p>
               <GateNotice gate={gates.episode} onRetry={recheck}>集级合成由平台统一开启，目前还没开。可以先把每个镜头的单镜成片做完并确认，开启后这里会自动可用。</GateNotice>
               <p className="text-[15px]">{confirmedShots?.read === "ok"
@@ -672,9 +708,10 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                 <EpisodeComposePreflight projectId={projectId} episodeNo={episodeNo} episodeId={episode.id} onChanged={refreshFacts}
                   composeBlocked={composeBlockedReason(gates.episode, "episode")} />
               ) : (
-                <p className="rounded-[12px] border bg-white p-4">
+                <p id="creator-export-section" tabIndex={-1} className="rounded-[12px] border bg-white p-4">
                   {episodeFinalState(facts, episodeNo) === "source_updated"
                     ? "这一集的剧本改过了，原来批准的成片已标为历史（来源已更新）。请先在「看剧本」确认新版本，再重新试做样片和编排。"
+                    : activeLaunch?.skill === "qc-skill" ? "请先确认本集剧本，再生成成片查看质检。"
                     : "这一集的剧本还没有确认通过，暂时不能编排成片。"}
                 </p>
               )}
@@ -686,6 +723,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             </>
           ) : null}
         </div>
+        </CreatorSkillContext.Provider>
       </main>
       {tasksOpen ? (
         <TaskDrawer projectId={projectId} runs={allRuns} onClose={() => { setTasksOpen(false); tasksReturn.current?.focus(); }} onChanged={reloadBase} />

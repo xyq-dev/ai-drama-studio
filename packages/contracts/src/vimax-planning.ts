@@ -14,18 +14,25 @@ export const vimaxPlanningStartSchema = z.object({
   target: vimaxCandidateCreateSchema.shape.target,
   source: p.source, sceneSpans: p.sceneSpans, selectedSceneKeys: p.selectedSceneKeys,
   sourceDialogue: p.sourceDialogue, requirements: p.requirements,
+  skill: z.literal("short-drama-storyboard").optional(),
+  instruction: z.string().trim().min(1).max(1000).optional(),
   confirmedTextSend: z.literal(true),
   confirmUncertainRequestId: z.string().uuid().optional(),
-}).strict();
+}).strict().refine(request => !request.instruction || Boolean(request.skill), {
+  message: "分镜修改要求需要选择分镜技能", path: ["instruction"],
+});
 export type VimaxPlanningStart = z.infer<typeof vimaxPlanningStartSchema>;
 export const vimaxPlanningFrozenSchema = z.object({
   schema: z.literal("ads.vimax-planning.frozen.v1"),
   promptVersion: z.literal(VIMAX_PLANNING_PROMPT_VERSION),
+  skillVersion: z.string().min(1).max(80).optional(),
   source: vimaxPlatformSourceSnapshotSchema, target: vimaxCandidateTargetSchema,
   request: vimaxPlanningStartSchema,
   providerKey: z.enum(TITLE_WRITING_PROVIDER_KEYS), model: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
   budget: z.object({ maxCalls: z.literal(1), maxOutputTokens: z.literal(4096), timeoutMs: z.literal(120000) }).strict(),
-}).strict();
+}).strict().refine(input => Boolean(input.request.skill) === Boolean(input.skillVersion), {
+  message: "分镜技能版本不匹配", path: ["skillVersion"],
+});
 export type VimaxPlanningFrozen = z.infer<typeof vimaxPlanningFrozenSchema>;
 export type VimaxPlanningState = "reserved" | "submitted" | "completed" | "rejected" | "unknown";
 export interface VimaxPlanningRecord {

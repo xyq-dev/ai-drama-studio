@@ -4,14 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 import { vimaxPlanningStartSchema, vimaxPlatformSourceSnapshotSchema, type VimaxPlanningRecord, type VimaxPlanningStore } from "@ai-drama/contracts";
 import { freezeVimaxPlanning, hashVimaxPlanningRequest } from "@ai-drama/domain";
 import { titleWritingProviderConfigs } from "./text-writing";
-import { VimaxPlanningExecutor, validateVimaxPlanningOutput, vimaxPlanningView } from "./vimax-planning";
+import { buildVimaxPlanningPrompt, VimaxPlanningExecutor, validateVimaxPlanningOutput, vimaxPlanningView } from "./vimax-planning";
 import { responsesAnswer, messagesAnswer, chatCompletionsAnswer } from "./title-writing-fixtures";
 import type { WritingTransport } from "./text-writing";
 const W="11111111-1111-4111-8111-111111111111", ID="99999999-9999-4999-8999-999999999994", NOW="2026-11-01T01:00:00.000Z";
-function setup(providerKey: "openai" | "anthropic" | "deepseek" = "openai") {
+function setup(providerKey: "openai" | "anthropic" | "deepseek" = "openai", instruction?: string) {
   const raw=JSON.parse(readFileSync(resolve(__dirname,"../../../scripts/vimax-evaluation/fixtures/single-scene.json"),"utf8")), i=raw.input;
   const source=vimaxPlatformSourceSnapshotSchema.parse({schema:"ads.vimax-platform-source.v1",scriptRevisionNo:1,projectId:i.projectId,episodeId:i.episodeId,episodeNo:i.episodeNo,scriptRevisionId:i.scriptRevisionId,scriptContentHash:i.scriptContentHash,scriptText:i.scriptText,characters:i.characters});
-  const request=vimaxPlanningStartSchema.parse({schema:"ads.vimax-planning.start.v1",target:{sceneId:"99999999-9999-4999-8999-999999999991",sceneRevisionId:"99999999-9999-4999-8999-999999999992",rowVersion:3},source:{scriptRevisionId:i.scriptRevisionId,scriptContentHash:i.scriptContentHash,characters:i.characters},sceneSpans:i.sceneSpans,selectedSceneKeys:i.selectedSceneKeys,sourceDialogue:i.sourceDialogue,requirements:i.requirements,confirmedTextSend:true});
+  const request=vimaxPlanningStartSchema.parse({schema:"ads.vimax-planning.start.v1",target:{sceneId:"99999999-9999-4999-8999-999999999991",sceneRevisionId:"99999999-9999-4999-8999-999999999992",rowVersion:3},source:{scriptRevisionId:i.scriptRevisionId,scriptContentHash:i.scriptContentHash,characters:i.characters},sceneSpans:i.sceneSpans,selectedSceneKeys:i.selectedSceneKeys,sourceDialogue:i.sourceDialogue,requirements:i.requirements,confirmedTextSend:true, ...(instruction && { skill: "short-drama-storyboard", instruction })});
   const providers=titleWritingProviderConfigs({OPENAI_API_KEY:"synthetic-openai-key",TITLE_WRITING_OPENAI_MODELS:"fixture-openai-model",ANTHROPIC_API_KEY:"sk-ant-api03-synthetic-test-key",DEEPSEEK_API_KEY:"synthetic-deepseek-key"});
   // Test configuration mirrors the server's allowed model; no key or network is real.
   const provider=providers[providerKey];
@@ -26,6 +26,23 @@ function setup(providerKey: "openai" | "anthropic" | "deepseek" = "openai") {
   return {record,store,transport,executor,providers,output,setStatus:(value:number)=>{status=value;}};
 }
 describe("ViMax one-call text executor",()=>{
+  it("applies the pinned storyboard skill and scoped instruction in the actual wire request", async () => {
+    const h = setup("openai", "只把第二个机位改成后视镜眼神特写");
+    await h.executor.execute(ID);
+    const wire = JSON.parse(h.transport.mock.calls[0]![0].body);
+    expect(wire.instructions).toContain("short-drama-storyboard");
+    expect(wire.instructions).toContain(h.record.input.skillVersion);
+    expect(wire.input).toContain("只把第二个机位改成后视镜眼神特写");
+    expect(h.record.state).toBe("completed");
+    const anotherScene = "【场景】剧终的秘密仓库\n【动作】山下出现一辆红车。";
+    const input = structuredClone(h.record.input);
+    const start = input.source.scriptText.length;
+    input.source.scriptText += anotherScene;
+    input.request.sceneSpans.push({ ...input.request.sceneSpans[0]!, key: "S2", heading: "秘密仓库", start, end: input.source.scriptText.length });
+    const prompt = buildVimaxPlanningPrompt(input);
+    expect(prompt.user).toContain("这封信是你留下的吗");
+    expect(prompt.user).not.toContain("秘密仓库");
+  });
   it.each(["openai","anthropic","deepseek"] as const)("uses the existing %s adapter once and retains exact validated output",async(provider)=>{
     const h=setup(provider);await Promise.all([h.executor.execute(ID),h.executor.execute(ID)]);await h.executor.execute(ID);
     expect(h.transport).toHaveBeenCalledTimes(1);expect(h.record.state).toBe("completed");

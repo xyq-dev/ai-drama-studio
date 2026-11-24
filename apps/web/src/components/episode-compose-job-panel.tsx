@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import type { EpisodeQualityReport } from "@ai-drama/contracts";
+import { EpisodeQualityPlayer } from "./episode-quality-player";
 import type { StudioClient } from "../lib/studio-client";
 import { ApiError } from "../lib/studio-client";
 import { useChangeNotice } from "../lib/use-change-notice";
@@ -27,6 +29,9 @@ interface JobView {
 }
 
 interface CompositeItem {
+  qualityReport?: EpisodeQualityReport | null;
+  qualityCheckEnabled?: boolean | null;
+  containsMockSources?: boolean | null;
   assetId: string;
   status: "ACTIVE" | "STALE";
   reviewStatus: "DRAFT" | "APPROVED" | "REJECTED";
@@ -102,6 +107,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const [job, setJob] = useState<JobView | null>(null);
   const notifyChanged = useChangeNotice(job, props.onChanged);
   const [items, setItems] = useState<CompositeItem[]>([]);
+  const [listLoaded, setListLoaded] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [held, setHeld] = useState<HeldSubmit | null>(null);
   const [reload, setReload] = useState(0);
@@ -139,6 +145,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
     setError(null);
     setJob(null);
     setItems([]);
+    setListLoaded(false);
     setListError(null);
     setHeld(null);
     downloadSession.current += 1;
@@ -189,6 +196,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         }
         if (stopped || listEpoch.current !== token || listGen.current !== readToken) return;
         setItems((current) => preferListed(current, collected));
+        setListLoaded(true);
         rememberCursor(nextCursor);
         setListError(null);
       } catch (caught) {
@@ -447,45 +455,54 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={!canStart || busy || Boolean(props.startBlocked)} onClick={() => void start()}>开始多镜合成</button>
       {job ? <p className="mt-2 text-sm" role="status">多镜合成已受理 {job.state}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
-      {listError ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => setReload((value) => value + 1)}>重新查询成片</button> : null}
-      {historyCursor ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void loadHistory()}>加载更早的成片</button> : null}
       {job && !TERMINAL.has(job.state) ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void cancel()}>取消合成</button> : null}
-      <ul className="mt-3 space-y-2">
-        {items.map((item) => (
-          <li
-            key={item.assetId}
-            className="creator-composite-card min-w-0 rounded border p-2 text-sm"
-            data-composite-id={item.assetId}
-            data-asset-status={item.status}
-            data-review-status={item.reviewStatus}
-            data-row-version={item.rowVersion}
-            data-reviewed-content={item.reviewedContentHash ?? ""}
-          >
-            <p>{item.status === "STALE" ? "历史成片" : "当前成片"} · 审核 {item.reviewStatus} · {item.durationMs ?? 0} ms</p>
-            <ol>
-              {(item.segments ?? []).map((segment) => <li key={`${item.assetId}:${segment.position}:${segment.assetId}`}>{segment.position}. {segment.shotId}</li>)}
-            </ol>
-            <video className="creator-composite-player mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${item.assetId}/content`} />
-            {item.status === "ACTIVE" && item.reviewStatus === "APPROVED" ? (
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button className="rounded border px-2 py-1" type="button" disabled={pendingDownloads[item.assetId] !== undefined} onClick={() => void download(item, "mp4")}>
-                  {pendingDownloads[item.assetId] === "mp4" ? "正在下载" : "下载 MP4"}
-                </button>
-                <button className="rounded border px-2 py-1" type="button" disabled={pendingDownloads[item.assetId] !== undefined} onClick={() => void download(item, "json")}>
-                  {pendingDownloads[item.assetId] === "json" ? "正在下载" : "下载来源清单"}
-                </button>
-              </div>
-            ) : null}
-            {downloadErrors[item.assetId] !== undefined ? <p className="mt-2" role="alert">{downloadErrors[item.assetId]}</p> : null}
-            {item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "APPROVE")}>批准成片</button>
-                <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "REJECT")}>退回成片</button>
-              </div>
-            ) : null}
-          </li>
-        ))}
-      </ul>
+      <section id="episode-quality-results" tabIndex={-1} aria-label="成片质检结果" className="mt-3">
+        {listError ? (
+          <div className="text-sm">
+            <p role="alert">{listError}</p>
+            <button className="mt-2 rounded border px-3 py-1" type="button" onClick={() => setReload((value) => value + 1)}>重新查询成片</button>
+          </div>
+        ) : items.length === 0 ? (
+          <p className="text-sm" role="status">{listLoaded ? "本集还没有成片。完成本集合成后，质检结果会显示在这里。" : "正在读取本集成片…"}</p>
+        ) : null}
+        {historyCursor ? <button className="mb-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void loadHistory()}>加载更早的成片</button> : null}
+        <ul className="space-y-2">
+          {items.map((item) => (
+            <li
+              key={item.assetId}
+              className="creator-composite-card min-w-0 rounded border p-2 text-sm"
+              data-composite-id={item.assetId}
+              data-asset-status={item.status}
+              data-review-status={item.reviewStatus}
+              data-row-version={item.rowVersion}
+              data-reviewed-content={item.reviewedContentHash ?? ""}
+            >
+              <p>{item.status === "STALE" ? "历史成片" : "当前成片"} · 审核 {item.reviewStatus} · {item.durationMs ?? 0} ms</p>
+              <ol>
+                {(item.segments ?? []).map((segment) => <li key={`${item.assetId}:${segment.position}:${segment.assetId}`}>{segment.position}. {segment.shotId}</li>)}
+              </ol>
+              <EpisodeQualityPlayer assetId={item.assetId} report={item.qualityReport} enabled={item.qualityCheckEnabled} containsMockSources={item.containsMockSources} />
+              {item.status === "ACTIVE" && item.reviewStatus === "APPROVED" ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button className="rounded border px-2 py-1" type="button" disabled={pendingDownloads[item.assetId] !== undefined} onClick={() => void download(item, "mp4")}>
+                    {pendingDownloads[item.assetId] === "mp4" ? "正在下载" : "下载 MP4"}
+                  </button>
+                  <button className="rounded border px-2 py-1" type="button" disabled={pendingDownloads[item.assetId] !== undefined} onClick={() => void download(item, "json")}>
+                    {pendingDownloads[item.assetId] === "json" ? "正在下载" : "下载来源清单"}
+                  </button>
+                </div>
+              ) : null}
+              {downloadErrors[item.assetId] !== undefined ? <p className="mt-2" role="alert">{downloadErrors[item.assetId]}</p> : null}
+              {item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "APPROVE")}>批准成片</button>
+                  <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "REJECT")}>退回成片</button>
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </section>
     </section>
   );
 }

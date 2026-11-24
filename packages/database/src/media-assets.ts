@@ -36,7 +36,7 @@ import {
   assertVoiceComposeSnapshot,
 } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
-import type { SpeechMixManifest } from "@ai-drama/contracts";
+import { episodeQualityReportSchema, type EpisodeQualityReport, type SpeechMixManifest } from "@ai-drama/contracts";
 import { ownedProjectBind, projectOwnerColumnReady, storeOwnerAccountFilter } from "./creator-access-context";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
@@ -552,6 +552,7 @@ export class MediaAssetStore {
       height: number;
       durationMs: number;
       elapsedMs: number;
+      qualityReport?: EpisodeQualityReport;
       failInsideCommit?: boolean;
     },
   ): Promise<MediaAssetRecord | null> {
@@ -961,6 +962,9 @@ async function readHeldCompose(
 }
 
 export interface EpisodeCompositeListItem {
+  qualityReport: EpisodeQualityReport | null;
+  qualityCheckEnabled: boolean | null;
+  containsMockSources: boolean | null;
   assetId: string;
   status: string;
   reviewStatus: string;
@@ -983,9 +987,12 @@ async function listEpisodeCompositesWithClient(
   limit: number,
 ): Promise<{ items: EpisodeCompositeListItem[]; nextCursor: string | null }> {
   const position = decodeEpisodeCompositeCursor(cursor);
+  const owner = await ownedProjectBind(client, undefined, 4, "p");
   const episode = await client.query(
-    `SELECT id FROM episode WHERE id = $1 AND workspace_id = $2 AND project_id = $3`,
-    [episodeId, workspaceId, projectId],
+    `SELECT ep.id FROM episode ep
+       JOIN project p ON p.id = ep.project_id AND p.workspace_id = ep.workspace_id
+      WHERE ep.id = $1 AND ep.workspace_id = $2 AND ep.project_id = $3 ${owner.sql}`,
+    [episodeId, workspaceId, projectId, ...owner.params],
   );
   if (!episode.rows[0]) throw new PersistenceError("NOT_FOUND", "Episode not found");
   const listed = await client.query<QueryResultRow>(
@@ -1030,7 +1037,11 @@ function mapEpisodeComposite(row: QueryResultRow): EpisodeCompositeListItem {
   const metadata = isPlainJson(row.metadata_json) ? row.metadata_json : {};
   const manifest = isPlainJson(metadata.manifest) ? metadata.manifest : {};
   const segments = Array.isArray(manifest.segments) ? manifest.segments : [];
+  const report = episodeQualityReportSchema.safeParse(metadata.qualityReport);
   return {
+    qualityReport: report.success ? report.data : null,
+    qualityCheckEnabled: typeof metadata.qualityCheckEnabled === "boolean" ? metadata.qualityCheckEnabled : null,
+    containsMockSources: typeof metadata.containsMockSources === "boolean" ? metadata.containsMockSources : null,
     assetId: String(row.asset_id),
     status: String(row.status),
     reviewStatus: String(row.review_status),
@@ -1439,6 +1450,7 @@ async function insertLocalEpisodeComposeAsset(
     height: number;
     durationMs: number;
     elapsedMs: number;
+    qualityReport?: EpisodeQualityReport;
     failInsideCommit?: boolean;
   },
 ): Promise<MediaAssetRecord> {
@@ -1475,7 +1487,21 @@ async function insertLocalEpisodeComposeAsset(
     throw error;
   }
   await readHeldCompose(client, input);
+  const demoSources = await client.query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM asset_dependency dep
+       JOIN asset source ON source.workspace_id = dep.workspace_id AND source.project_id = dep.project_id
+                        AND source.id = dep.source_asset_id
+       WHERE dep.workspace_id = $1 AND dep.project_id = $2 AND dep.dependent_asset_id = ANY($3::uuid[])
+         AND source.storage_provider = 'mock-object-store'
+     ) AS present`,
+    [input.workspaceId, input.projectId, snapshot.input.sourceObjects.map((source) => source.assetId)],
+  );
   const metadata = {
+    qualityCheckEnabled: snapshot.qualityCheckEnabled !== false,
+    qualityReport: snapshot.qualityCheckEnabled !== false && input.qualityReport
+      ? episodeQualityReportSchema.parse(input.qualityReport) : null,
+    containsMockSources: demoSources.rows[0]?.present ?? null,
     schema: EPISODE_COMPOSE_OUTPUT_SCHEMA,
     episodeId: input.episodeId,
     manifest: snapshot.input.manifest,

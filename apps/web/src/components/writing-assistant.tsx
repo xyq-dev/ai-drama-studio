@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DomainError,
   WRITING_NOTE_MAX_CHARS,
@@ -15,7 +15,9 @@ import {
   type WritingImport,
   type WritingTargetSnapshot,
 } from "@ai-drama/domain/writing-assistant";
+import type { EpisodeEdit } from "@ai-drama/contracts";
 import { lineDiff } from "../lib/studio-model";
+import { useCreatorSkillLaunch } from "./creator-skill-assistant";
 import { OnlineCandidatePanel } from "./writing-assistant-online";
 import type { WritingCandidateClient } from "../lib/writing-candidate-client";
 import { appendOnce, assistantNote, readProjectDirection } from "../lib/creative-direction-link";
@@ -65,6 +67,8 @@ function retiredWorkspaceNote(record: RetiredWorkspaceRequest): string {
 }
 
 interface AssistantDraft {
+  agentLaunchId?: string;
+  priorRevisionRequest?: string;
   genre: string;
   audience: string;
   characters: string;
@@ -129,11 +133,13 @@ export function WritingAssistant(props: {
   confirmedMaterials: string;
   loaded: boolean;
   capture: () => WritingTargetSnapshot;
-  onAdopt: (text: string, frozen: FrozenWritingContext) => boolean;
+  onAdopt: (text: string, frozen: FrozenWritingContext, edit?: EpisodeEdit) => boolean | string;
   readFile?: (file: File) => Promise<ArrayBuffer>;
 }) {
   const episodeCount = props.episodeCount ?? 3;
   const key = storageKey(props.projectId, props.entityKey);
+  const launch = useCreatorSkillLaunch("short-drama-write", props.projectId, props.episodeId);
+  const revisionField = useRef<HTMLTextAreaElement>(null);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<AssistantDraft>(() => readAssistant(props.projectId, props.entityKey));
   const [boundKey, setBoundKey] = useState(key);
@@ -196,7 +202,7 @@ export function WritingAssistant(props: {
       : "已带入分类方向，原有题材内容保留。");
   }
 
-  function persist(next: AssistantDraft) {
+  const persist = useCallback((next: AssistantDraft) => {
     draftRef.current = next;
     setDraft(next);
     try {
@@ -205,7 +211,21 @@ export function WritingAssistant(props: {
     } catch {
       setStorageError("助手记录没有写入。已有编辑草稿未改动。");
     }
-  }
+  }, [key]);
+
+  useEffect(() => {
+    if (!launch || props.mode !== "episode") return;
+    setOpen(true);
+    const previous = draftRef.current;
+    if (previous.agentLaunchId !== launch.id) {
+      persist({ ...previous, agentLaunchId: launch.id, confirmed: false,
+        priorRevisionRequest: previous.revisionRequest === launch.instruction ? previous.priorRevisionRequest : previous.revisionRequest,
+        revisionRequest: launch.instruction });
+    }
+  }, [launch, persist, props.mode]);
+  useEffect(() => {
+    if (open && launch) revisionField.current?.focus();
+  }, [open, launch]);
 
   function update(patch: Partial<AssistantDraft>) {
     persist({ ...draft, ...patch });
@@ -341,9 +361,11 @@ export function WritingAssistant(props: {
       setDifferences(decision.differences);
       return;
     }
-    const accepted = props.onAdopt(formatted, draft.frozen);
-    if (!accepted) {
-      setDifferences(["正文草稿已变化。候选仍保留，不能直接覆盖。"]);
+    const accepted = draft.imported.mode === "episode-edit"
+      ? props.onAdopt(formatted, draft.frozen, draft.imported.edit)
+      : props.onAdopt(formatted, draft.frozen);
+    if (accepted !== true) {
+      setDifferences([typeof accepted === "string" ? accepted : "正文草稿已变化。候选仍保留，不能直接覆盖。"]);
       return;
     }
     setDifferences([]);
@@ -400,8 +422,9 @@ export function WritingAssistant(props: {
                 确认使用当前已加载的故事与分集材料
               </label>
               <label className="block text-sm">修改要求
-                <textarea className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} rows={2} value={draft.revisionRequest} onChange={(event) => update({ revisionRequest: event.target.value })} />
+                <textarea className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} rows={2} ref={revisionField} value={draft.revisionRequest} onChange={(event) => update({ revisionRequest: event.target.value })} />
               </label>
+              {draft.priorRevisionRequest && <button className="underline" type="button" onClick={() => update({revisionRequest: draft.priorRevisionRequest ?? "", priorRevisionRequest: undefined})}>恢复之前的修改要求</button>}
               <label className="block text-sm">必须保留的对白
                 <textarea className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} rows={2} value={draft.mustKeepDialogue} onChange={(event) => update({ mustKeepDialogue: event.target.value })} />
               </label>
@@ -411,6 +434,7 @@ export function WritingAssistant(props: {
             </>
           )}
           <OnlineCandidatePanel
+            agentWrite={props.mode === "episode" && Boolean(draft.agentLaunchId)}
             mode={props.mode}
             projectId={props.projectId}
             entityKey={props.entityKey}

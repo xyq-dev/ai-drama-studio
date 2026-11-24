@@ -1,5 +1,6 @@
+import { applyEpisodeEdit } from "@ai-drama/domain";
 import { describe, expect, it } from "vitest";
-import { writingCandidateJsonSchema, type WritingCandidateRecord } from "@ai-drama/contracts";
+import { DRAMA_TEXT_SKILL_VERSION, writingCandidateJsonSchema, type WritingCandidateRecord } from "@ai-drama/contracts";
 import {
   ANTHROPIC_MESSAGES_URL,
   OPENAI_RESPONSES_URL,
@@ -67,6 +68,35 @@ function setup(options: { answer?: Parameters<typeof stub>[0]; providerKey?: "op
 }
 
 describe("one online candidate request: one send, the same checks as a pasted candidate", () => {
+  it("sends only once, applies the pinned writing skill, and validates exact replacements in existing text", async () => {
+    const edit = { changes: [{ before: "司机：车等你。", after: "司机：别急，等你呢。" }] };
+    const h = setup({ providerKey: "openai", answer: () => ({ status: 200, body: responsesAnswer(edit) }) });
+    const record = h.make("episode");
+    const currentText = " 雨落在车窗。\r\n司机：车等你。\n小杰上车。 ";
+    const revisionRequest = "把司机这句对白改自然一点";
+    Object.assign(record.input, { skill: "short-drama-write", skillVersion: DRAMA_TEXT_SKILL_VERSION });
+    Object.assign(record.input.request, { currentText, revisionRequest });
+    record.requestHash = hashWritingCandidate(record.input);
+    await h.create(record);
+    await Promise.all([h.executor.execute(record.id), h.executor.execute(record.id)]);
+    const stored = await h.store.getById(WS, record.id);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]!.body.instructions).toContain("short-drama-write");
+    expect(JSON.parse(String(h.sent[0]!.body.input))).toMatchObject({ revisionRequest, currentText });
+    expect(stored?.candidate).toEqual({ mode: "episode-edit", edit });
+    expect(validateWritingCandidate(JSON.stringify({ changes: [] }), record.input).ok).toBe(false);
+    expect(validateWritingCandidate(JSON.stringify({ changes: [...edit.changes, ...edit.changes] }), record.input).ok).toBe(false);
+    const sameAfterNormalization = structuredClone(record.input);
+    sameAfterNormalization.request.currentText = currentText.replace("\r\n", "\n");
+    expect(hashWritingCandidate(sameAfterNormalization)).not.toBe(record.requestHash);
+    expect(applyEpisodeEdit(currentText, edit)).toBe(" 雨落在车窗。\r\n司机：别急，等你呢。\n小杰上车。 ");
+    for (const before of ["未出现的话", "。"]) {
+      expect(validateWritingCandidate(JSON.stringify({ changes: [{ before, after: "换句" }] }), record.input).ok).toBe(false);
+    }
+    expect(validateWritingCandidate(JSON.stringify({ changes: [
+      { before: "司机：车等你。", after: "司机：上来。" }, { before: "车等你", after: "等等" },
+    ] }), record.input).ok).toBe(false);
+  });
   it("claude: sends once to the fixed endpoint with the online prompt and the story schema, and stores a validated plan", async () => {
     const { store, executor, sent, make, create } = setup();
     const record = await create(make("story"));

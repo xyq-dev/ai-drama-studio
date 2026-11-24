@@ -9,6 +9,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./script-workbench": {
+      "types": "./dist/script-workbench.d.ts",
+      "default": "./dist/script-workbench.js"
+    },
     "./writing-assistant": {
       "types": "./dist/writing-assistant.d.ts",
       "default": "./dist/writing-assistant.js"
