@@ -997,6 +997,7 @@ async function main() {
       await startApi({ ...env, M4_COMPOSE_OBJECT_DIR: composeObjectDir });
       await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=final`, { waitUntil: "domcontentloaded" });
       await page.getByText(/集级合成由平台统一开启，目前还没开/).waitFor();
+      await page.getByRole("tab", { name: /第 1 集/ }).click();
       const approved = results["step5-final"].detail;
       const savedCard = page.locator(`[data-composite-id="${approved.asset}"]`);
       const beforeRead = await counts();
