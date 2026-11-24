@@ -1,6 +1,7 @@
 import { Module, type DynamicModule } from "@nestjs/common";
 import type { ApiEnv } from "../config/env";
 import { EventsController, StudioController } from "./studio.controller";
+import { CreatorAssistantController } from "./creator-assistant.controller";
 import { StudioRuntime } from "./studio.runtime";
 import { ScriptBreakdownController } from "./script-breakdown.controller";
 import { TitleWritingController } from "./title-writing.controller";
@@ -43,6 +44,7 @@ export class StudioModule {
     return {
       module: StudioModule,
       controllers: [
+        CreatorAssistantController,
         StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
         AdminModelsController, AdminMediaKeysController, FeatureConfigController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,

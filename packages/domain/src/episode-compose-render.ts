@@ -59,6 +59,8 @@ export interface EpisodeComposeSourceObject {
 }
 
 export interface EpisodeComposeJobSnapshot {
+  /** Queue-time switch. Old jobs use the default enabled policy. */
+  qualityCheckEnabled?: boolean;
   schema: typeof EPISODE_COMPOSE_JOB_SCHEMA;
   input: {
     workspaceId: string;

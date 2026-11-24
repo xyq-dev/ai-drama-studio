@@ -11,17 +11,20 @@ export async function proxyAssetContent(
   }
   const origin = resolveApiUpstream(process.env.NEXT_PUBLIC_API_BASE_URL);
   const headers = new Headers();
-  const range = request.headers.get("range");
-  if (range) headers.set("range", range);
+  for (const name of ["range", "if-range"]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
   // The API checks the site session itself; this proxy only passes the browser cookie through, never grants access.
   const cookie = request.headers.get("cookie");
   if (cookie) headers.set("cookie", cookie);
   const upstream = await fetchImpl(`${origin}/api/v1/assets/${assetId.toLowerCase()}/content`, {
     method: request.method,
     headers,
+    signal: request.signal,
   });
   const responseHeaders = new Headers();
-  for (const name of ["content-type", "content-length", "cache-control", "x-content-type-options"]) {
+  for (const name of ["content-type", "content-length", "content-range", "accept-ranges", "etag", "cache-control", "x-content-type-options"]) {
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
   }
@@ -29,6 +32,5 @@ export async function proxyAssetContent(
     await upstream.body?.cancel();
     return new Response(null, { status: upstream.status, headers: responseHeaders });
   }
-  const bytes = await upstream.arrayBuffer();
-  return new Response(bytes, { status: upstream.status, headers: responseHeaders });
+  return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
 }

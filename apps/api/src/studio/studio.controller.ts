@@ -22,6 +22,17 @@ interface StatusResponse {
 
 interface ContentRequest {
   method: string;
+  headers?: { range?: string; "if-range"?: string };
+}
+
+/** Ignores unsupported units or multipart requests. A single byte range is inclusive at both ends. */
+function singleByteRange(header: string, size: number): { start: number; end: number } | "unsatisfiable" | null {
+  if (!/^bytes=/i.test(header) || header.includes(",")) return null;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(header);
+  if (!match || (!match[1] && !match[2])) return "unsatisfiable";
+  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  const end = match[1] && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+  return start > end ? "unsatisfiable" : { start, end };
 }
 
 interface ContentResponse {
@@ -725,11 +736,32 @@ export class StudioController {
     @Res({ passthrough: true }) response: ContentResponse,
   ) {
     const payload = await this.studio.readMockAssetContent(assetId);
-    response.status(200);
     response.setHeader("Content-Type", payload.mimeType);
-    response.setHeader("Content-Length", String(payload.bytes.length));
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Cache-Control", "private, no-store");
+    const size = payload.bytes.length;
+    if (payload.etag) {
+      response.setHeader("ETag", payload.etag);
+      response.setHeader("Accept-Ranges", "bytes");
+      const headers = request.headers;
+      if (request.method === "GET" && headers?.range && (!headers["if-range"] || headers["if-range"] === payload.etag)) {
+        const range = singleByteRange(headers.range.trim(), size);
+        if (range === "unsatisfiable") {
+          response.status(416);
+          response.setHeader("Content-Range", `bytes */${size}`);
+          response.setHeader("Content-Length", "0");
+          return undefined;
+        }
+        if (range) {
+          response.status(206);
+          response.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
+          response.setHeader("Content-Length", String(range.end - range.start + 1));
+          return new StreamableFile(payload.bytes.subarray(range.start, range.end + 1));
+        }
+      }
+    }
+    response.status(200);
+    response.setHeader("Content-Length", String(size));
     if (request.method === "HEAD") return undefined;
     return new StreamableFile(payload.bytes);
   }

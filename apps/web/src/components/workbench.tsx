@@ -1,12 +1,13 @@
 "use client";
 
 import { CreatorShell } from "./creator-shell";
-import { TITLE_WRITING_MAX_EPISODES } from "@ai-drama/contracts";
+import { TITLE_WRITING_MAX_EPISODES, type EpisodeEdit } from "@ai-drama/contracts";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { canAdopt, type FrozenWritingContext, type WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
 import { MAX_MANUAL_MEDIA_RETRIES, mediaRetryDecision, type MediaRetryRejection } from "@ai-drama/domain/media-retry";
 import { ComposePreflight } from "./compose-preflight";
+import { adoptStructuredEpisodeEdit } from "../lib/structured-episode-edit";
 import { WritingAssistant } from "./writing-assistant";
 import { CharacterReferencePanel } from "./character-reference-panel";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
@@ -540,6 +541,10 @@ export function StoryPane(props: {
   );
 }
 
+export function usesSeriesWritingPage(episodeCount: number, episodeNo: number): boolean {
+  return episodeCount > TITLE_WRITING_MAX_EPISODES && episodeNo > 3;
+}
+
 export function ScriptPane(props: {
   projectId: string;
   projectVersion: number;
@@ -643,7 +648,7 @@ export function ScriptPane(props: {
               ifMatch: draft.ifMatch ?? undefined,
             });
           }}
-          assistantUnavailableReason={props.episodeCount > TITLE_WRITING_MAX_EPISODES && episode.episodeNo > 3
+          assistantUnavailableReason={usesSeriesWritingPage(props.episodeCount, episode.episodeNo)
             ? "请在系列编剧页生成本集剧本，或在下方编辑并保存。"
             : undefined}
           assistant={{
@@ -653,6 +658,7 @@ export function ScriptPane(props: {
             episodeId: episode.id,
             premise: props.premise,
             confirmedMaterials: textOf(props.storyCurrent?.content ?? null),
+            storyContent: props.storyCurrent?.content,
             loaded: scripts !== null && !currentNotLoaded,
           }}
           onSaved={async () => {
@@ -995,6 +1001,7 @@ function ContentEditor(props: {
     episodeId?: string | null;
     premise: string;
     confirmedMaterials: string;
+    storyContent?: unknown;
     loaded: boolean;
   };
 }) {
@@ -1049,11 +1056,20 @@ function ContentEditor(props: {
     };
   }
 
-  function adoptText(formatted: string, frozen: FrozenWritingContext): boolean {
+  function adoptText(formatted: string, frozen: FrozenWritingContext, edit?: EpisodeEdit): boolean | string {
     const live = captureTarget();
     if (!canAdopt(frozen, live, frozen.inputFingerprint).ok) return false;
     const editing = currentDraft();
-    const next = applyTextContent(editing.parsed ?? props.content, formatted);
+    if (editing.mode === "json" && !editing.parsed) return "当前 JSON 草稿尚未完成。请先补全草稿，再比较候选。";
+    const original = editing.parsed ?? props.content;
+    let next: Record<string, unknown>;
+    try {
+      next = (props.assistant?.mode === "episode"
+        ? adoptStructuredEpisodeEdit(original, props.assistant.storyContent, formatted, edit)
+        : null) ?? applyTextContent(original, formatted);
+    } catch (error) {
+      return error instanceof Error ? error.message : "修改未能对应到剧本字段，原稿已保留。";
+    }
     const nextText = textOf(next);
     const nextRaw = JSON.stringify(next, null, 2);
     const complexNow = !isSimpleContent(props.content);

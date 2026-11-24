@@ -170,6 +170,7 @@ export {
   canAdopt,
   formatEpisodeDraft,
   formatStoryPlan,
+  applyEpisodeEdit,
   formatWritingImport,
   freezeWritingContext,
   parseWritingImport,

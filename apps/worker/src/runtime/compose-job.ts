@@ -1,3 +1,4 @@
+import { episodeQualityReportSchema, type EpisodeQualityReport } from "@ai-drama/contracts";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -245,6 +246,7 @@ export async function runEpisodeComposeJob(
       height: EPISODE_RENDER_PROFILE.height,
       durationMs: published.durationMs,
       elapsedMs: published.elapsedMs,
+      qualityReport: rendered.qualityReport,
       failInsideCommit: options.failInsideCommit === true,
     });
     if (!committed) return;
@@ -377,8 +379,11 @@ async function renderEpisodeWithFfmpeg(
   attemptId: string,
   attemptDir: string,
   output: string,
-): Promise<{ durationMs: number; elapsedMs: number }> {
-  const child = spawn(options.pythonBin, ["-m", "media_worker.episode_compose", "--input-dir", attemptDir, "--output", output], {
+): Promise<{ durationMs: number; elapsedMs: number; checksumSha256?: string; qualityReport?: EpisodeQualityReport }> {
+  const checkQuality = execution.inputSnapshot.qualityCheckEnabled !== false;
+  const args = ["-m", "media_worker.episode_compose", "--input-dir", attemptDir, "--output", output];
+  if (!checkQuality) args.push("--skip-quality-check");
+  const child = spawn(options.pythonBin, args, {
     shell: false,
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
@@ -423,11 +428,19 @@ async function renderEpisodeWithFfmpeg(
     throw new PersistenceError("COMPOSE_RESULT_DISCARDED", "Compose renderer stopped after losing its lease");
   }
   if (code === 0) {
-    const payload = JSON.parse(Buffer.concat(stdout).toString("utf8")) as { durationMs?: number; elapsedMs?: number };
+    const payload = JSON.parse(Buffer.concat(stdout).toString("utf8")) as { durationMs?: number; elapsedMs?: number; checksumSha256?: string; qualityReport?: unknown };
     if (!payload.durationMs || payload.durationMs <= 0) {
       throw new PersistenceError("COMPOSE_OUTPUT_INVALID", "Episode compose renderer did not report a duration");
     }
-    return { durationMs: payload.durationMs, elapsedMs: payload.elapsedMs ?? 0 };
+    const metrics = { durationMs: payload.durationMs, elapsedMs: payload.elapsedMs ?? 0, checksumSha256: payload.checksumSha256 };
+    if (!checkQuality) return metrics;
+    const parsed = episodeQualityReportSchema.safeParse(payload.qualityReport);
+    return {
+      ...metrics,
+      qualityReport: parsed.success && payload.checksumSha256 ? parsed.data : {
+        skill: "qc-skill", version: "1.4.5", status: "UNKNOWN", findings: [], reason: "INCOMPLETE",
+      },
+    };
   }
   const stillHeld = await options.jobs.renewRunningLease({
     workspaceId: execution.workspaceId,
@@ -631,7 +644,7 @@ async function publishOutput(
   execution: { workspaceId: string; projectId: string; jobId: string },
   attemptId: string,
   output: string,
-  rendered: { durationMs: number; elapsedMs: number },
+  rendered: { durationMs: number; elapsedMs: number; checksumSha256?: string },
 ): Promise<{ objectKey: string; checksumSha256: string; byteSize: number; durationMs: number; elapsedMs: number }> {
   const info = await stat(output);
   if (!info.isFile() || info.size <= 0 || info.size > OUTPUT_MAX_BYTES) {
@@ -642,6 +655,9 @@ async function publishOutput(
     const bytes = await handle.readFile();
     if (bytes.length !== info.size) throw new PersistenceError("COMPOSE_OUTPUT_INVALID", "Compose output changed while it was read");
     const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
+    if (rendered.checksumSha256 !== undefined && rendered.checksumSha256 !== checksumSha256) {
+      throw new PersistenceError("COMPOSE_OUTPUT_INVALID", "Episode bytes changed after local rendering");
+    }
     const objectKey = `compose/${execution.workspaceId}/${execution.projectId}/${execution.jobId}/${attemptId}/${checksumSha256}.mp4`;
     await publishContainedBytes(objectDir, objectKey, bytes);
     return { objectKey, checksumSha256, byteSize: bytes.length, durationMs: rendered.durationMs, elapsedMs: rendered.elapsedMs };

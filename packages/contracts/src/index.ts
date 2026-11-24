@@ -1,6 +1,7 @@
 import { z } from "zod";
 export * from "./admin-models";
 export * from "./admin-media-keys";
+export * from "./episode-quality";
 export * from "./feature-config";
 export * from "./auto-creation";
 export * from "./series-writing";
@@ -177,6 +178,7 @@ export interface TextGenerationAdapter {
 }
 
 export {
+  DRAMA_TEXT_SKILL_VERSION,
   EPISODE_DRAFT_SCHEMA,
   STORY_PLAN_SCHEMA,
   WRITING_BODY_MAX_CHARS,
@@ -368,6 +370,8 @@ export {
   type WritingCandidateFrozenInput,
   type WritingCandidateMode,
   type WritingCandidateOptionsView,
+  episodeEditSchema,
+  type EpisodeEdit,
   type WritingCandidateOutput,
   type WritingCandidateRecord,
   type WritingCandidateStart,
@@ -376,6 +380,7 @@ export {
   type WritingCandidateStoryRequest,
   type WritingCandidateView,
 } from "./writing-candidate";
+export * from "./creator-skills";
 export * from "./vimax-evaluation";
 export * from "./vimax-platform-preview";
 export * from "./vimax-candidate";
@@ -391,3 +396,5 @@ export * from "./asset-upload";
 export * from "./script-workbench";
 export * from "./short-sequel-ai";
 export type { ProjectLibraryScript } from "./project-library";
+
+export * from "./skill-admin";

@@ -79,6 +79,21 @@ async function enable(service: FeatureConfigService, feature: FeatureKey, vendor
 }
 
 describe("feature configuration", () => {
+  it("loads legacy defaults and refuses a stale operator switch", async () => {
+    const { service, vault, usage } = await open();
+    const current = await service.skills();
+    expect(current.skills).toHaveLength(3);
+    expect(current.skills.every(row => row.enabled)).toBe(true);
+    const off = await service.setSkill("short-drama-write", false, current.revision);
+    expect(off.skills.find(row => row.id === "short-drama-write")?.enabled).toBe(false);
+    const restarted = await FeatureConfigService.open({ vault, usage });
+    expect(await restarted.skillEnabled("short-drama-write")).toBe(false);
+    expect(await restarted.skillEnabled("qc-skill")).toBe(true);
+    await expect(restarted.setSkill("qc-skill", false, current.revision)).rejects.toMatchObject({ code: "ADMIN_CONFIG_CONFLICT" });
+    await restarted.setSkill("short-drama-write", true, off.revision);
+    expect(await service.skillEnabled("short-drama-write")).toBe(true);
+  });
+
   it("keeps three features on their own credentials and does not move a draft key across vendors", async () => {
     const { service, seen } = await open();
     await enable(service, "writing", "openai", "gpt-6-astra", KEYS.writing);

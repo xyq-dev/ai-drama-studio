@@ -79,6 +79,21 @@ describe("episode compose preflight service", () => {
     expect(preflightEpisodeCompose).not.toHaveBeenCalled();
   });
 
+  it("freezes the admin quality switch on submission for an episode render", async () => {
+    const submit = vi.fn(async (_scope: unknown, create: (client: unknown) => Promise<unknown>) => create({}));
+    const qualityCheckEnabled = vi.fn(async () => false);
+    const freeze = vi.fn(async () => ({ snapshot: { schema: "m4.episode.compose.v1" }, inputHash: "cd".repeat(32) }));
+    const studio = new StudioService({ createAndQueueWorkflowJob: submit } as never, {} as never, {} as never,
+      workspaceId, undefined, { freezeEpisodeComposeInput: freeze } as never,
+      false, null, false, false, false, null, true, false, undefined, "legacy", false, false, qualityCheckEnabled);
+    await expect(studio.composeEpisode(projectId, episodeId, {
+      compositeAssetIds: [firstAssetId, secondAssetId], expectedInputHash: "ab".repeat(32),
+    }, { actorId: "creator", traceId: "trace", idempotencyKey: "one" })).resolves.toMatchObject({
+      inputSnapshot: { qualityCheckEnabled: false }, inputHash: "cd".repeat(32),
+    });
+    expect(qualityCheckEnabled).toHaveBeenCalledOnce();
+  });
+
   it("queues episode compose without a mock directory and refuses a closed episode switch", async () => {
     const createAndQueueWorkflowJob = vi.fn(async (_scope: unknown, factory: (client: unknown) => Promise<unknown>) => {
       await factory({});

@@ -42,6 +42,7 @@ const EPISODE = {
 };
 
 function setup(options: {
+  skillEnabled?: () => Promise<boolean>;
   enabled?: boolean;
   nodeEnv?: "development" | "test" | "production";
   allowProduction?: boolean;
@@ -79,6 +80,7 @@ function setup(options: {
   const pending: Array<() => Promise<void>> = [];
   const service = new WritingCandidateService({
     workspaceId: WS,
+    ...(options.skillEnabled && { skillEnabled: options.skillEnabled }),
     nodeEnv: options.nodeEnv ?? "test",
     enabled: options.enabled ?? true,
     allowProduction: options.allowProduction ?? false,
@@ -178,6 +180,22 @@ describe("asking, reading and replaying", () => {
     expect(store.records.size).toBe(1);
   });
 
+  it("requires confirmation for a skill, refuses disabled work before sending, and replays its frozen version after disable", async () => {
+    let enabled = false;
+    const h = setup({ skillEnabled: async () => enabled });
+    const input = { ...EPISODE, skill: "short-drama-write", confirmedTextSend: true };
+    expect((await h.service.start(P1, { ...input, confirmedTextSend: false }, TOKEN, CONTEXT("skill"))).status).toBe(400);
+    expect(errorOf(await h.service.start(P1, input, TOKEN, CONTEXT("skill"))).code).toBe("CREATOR_SKILL_DISABLED");
+    expect(h.sent).toHaveLength(0);
+    enabled = true;
+    const accepted = await h.service.start(P1, input, TOKEN, CONTEXT("skill"));
+    expect(requestOf(accepted)).toMatchObject({ skill: "short-drama-write", skillVersion: expect.stringContaining("+hg.") });
+    await h.settle();
+    enabled = false;
+    expect((await h.service.start(P1, input, TOKEN, CONTEXT("skill"))).status).toBe(200);
+    expect((await h.service.start(P1, EPISODE, TOKEN, CONTEXT("skill"))).status).toBe(409);
+    expect(h.sent).toHaveLength(1);
+  });
   it("double click, a lost answer and a refresh: the same key and body return the same request and send nothing more", async () => {
     const { service, settle, sent } = setup();
     const [first, second] = await Promise.all([service.start(P1, EPISODE, TOKEN, CONTEXT("k1")), service.start(P1, EPISODE, TOKEN, CONTEXT("k1"))]);

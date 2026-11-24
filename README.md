@@ -1,5 +1,13 @@
 # AI Drama Studio
 
+## 网页创作助手
+
+在作品创作页选中一集，输入修改要求或选择对应操作。「编写或修改剧本」生成候选稿；「拆分场景镜头」读取已确认的场景，预约前显示发送范围，结果沿用已有分镜草稿与审核流程。两项文字技能依赖本站已启用的相应功能、模型、额度和存储。识别意图本身不调用模型；创作者确认后才可提交在线请求。
+
+新生成的整集 MP4 默认在媒体 Worker 本地做黑屏与静音检测，可在成片播放器下点击时间段回看。旧文件没有报告时显示其实际状态。管理员在「功能配置 → 创作助手技能」管理开关、查看所用版本和最近运行结果。开关只控制这三个技能，各供应商凭证和业务能力继续由原有配置管理。
+
+部署前可按[运行手册](docs/REAL_MEDIA_RUNBOOK.md)核对分镜通道和数据库。在线分镜沿用已有的 `vimax_storyboard_candidate` 和 `vimax_planning_request` 等存储，常规迁移不会安装这些可选结构；缺少前置条件时，创作端会提示当前无法发起在线规划。
+
 2026-11-02 核查：PR [#100](https://github.com/xyq-dev/ai-drama-studio/pull/100) 已合并至 `120cf8b6138547c85615e312519eee7d0ea8057f`；该主线的 9 个 push 工作流、19 个 check run 全部成功。当前代码：真实图片/视频/配音/音乐 Adapter、既有 Job/Attempt/Asset 的提交收据与恢复、S3 资产、逐句角色配音及新声音合成 profile、ViMax 单场景规划发送治理已实现并接入 API/Worker/工作台。新能力**默认关闭**；新增 SQL 仍在独立 drafts，业务库未启用。**本轮真实付费模型调用 0、业务库 SQL 0、服务器部署 0**。替身协议和合成素材只证明工程链路，不证明真实 AI 质量。操作入口与验收边界见[运行手册](docs/REAL_MEDIA_RUNBOOK.md)和[接续记录](docs/REAL_PRODUCTION_COMPLETION_PROGRESS.md)。
 
 ViMax 保留 [E1 离线评估](docs/VIMAX_OFFLINE_EVALUATION.md)、[E2-A 只读预览](docs/VIMAX_PLATFORM_PREVIEW.md)和 [E2-B 候选/两段式保存](docs/VIMAX_CANDIDATE_PERSISTENCE.md)，新增一次规划授权、共享写作额度、永久请求身份与 UNKNOWN 保护；真实单场景模型试验仍待授权与验收。角色配音的[设计与当前实现](docs/CHARACTER_VOICE_DESIGN.md)包括声音版本、逐句计划/试听/选用、实测时长 VTT、完整人声混音和原有审核/导出；V1-D 整集补齐已有固定预算、逐句永久身份与取消/显式恢复，含 batch 的最终分支和合并后数据库 CI 已通过，真实人声仍待验收。保留[原开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[设计原型](docs/design/character-voice-preview.html)作为历史依据。

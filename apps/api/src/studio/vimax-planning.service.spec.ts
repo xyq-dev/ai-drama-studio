@@ -51,6 +51,13 @@ describe("ViMax planning API sends only newly reserved authorized work", () => {
   it.each([{ enabled: false }, { nodeEnv: "production" as const }, { siteAuthRequired: false }])("keeps a closed policy side-effect free: %o", async (policy) => {
     const h = setup(policy); expect((await h.start()).status).toBe(404); expect(h.store.create).not.toHaveBeenCalled(); expect(h.scheduled).toEqual([]);
   });
+  it("refuses a disabled storyboard skill before reservation and rejects an unscoped creative instruction", async () => {
+    const h = setup({ skillEnabled: async () => false });
+    expect((await h.start("no-skill", { ...h.body, instruction: "聚焦车门" })).status).toBe(400);
+    expect((await h.start("disabled-skill", { ...h.body, skill: "short-drama-storyboard", instruction: "聚焦车门" })).status).toBe(409);
+    expect(h.store.create).not.toHaveBeenCalled();
+    expect(h.scheduled).toHaveLength(0);
+  });
   it("supports production only with explicit authorization and authenticated operator", async () => {
     const h = setup({ nodeEnv: "production", allowProduction: true }); expect((await h.start()).status).toBe(202);
     expect(h.scheduled).toHaveLength(1); expect(h.executor.execute).not.toHaveBeenCalled();

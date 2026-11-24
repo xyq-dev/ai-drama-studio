@@ -44,6 +44,7 @@ import { featureWritingProbe } from "../admin/feature-writing-probe";
 import { FeatureConfigVault, featureVaultPath } from "../admin/feature-config-vault";
 import { FeatureUsageStore, featureUsagePath } from "../admin/feature-usage-store";
 import { OperationLogStore, operationLogPath, setOperationJournal } from "../admin/operation-log-store";
+import { readSkillRuns } from "../admin/skill-run-reader";
 import { legacyLiveFor, legacySecretFor } from "../admin/feature-config.legacy";
 import {
   PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
@@ -253,6 +254,7 @@ export class StudioRuntime implements OnModuleDestroy {
             },
           },
           policy: {
+            readSkillRuns: () => readSkillRuns(pool, workspaceId),
             bailianWritingStorageReady: () => titleStore.bailianStorageReady(),
             writingAllowlist: async (vendor) => {
               const settings = adminModels?.runtimeSettings();
@@ -385,6 +387,7 @@ export class StudioRuntime implements OnModuleDestroy {
       maxActiveRuns,
     });
     const writingCandidates = new WritingCandidateService({
+      ...(featureConfig && { skillEnabled: (id) => featureConfig!.skillEnabled(id) }),
       workspaceId,
       nodeEnv: env.NODE_ENV,
       enabled: titleWritingEnabled,
@@ -547,6 +550,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const vimaxProductionAllowed = env.VIMAX_ALLOW_PRODUCTION === true && siteLoginValid;
     const planningStore = new PostgresVimaxPlanningStore(pool);
     const vimaxPlanning = new VimaxPlanningService({ workspaceId, nodeEnv: env.NODE_ENV,
+      ...(featureConfig && { skillEnabled: (id) => featureConfig!.skillEnabled(id) }),
       enabled: titleWritingEnabled && env.VIMAX_PLANNING_ENABLED === true,
       allowProduction: vimaxProductionAllowed, siteAuthRequired: siteLoginValid, siteOperator: siteLoginValid,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null, defaultProvider, providers: titleProviders,
@@ -662,7 +666,8 @@ export class StudioRuntime implements OnModuleDestroy {
           directoryReady: Boolean(absoluteDir),
         }),
         new CharacterReferenceStore(pool),
-        env.M3_CHARACTER_REFERENCE_GATE, realComposeAllowed && localComposeEnabled, !nonProduction), store, titleWriting,
+        env.M3_CHARACTER_REFERENCE_GATE, realComposeAllowed && localComposeEnabled, !nonProduction,
+        featureConfig ? () => featureConfig.skillEnabled("qc-skill") : undefined), store, titleWriting,
       adminModels, adminMediaKeys, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),

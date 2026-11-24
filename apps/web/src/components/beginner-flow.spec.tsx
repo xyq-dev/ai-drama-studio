@@ -648,6 +648,28 @@ describe("compose capability gate (PR #53 review 2 and 3)", () => {
     expect(await screen.findByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
   });
 
+  it("keeps the previous cut's quality finding playable after saving a new script draft", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=final`);
+    const cut = { assetId: "previous-cut", status: "STALE", reviewStatus: "APPROVED", rowVersion: 2, durationMs: 3000, segments: [],
+      qualityCheckEnabled: true, qualityReport: { skill: "qc-skill", version: "1", status: "FAIL", findings: [{ code: "BLACK", startMs: 1250, endMs: 1750 }] } };
+    // Existing output may still be marked ACTIVE when a new script draft first appears.
+    const pendingUpdate = { ...cut, assetId: "pending-update", status: "ACTIVE", reviewStatus: "DRAFT", qualityReport: undefined };
+    const calls = install({ [P1]: sceneWorld({ episodes: [episode(1, "DRAFT")], project: { episodeCount: 1 },
+      composites: { "episode-1": [cut, pendingUpdate] } }) });
+    render(<BeginnerFlow projectId={P1} />);
+    const historical = await screen.findByText(/历史成片 · 审核 APPROVED/);
+    const card = historical.closest("li")!;
+    const video = within(card).getByLabelText("成片预览") as HTMLVideoElement;
+    expect(video.getAttribute("src")).toBe("/api/v1/assets/previous-cut/content");
+    Object.defineProperty(video, "readyState", { value: 1 });
+    fireEvent.click(within(card).getByRole("button", { name: "定位黑屏，0:01.25" }));
+    expect(video.currentTime).toBe(1.25);
+    expect(screen.getAllByRole("region", { name: "成片质检结果" })).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "多镜编排" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /开始多镜合成|批准成片|退回成片|下载 MP4|下载来源清单/ })).toBeNull();
+    expect(calls.some(call => call.includes("compose-candidates") || !call.startsWith("GET "))).toBe(false);
+  });
+
   it("step 5 opened directly: the inner preflight and submit stay closed until enabled, the arrangement survives, and an approved cut stays downloadable", async () => {
     window.history.replaceState(null, "", `/projects/${P1}/create?step=final`);
     let answer!: () => void;
